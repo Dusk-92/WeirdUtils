@@ -52,7 +52,8 @@ var compression_level: i32 = 6; // user-facing 0–9, kept for Lua interface
 var tga_hook: hook.Hook = .{};
 var screenshot_dir: [260]u8 = undefined;
 var screenshot_dir_len: usize = 0;
-var screenshot_counter: u32 = 1;
+var screenshot_counter: u8 = 0;
+var last_screenshot_time: u64 = 0; // packed YMDHMS — resets counter on new second
 
 // =============================================================================
 // Ring buffer queue (max 8 pending screenshots)
@@ -65,6 +66,7 @@ const PendingScreenshot = struct {
     width: u16,
     height: u16,
     size: u32,
+    level: png.Level,
 };
 
 var queue: [MAX_PENDING]PendingScreenshot = undefined;
@@ -160,7 +162,7 @@ fn tgaWriteDetour(self: u32, _edx: u32, filename: u32) callconv(.c) i32 {
     mutex.lock();
     defer mutex.unlock();
 
-    if (!enqueue(.{ .buffer = buffer.ptr, .width = width, .height = height, .size = size })) {
+    if (!enqueue(.{ .buffer = buffer.ptr, .width = width, .height = height, .size = size, .level = png.mapLevel(compression_level) })) {
         std.heap.page_allocator.free(buffer);
         return callOriginal(self, filename);
     }
@@ -213,12 +215,24 @@ fn processScreenshot(shot: PendingScreenshot) void {
         shot.buffer[off + 2] = tmp;
     }
 
-    // Generate filename: {dir}WoWScrnShot_MMDDYY_HHMMSS_N.png
+    // Generate filename: {dir}WoWScrnShot_MMDDYY_HHMMSS_X.png (X = 0–F hex)
     var st: SYSTEMTIME = undefined;
     GetLocalTime(&st);
 
+    // Pack timestamp into a single comparable value — reset counter on new second
+    const now: u64 = @as(u64, st.wYear) << 32 | @as(u64, st.wMonth) << 24 |
+        @as(u64, st.wDay) << 16 | @as(u64, st.wHour) << 10 |
+        @as(u64, st.wMinute) << 4 | @as(u64, st.wSecond);
+    if (now != last_screenshot_time) {
+        screenshot_counter = 0;
+        last_screenshot_time = now;
+    }
+
+    const suffix: u8 = if (screenshot_counter < 16) "0123456789ABCDEF"[screenshot_counter] else return;
+    screenshot_counter += 1;
+
     var name_buf: [260]u8 = undefined;
-    const name_slice = std.fmt.bufPrint(&name_buf, "{s}WoWScrnShot_{:0>2}{:0>2}{:0>2}_{:0>2}{:0>2}{:0>2}_{}.png", .{
+    const name_slice = std.fmt.bufPrint(&name_buf, "{s}WoWScrnShot_{:0>2}{:0>2}{:0>2}_{:0>2}{:0>2}{:0>2}_{c}.png", .{
         screenshot_dir[0..screenshot_dir_len],
         st.wMonth,
         st.wDay,
@@ -226,18 +240,14 @@ fn processScreenshot(shot: PendingScreenshot) void {
         st.wHour,
         st.wMinute,
         st.wSecond,
-        screenshot_counter,
+        suffix,
     }) catch return;
-
-    screenshot_counter += 1;
-    if (screenshot_counter > 999) screenshot_counter = 1;
 
     // Null-terminate for CreateFileA
     if (name_slice.len >= name_buf.len) return;
     name_buf[name_slice.len] = 0;
 
-    const level = png.mapLevel(compression_level);
-    writePng(@ptrCast(name_slice.ptr), shot.buffer, shot.width, shot.height, level);
+    writePng(@ptrCast(name_slice.ptr), shot.buffer, shot.width, shot.height, shot.level);
 }
 
 // =============================================================================
@@ -333,6 +343,12 @@ pub fn installHook() void {
     // CTgaFile::Write at 0x5a4810
     // __thiscall(self, filename) — prologue: 55 8B EC 83 EC 08 = 6 bytes, no fixups
     // Thunk: fastcall(ECX=self, EDX, stack: filename) → cdecl(self, edx, filename)
+    //
+    // Another DLL (UnitXP_SP3) hooks this same address during DLL_PROCESS_ATTACH,
+    // replacing the prologue with an E9 JMP. Restore the original prologue first
+    // so prepare() builds a trampoline to the real function rather than chaining
+    // through UnitXP's detour.
+    hook.writeProtected(0x5a4810, &.{ 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 });
     if (tga_hook.prepare(0x5a4810, 6, &.{})) {
         const thunk = tga_hook.mem.? + 32;
         _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&tgaWriteDetour), 1);

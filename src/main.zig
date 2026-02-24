@@ -399,6 +399,28 @@ fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_
 }
 
 // =============================================================================
+// Hook: GameEngine_MainInitialize (0x46a400)
+// __stdcall(void) — prologue: 55 8B EC 83 EC 28 = 6 bytes, no fixups
+//
+// Called once from InitializeAllSubsystems during the init callback inside
+// WinMain. Fires after Lua env, UI frames, event tables, and DB tables are
+// set up, but before the event loop starts frame callbacks (i.e. before the
+// login screen renders and screenshots become possible).
+//
+// We install the screenshot hook here to guarantee it runs AFTER all
+// DLL_PROCESS_ATTACH hooks (including UnitXP's CTgaFile::Write hook),
+// making us the outermost detour in the hook chain.
+// =============================================================================
+
+var engine_init_hook: hook.Hook = .{};
+
+fn engineInitDetour() callconv(sc) void {
+    const orig = engine_init_hook.getTrampoline(*const fn () callconv(sc) void);
+    orig();
+    screenshot.installHook();
+}
+
+// =============================================================================
 // Hook: CGGameUI_Shutdown (0x490BD0)
 // Prologue: 56 E8 7A 83 FC FF = 6 bytes, fixup at offset 1
 // =============================================================================
@@ -433,8 +455,9 @@ fn install() void {
         load_addons_hook.activate(@intFromPtr(thunk));
     }
 
-    // 5. Screenshot hook — async PNG capture replacing TGA write
-    screenshot.installHook();
+    // 5. GameEngine_MainInitialize — install screenshot hook after all DLLs load
+    //    Fires once inside WinMain, before the login screen renders.
+    _ = engine_init_hook.install(0x46a400, 6, @intFromPtr(&engineInitDetour), &.{});
 
     // 6. CGGameUI_Shutdown — cleanup
     _ = shutdown_hook.install(0x490BD0, 6, @intFromPtr(&shutdownDetour), &.{1});
@@ -442,6 +465,7 @@ fn install() void {
 
 fn uninstall() void {
     shutdown_hook.remove();
+    engine_init_hook.remove();
     screenshot.removeHook();
     load_addons_hook.remove();
     lsf_hook.remove();

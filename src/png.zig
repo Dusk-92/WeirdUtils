@@ -64,7 +64,7 @@ pub fn encode(
     if (@intFromEnum(level) == 0) {
         writeIdatStore(&s, pixels, w, h);
     } else {
-        writeIdatFixedHuffman(&s, pixels, w, h);
+        writeIdatFixedHuffman(&s, pixels, w, h, @intFromEnum(level));
     }
 
     // IEND
@@ -204,11 +204,11 @@ fn writeIdatStore(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
 }
 
 // =============================================================================
-// Fixed Huffman (levels 1-9) — RFC 1951 §3.2.6 fixed codes, literals only
+// Fixed Huffman + LZ77 — RFC 1951 §3.2.6 fixed codes with back-references
 //
-// Each byte is Huffman-coded using the fixed table. No LZ77 matching.
-// This gives ~10-20% compression on typical screenshot data with zero
-// runtime state beyond a small bit buffer.
+// Sub filter makes adjacent pixel differences small (often zero in flat areas).
+// LZ77 with hash-table matching finds repeated byte sequences within a 32KB
+// window and encodes them as length-distance pairs.
 // =============================================================================
 
 const BitBuf = struct {
@@ -236,13 +236,14 @@ const BitBuf = struct {
     }
 };
 
-/// RFC 1951 fixed Huffman: encode a literal byte (0-255) or end-of-block (256).
-fn fixedLiteral(bb: *BitBuf, s: anytype, val: u16) void {
-    // RFC 1951 §3.2.6 fixed Huffman code table:
-    // 0-143:   8 bits, codes 00110000-10111111
-    // 144-255: 9 bits, codes 110010000-111111111
-    // 256-279: 7 bits, codes 0000000-0010111
-    // 280-287: 8 bits, codes 11000000-11000111
+fn bitReverse(comptime T: type, val: T, n: u5) u32 {
+    const full = @bitReverse(val);
+    const shift: u5 = @intCast(@typeInfo(T).int.bits - @as(u8, n));
+    return @as(u32, full) >> shift;
+}
+
+/// RFC 1951 fixed Huffman: encode a literal/length code (0-285).
+fn fixedCode(bb: *BitBuf, s: anytype, val: u16) void {
     if (val <= 143) {
         const code: u9 = @as(u9, @intCast(val)) + 0x30;
         bb.write(s, bitReverse(u9, code, 8), 8);
@@ -258,50 +259,105 @@ fn fixedLiteral(bb: *BitBuf, s: anytype, val: u16) void {
     }
 }
 
-fn bitReverse(comptime T: type, val: T, n: u5) u32 {
-    const full = @bitReverse(val);
-    const shift: u5 = @intCast(@typeInfo(T).int.bits - @as(u8, n));
-    return @as(u32, full) >> shift;
+// RFC 1951 length/distance encoding tables (from stb_image_write.h)
+const length_base = [29]u16{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
+const length_extra = [29]u5{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
+const dist_base = [30]u16{ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
+const dist_extra = [30]u5{ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
+
+inline fn zhashFn(d: *const [3]u8) u32 {
+    var h: u32 = @as(u32, d[0]) +% (@as(u32, d[1]) << 8) +% (@as(u32, d[2]) << 16);
+    h ^= h *% 8;
+    h +%= h >> 5;
+    h ^= h *% 16;
+    h +%= h >> 17;
+    h ^= h *% (1 << 25);
+    h +%= h >> 6;
+    return h;
 }
 
-fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
-    // We can't precompute IDAT payload size for Huffman, so we buffer the
-    // entire deflate stream, then write it as one IDAT chunk.
-    // For a 1024x768 screenshot, fixed Huffman with only literals produces
-    // roughly 8-9 bits per byte ≈ same size or slightly larger than raw.
-    // But the Sub filter makes most bytes small, yielding good compression.
+fn countMatch(data: []const u8, a: u32, b: u32) u32 {
+    const max_len: u32 = @min(@as(u32, @intCast(data.len)) - b, 258);
+    var i: u32 = 0;
+    while (i < max_len) : (i += 1) {
+        if (data[a + i] != data[b + i]) break;
+    }
+    return i;
+}
 
-    // Allocate output buffer: worst case ~9 bits/byte * raw_size / 8 + overhead
+/// Emit a deflate length-distance pair using fixed Huffman codes.
+fn emitMatch(bb: *BitBuf, s: anytype, length: u32, distance: u32) void {
+    // Length code
+    var li: usize = 0;
+    while (li + 1 < length_base.len and length >= length_base[li + 1]) : (li += 1) {}
+    fixedCode(bb, s, @intCast(li + 257));
+    if (length_extra[li] > 0) bb.write(s, length - length_base[li], length_extra[li]);
+    // Distance code: 5-bit reversed + extra bits
+    var di: usize = 0;
+    while (di + 1 < dist_base.len and distance >= dist_base[di + 1]) : (di += 1) {}
+    bb.write(s, bitReverse(u5, @as(u5, @intCast(di)), 5), 5);
+    if (dist_extra[di] > 0) bb.write(s, distance - dist_base[di], dist_extra[di]);
+}
+
+fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32, level: u4) void {
     const row_bytes: u32 = 1 + w * 3;
     const raw_size: u32 = h * row_bytes;
-    // Worst case: 9 bits per byte + block headers + zlib overhead
-    const max_out: u32 = (raw_size / 8) * 9 + raw_size / 8 + 1024;
+
+    // Pre-filter all pixel data (Sub filter) into contiguous buffer
+    const filtered = std.heap.page_allocator.alloc(u8, raw_size) catch {
+        writeIdatStore(s, pixels, w, h);
+        return;
+    };
+    defer std.heap.page_allocator.free(filtered);
+    {
+        var pos: u32 = 0;
+        var y: u32 = 0;
+        while (y < h) : (y += 1) {
+            filtered[pos] = 1; // Sub filter type byte
+            pos += 1;
+            const row = y * w * 3;
+            var x: u32 = 0;
+            while (x < w * 3) : (x += 1) {
+                const raw = pixels[row + x];
+                filtered[pos] = if (x >= 3) raw -% pixels[row + x - 3] else raw;
+                pos += 1;
+            }
+        }
+    }
+
+    // Adler-32 over entire filtered buffer
+    var adler_a: u32 = 1;
+    var adler_b: u32 = 0;
+    adlerUpdate(&adler_a, &adler_b, filtered[0..raw_size]);
+    const adler: u32 = (adler_b << 16) | adler_a;
+
+    // Output buffer (worst case: ~9 bits per byte for fixed Huffman literals)
+    const max_out: u32 = raw_size + raw_size / 4 + 1024;
     const out_buf = std.heap.page_allocator.alloc(u8, max_out) catch {
-        // Fall back to store blocks
         writeIdatStore(s, pixels, w, h);
         return;
     };
     defer std.heap.page_allocator.free(out_buf);
 
-    // Compress into buffer
+    // Hash chains for LZ77 matching — chain depth = 2 * level (stb approach)
+    const ZHASH: u32 = 16384;
+    const chain_depth: u32 = @as(u32, level) * 2;
+    const chain_mem = std.heap.page_allocator.alloc(u32, ZHASH * chain_depth) catch {
+        writeIdatStore(s, pixels, w, h);
+        return;
+    };
+    defer std.heap.page_allocator.free(chain_mem);
+    const chain_count = std.heap.page_allocator.alloc(u8, ZHASH) catch {
+        writeIdatStore(s, pixels, w, h);
+        return;
+    };
+    defer std.heap.page_allocator.free(chain_count);
+    @memset(chain_count, 0);
+
     var out_pos: u32 = 0;
-
-    // Zlib header
-    out_buf[0] = 0x78;
-    out_buf[1] = 0x9C; // default compression
-    out_pos = 2;
-
-    var adler_a: u32 = 1;
-    var adler_b: u32 = 0;
-
-    // Single fixed-Huffman block (BFINAL=1, BTYPE=01)
-    var bb: BitBuf = .{};
-
-    // Pack bits into out_buf via a mini stream
     const OutStream = struct {
         buf: []u8,
         pos: *u32,
-        // Dummy fields matching the CrcAdler interface
         fn writeCrcAdler(self: *@This(), data: []const u8) void {
             for (data) |byte| {
                 if (self.pos.* < self.buf.len) {
@@ -313,38 +369,87 @@ fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
     };
     var out_stream = OutStream{ .buf = out_buf, .pos = &out_pos };
 
+    // Zlib header
+    out_buf[0] = 0x78;
+    out_buf[1] = 0x9C;
+    out_pos = 2;
+
+    var bb: BitBuf = .{};
     // BFINAL=1, BTYPE=01 (fixed Huffman)
     bb.write(&out_stream, 0b011, 3);
 
-    // Encode each scanline with Sub filter
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        const row_start = y * w * 3;
+    // LZ77 + fixed Huffman encoding
+    const WINDOW: u32 = 32768;
+    var i: u32 = 0;
+    while (i + 2 < raw_size) {
+        const bucket = zhashFn(filtered[i..][0..3]) & (ZHASH - 1);
+        const base = bucket * chain_depth;
 
-        // Filter byte: 1 = Sub
-        const filter_byte: u8 = 1;
-        adlerUpdate(&adler_a, &adler_b, &[1]u8{filter_byte});
-        fixedLiteral(&bb, &out_stream, filter_byte);
-
-        // First pixel: Sub filter with no left neighbor = raw bytes
-        var x: u32 = 0;
-        while (x < w * 3) : (x += 1) {
-            const raw = pixels[row_start + x];
-            const filtered: u8 = if (x >= 3)
-                raw -% pixels[row_start + x - 3]
-            else
-                raw;
-            adlerUpdate(&adler_a, &adler_b, &[1]u8{filtered});
-            fixedLiteral(&bb, &out_stream, filtered);
+        // Search chain for best match (prefer closest of equal length via >=)
+        var best_len: u32 = 3;
+        var best_dist: u32 = 0;
+        {
+            var j: u32 = 0;
+            while (j < chain_count[bucket]) : (j += 1) {
+                const prev = chain_mem[base + j];
+                if (i -% prev <= WINDOW) {
+                    const ml = countMatch(filtered[0..raw_size], prev, i);
+                    if (ml >= best_len) {
+                        best_len = ml;
+                        best_dist = i - prev;
+                    }
+                }
+            }
         }
+
+        // Add current position to chain; prune oldest half when full
+        {
+            var cnt = @as(u32, chain_count[bucket]);
+            if (cnt >= chain_depth) {
+                const keep = chain_depth / 2;
+                const src = base + chain_depth - keep;
+                @memcpy(chain_mem[base..][0..keep], chain_mem[src..][0..keep]);
+                cnt = keep;
+            }
+            chain_mem[base + cnt] = i;
+            chain_count[bucket] = @intCast(cnt + 1);
+        }
+
+        if (best_dist > 0) {
+            // Lazy matching: check if next position beats current match
+            if (i + 3 < raw_size) {
+                const bucket2 = zhashFn(filtered[i + 1 ..][0..3]) & (ZHASH - 1);
+                const base2 = bucket2 * chain_depth;
+                var j: u32 = 0;
+                while (j < chain_count[bucket2]) : (j += 1) {
+                    const prev2 = chain_mem[base2 + j];
+                    if ((i + 1) -% prev2 <= WINDOW) {
+                        if (countMatch(filtered[0..raw_size], prev2, i + 1) > best_len) {
+                            best_dist = 0; // cancel — next position is better
+                            break;
+                        }
+                    }
+                }
+            }
+            if (best_dist > 0) {
+                emitMatch(&bb, &out_stream, best_len, best_dist);
+                i += best_len;
+                continue;
+            }
+        }
+
+        fixedCode(&bb, &out_stream, filtered[i]);
+        i += 1;
+    }
+    // Remaining <3 bytes as literals
+    while (i < raw_size) : (i += 1) {
+        fixedCode(&bb, &out_stream, filtered[i]);
     }
 
-    // End of block marker (256)
-    fixedLiteral(&bb, &out_stream, 256);
+    fixedCode(&bb, &out_stream, 256); // End of block
     bb.flush(&out_stream);
 
-    // Adler-32 (big-endian, NOT bit-packed — appended as raw bytes after deflate)
-    const adler = (adler_b << 16) | adler_a;
+    // Append Adler-32 (big-endian)
     if (out_pos + 4 <= out_buf.len) {
         out_buf[out_pos] = @truncate(adler >> 24);
         out_buf[out_pos + 1] = @truncate(adler >> 16);
@@ -353,7 +458,12 @@ fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
         out_pos += 4;
     }
 
-    // Write as single IDAT chunk
+    // Fallback to store if compressed is larger
+    if (out_pos >= raw_size) {
+        writeIdatStore(s, pixels, w, h);
+        return;
+    }
+
     s.writeChunk("IDAT", out_buf[0..out_pos]);
 }
 
