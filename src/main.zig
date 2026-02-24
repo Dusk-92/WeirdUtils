@@ -1,6 +1,7 @@
 const std = @import("std");
 const hook = @import("hook");
 const screenshot = @import("screenshot.zig");
+const interact = @import("interact.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -236,6 +237,8 @@ fn registerLuaFunctions() void {
     registerFunction("WeirdUtilsTest", @intFromPtr(&weirdUtilsTest));
     registerFunction("WeirdUtilsVersion", @intFromPtr(&weirdUtilsVersion));
     registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
+    registerFunction("InteractNearest", @intFromPtr(&interact.interactNearest));
+    registerFunction("LootAllCorpses", @intFromPtr(&interact.lootAllCorpses));
 }
 
 // =============================================================================
@@ -251,6 +254,7 @@ const FileEntry = struct {
 
 const embedded_files = [_]FileEntry{
     .{ .name = "WeirdUtils.toc", .data = @embedFile("addon/WeirdUtils.toc") },
+    .{ .name = "Bindings.xml", .data = @embedFile("addon/Bindings.xml") },
     .{ .name = "WeirdUtils.lua", .data = @embedFile("addon/WeirdUtils.lua") },
 };
 
@@ -369,6 +373,15 @@ fn loadAddonsDetour(error_handler: u32, _edx: u32) callconv(.c) void {
         &md5ctx,
         error_handler,
     );
+
+    // Load bindings — LoadAddonRecursive normally calls LoadUIBindingsFromFile
+    // explicitly for each addon's Bindings.xml (separate from .toc processing).
+    // Since our addon isn't in the game's addon list, we must call it ourselves.
+    callLoadUIBindingsFromFile(
+        "Interface\\AddOns\\WeirdUtils\\Bindings.xml",
+        &md5ctx,
+        error_handler,
+    );
 }
 
 fn callOrigLoadAddons(error_handler: u32) void {
@@ -394,6 +407,27 @@ fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_
           [_] "{edx}" (@intFromPtr(md5ctx)),
           [eh] "r" (error_handler),
           [func] "r" (@as(u32, 0x6EDB90)),
+        : .{ .eax = true, .memory = true, .cc = true }
+    );
+}
+
+/// LoadUIBindingsFromFile(path_stack, md5ctx_stack, callback_stack)
+/// __thiscall at 0x4B6F70: ECX=binding_mgr [0xB71290], ret 0x0C (3 stack params)
+/// Parses Bindings.xml and registers binding entries in the key binding manager.
+fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u32) void {
+    const binding_mgr = hook.readMem(u32, 0xB71290);
+    // Pin func to EDX to stay within 3 "r" registers (EBX/ESI/EDI)
+    asm volatile (
+        \\push %[cb]
+        \\push %[md5]
+        \\push %[path]
+        \\call *%[func]
+        :
+        : [_] "{ecx}" (binding_mgr),
+          [func] "{edx}" (@as(u32, 0x4B6F70)),
+          [path] "r" (@intFromPtr(path)),
+          [md5] "r" (@intFromPtr(md5ctx)),
+          [cb] "r" (callback),
         : .{ .eax = true, .memory = true, .cc = true }
     );
 }
@@ -455,11 +489,14 @@ fn install() void {
         load_addons_hook.activate(@intFromPtr(thunk));
     }
 
-    // 5. GameEngine_MainInitialize — install screenshot hook after all DLLs load
+    // 5. Interact hooks — SceneEnd for per-frame loot queue processing
+    interact.installHooks();
+
+    // 6. GameEngine_MainInitialize — install screenshot hook after all DLLs load
     //    Fires once inside WinMain, before the login screen renders.
     _ = engine_init_hook.install(0x46a400, 6, @intFromPtr(&engineInitDetour), &.{});
 
-    // 6. CGGameUI_Shutdown — cleanup
+    // 7. CGGameUI_Shutdown — cleanup
     _ = shutdown_hook.install(0x490BD0, 6, @intFromPtr(&shutdownDetour), &.{1});
 }
 
@@ -467,6 +504,7 @@ fn uninstall() void {
     shutdown_hook.remove();
     engine_init_hook.remove();
     screenshot.removeHook();
+    interact.removeHooks();
     load_addons_hook.remove();
     lsf_hook.remove();
     file_hook.remove();

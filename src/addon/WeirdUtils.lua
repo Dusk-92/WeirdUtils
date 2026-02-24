@@ -2,6 +2,9 @@
 
 WEIRDUTILS_VERSION = 1
 
+-- Binding header display name
+BINDING_HEADER_WEIRDUTILS = "Weird Utils"
+
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
@@ -35,6 +38,10 @@ SlashCmdList["WEIRDUTILS"] = function(msg)
             WeirdUtilsScreenshot("quality", tonumber(sub))
             DEFAULT_CHAT_FRAME:AddMessage("Screenshot quality: " .. sub)
         end
+    elseif msg == "interact" then
+        DEFAULT_CHAT_FRAME:AddMessage("Interact: InteractNearest() and LootAllCorpses() available")
+        DEFAULT_CHAT_FRAME:AddMessage("  Bind in Key Bindings > Interact, or use /run InteractNearest(0)")
+        DEFAULT_CHAT_FRAME:AddMessage("  /run LootAllCorpses() - Loot all nearby corpses")
     else
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00WeirdUtils|r commands:")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu version - Show version")
@@ -42,5 +49,6 @@ SlashCmdList["WEIRDUTILS"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  /wu ss - Screenshot status")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu ss on|off - Enable/disable PNG screenshots")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu ss 0-9 - Set compression level")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wu interact - Interact/loot info")
     end
 end
