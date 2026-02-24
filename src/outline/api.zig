@@ -8,15 +8,20 @@ const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");
 const d3d9_hook = @import("d3d9_hook.zig");
 
-/// Install all outline hooks (model pipeline + D3D9 vtable).
-/// Called from main.zig during DLL_PROCESS_ATTACH or engine init.
+/// Install model hooks immediately. D3D9 hooks are deferred until the first
+/// model hook fires (i.e. the game is actively rendering), because creating a
+/// dummy D3D9 device during engine init corrupts the d3d9 proxy's state and
+/// causes model rendering to stutter at ~10fps.
 pub fn init() bool {
     if (!model_hook.installHooks()) return false;
-    if (!d3d9_hook.installHooks()) {
-        model_hook.removeHooks();
-        return false;
-    }
     return true;
+}
+
+/// Called from the first model hook callback, once rendering is active.
+/// Safe to create the dummy D3D9 device now — the game's real device is
+/// fully initialised and the proxy's state is stable.
+pub fn initD3D9Deferred() void {
+    _ = d3d9_hook.installHooks();
 }
 
 /// Remove all outline hooks. Called during DLL_PROCESS_DETACH.

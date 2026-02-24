@@ -36,7 +36,7 @@ const TrackedObj = struct {
 };
 
 var tracked_objs: [MAX_TRACKED_OBJS]TrackedObj = undefined;
-var tracked_obj_count: usize = 0;
+pub var tracked_obj_count: usize = 0;
 
 // All unit/player object pointers for stencil occlusion detection.
 var unit_obj_ptrs: [MAX_UNIT_OBJS]u32 = .{0} ** MAX_UNIT_OBJS;

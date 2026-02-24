@@ -4,12 +4,27 @@
 //!  - CM2SceneRenderDraw  — reorders batches so outline targets render first.
 //!  - CM2Model_ManageRenderListNode — classifies models on render-list add.
 //!  - CM2Scene_DrawBatchProjected — flags the DIP hook for outline rendering.
+//!
+//! Calling conventions:
+//!  - RenderDraw & ManageRender use callconv(.x86_thiscall) — direct native detours.
+//!  - DrawBatchProj uses a callconv(.naked) entry point because Zig 0.15 has a
+//!    codegen bug with callconv(.x86_fastcall) that generates wrong ret instructions
+//!    for functions with ≤2 register params.  The naked wrapper bridges to a cdecl
+//!    implementation function.
 
+const std = @import("std");
 const hook = @import("hook");
+const api = @import("api.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");
 const tracker = @import("tracker.zig");
 const wow = @import("wow.zig");
+
+// =============================================================================
+// Calling convention constants
+// =============================================================================
+
+const THISCALL = std.builtin.CallingConvention{ .x86_thiscall = .{} };
 
 // =============================================================================
 // Hook state
@@ -18,6 +33,10 @@ const wow = @import("wow.zig");
 var render_draw_hook: hook.Hook = .{};
 var manage_render_hook: hook.Hook = .{};
 var draw_batch_hook: hook.Hook = .{};
+
+/// D3D9 hooks are deferred until the first model hook fires, because creating
+/// a dummy D3D9 device during engine init corrupts the proxy's state.
+var d3d9_deferred_pending: bool = true;
 
 // =============================================================================
 // Volatile flags shared with d3d9_hook (read by DIP hook)
@@ -47,10 +66,14 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // CM2SceneRenderDraw hook
 // =============================================================================
 // __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
-// Thunked to __cdecl(ecx_this, edx_unused, viewMatrix, batchData, batchIndices, batchCount)
+// Native thiscall detour — no thunk needed.
 
-fn renderDrawDetour(this: u32, _edx: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(.c) void {
-    _ = _edx;
+fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(THISCALL) void {
+    // One-time: install D3D9 hooks now that the game is actively rendering.
+    if (d3d9_deferred_pending) {
+        d3d9_deferred_pending = false;
+        api.initD3D9Deferred();
+    }
 
     // If outlines disabled or nothing tracked, fast-path to original
     if (!tracker.enabled or !tracker.hasTargets() or batch_count == 0 or
@@ -125,11 +148,9 @@ fn callOrigRenderDraw(this: u32, view_matrix: u32, batch_data: u32, batch_indice
 // CM2Model_ManageRenderListNode hook
 // =============================================================================
 // __thiscall(model_ECX, addToList_stack)
-// Thunked to __cdecl(ecx_model, edx_unused, addToList)
+// Native thiscall detour — no thunk needed.
 
-fn manageRenderDetour(model: u32, _edx: u32, add_to_list: u32) callconv(.c) void {
-    _ = _edx;
-
+fn manageRenderDetour(model: u32, add_to_list: u32) callconv(THISCALL) void {
     // Classify the model when it's being ADDED to the render list
     if (add_to_list == 1 and model != 0 and tracker.enabled and tracker.hasTargets()) {
         tracker.classifyModel(model);
@@ -151,10 +172,33 @@ fn manageRenderDetour(model: u32, _edx: u32, add_to_list: u32) callconv(.c) void
 // CM2Scene_DrawBatchProjected hook
 // =============================================================================
 // __fastcall(renderContext_ECX)
-// Thunked to __cdecl(ecx_ctx, edx_unused)
+//
+// Uses a naked entry point because Zig 0.15's x86_fastcall codegen generates
+// wrong ret instructions for functions with ≤2 register params.  The naked
+// function bridges fastcall → cdecl and calls the implementation function.
 
-fn drawBatchProjDetour(ctx: u32, _edx: u32) callconv(.c) void {
+fn drawBatchProjEntry() callconv(.naked) void {
+    // __fastcall(ECX): ECX = render context, 0 stack args.
+    // Bridge to cdecl: push edx + ecx as args, call impl, cleanup, ret.
+    asm volatile (
+        \\push %%edx
+        \\push %%ecx
+        \\call *%%eax
+        \\add $8, %%esp
+        \\ret
+        :
+        : [_] "{eax}" (@intFromPtr(&drawBatchProjImpl))
+    );
+}
+
+fn drawBatchProjImpl(ctx: u32, _edx: u32) callconv(.c) void {
     _ = _edx;
+
+    // Fast path: no tracking enabled or nothing tracked → just call original
+    if (!tracker.enabled or !tracker.hasTargets()) {
+        callOrigDrawBatch(ctx);
+        return;
+    }
 
     const model_ptr = if (wow.isValidPtr(ctx +% @as(u32, @intCast(o.RENDER_CONTEXT_MODEL_OFFSET))))
         hook.readMem(u32, ctx + o.RENDER_CONTEXT_MODEL_OFFSET)
@@ -181,7 +225,7 @@ fn drawBatchProjDetour(ctx: u32, _edx: u32) callconv(.c) void {
         current_model = 0;
         rendering_unit = false;
 
-        if (tracker.hasTargets() and model_ptr != 0) {
+        if (model_ptr != 0) {
             rendering_unit = tracker.isUnitModel(model_ptr);
         }
 
@@ -205,28 +249,30 @@ fn callOrigDrawBatch(ctx: u32) void {
 // =============================================================================
 
 pub fn installHooks() bool {
-    // CM2SceneRenderDraw — __thiscall, 4 stack args → cdecl thunk
+    // CM2SceneRenderDraw — native thiscall detour, no thunk needed.
     // Prologue is 9 bytes: PUSH EBP (1) + MOV EBP,ESP (2) + SUB ESP,0x80 (6).
-    // 6 bytes would cut SUB ESP,0x80 mid-instruction.
-    if (render_draw_hook.prepare(o.FN_CM2SCENE_RENDER_DRAW, 9, &.{})) {
-        const thunk = render_draw_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&renderDrawDetour), 4);
-        render_draw_hook.activate(@intFromPtr(thunk));
-    } else return false;
+    if (!render_draw_hook.install(
+        o.FN_CM2SCENE_RENDER_DRAW,
+        9,
+        @intFromPtr(&renderDrawDetour),
+        &.{},
+    )) return false;
 
-    // ManageRenderListNode — __thiscall, 1 stack arg → cdecl thunk
-    if (manage_render_hook.prepare(o.FN_CM2MODEL_MANAGE_RENDER_LIST, 6, &.{})) {
-        const thunk = manage_render_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&manageRenderDetour), 1);
-        manage_render_hook.activate(@intFromPtr(thunk));
-    } else return false;
+    // ManageRenderListNode — native thiscall detour, no thunk needed.
+    if (!manage_render_hook.install(
+        o.FN_CM2MODEL_MANAGE_RENDER_LIST,
+        6,
+        @intFromPtr(&manageRenderDetour),
+        &.{},
+    )) return false;
 
-    // DrawBatchProj — __fastcall, 0 stack args → cdecl thunk
-    if (draw_batch_hook.prepare(o.FN_DRAW_BATCH_PROJ, 6, &.{})) {
-        const thunk = draw_batch_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&drawBatchProjDetour), 0);
-        draw_batch_hook.activate(@intFromPtr(thunk));
-    } else return false;
+    // DrawBatchProj — naked entry bridges fastcall → cdecl, no thunk needed.
+    if (!draw_batch_hook.install(
+        o.FN_DRAW_BATCH_PROJ,
+        6,
+        @intFromPtr(&drawBatchProjEntry),
+        &.{},
+    )) return false;
 
     return true;
 }

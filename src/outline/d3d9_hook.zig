@@ -22,25 +22,6 @@ const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
 extern "kernel32" fn GetProcAddress(module: *anyopaque, name: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
-extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(WINAPI) ?*anyopaque;
-extern "user32" fn RegisterClassExA(wc: *const types.WNDCLASSEXA) callconv(WINAPI) u16;
-extern "user32" fn CreateWindowExA(
-    exStyle: u32,
-    cls: [*:0]const u8,
-    title: [*:0]const u8,
-    style: u32,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    parent: ?*anyopaque,
-    menu: ?*anyopaque,
-    inst: ?*anyopaque,
-    param: ?*anyopaque,
-) callconv(WINAPI) ?*anyopaque;
-extern "user32" fn DestroyWindow(hwnd: *anyopaque) callconv(WINAPI) i32;
-extern "user32" fn UnregisterClassA(name: [*:0]const u8, inst: ?*anyopaque) callconv(WINAPI) i32;
-extern "user32" fn DefWindowProcA(hwnd: ?*anyopaque, msg: u32, wp: usize, lp: usize) callconv(WINAPI) usize;
 
 // =============================================================================
 // COM helper: read vtable pointer, call method by index
@@ -71,6 +52,9 @@ var orig_reset: usize = 0;
 var d3d9_vtable: ?[*]usize = null;
 var hooks_installed: bool = false;
 
+/// True until the first EndScene verifies (and if needed, forces) D24S8 format.
+var need_force_reset: bool = true;
+
 // =============================================================================
 // Outline shader resources (created on first use)
 // =============================================================================
@@ -96,6 +80,14 @@ const D3DXAssembleShaderFn = *const fn (
 // =============================================================================
 
 fn hkEndScene(device: *anyopaque) callconv(sc) i32 {
+    // One-time: check if depth/stencil surface has stencil bits.
+    // Because D3D9 hooks are installed after engine init (deferred), we miss
+    // the initial Reset. If the surface lacks stencil, force a Reset now.
+    if (need_force_reset) {
+        need_force_reset = false;
+        forceD24S8IfNeeded(device);
+    }
+
     // Per-frame: scan objects for outline tracking
     tracker.scanObjects();
 
@@ -404,6 +396,61 @@ fn deviceClear(dev: *anyopaque, flags: u32) void {
 }
 
 // =============================================================================
+// Force D24S8 depth/stencil on first EndScene (deferred hooks miss initial Reset)
+// =============================================================================
+
+fn hasStencilBits(fmt: u32) bool {
+    return fmt == types.D3DFMT_D24S8 or fmt == types.D3DFMT_D24FS8 or
+        fmt == types.D3DFMT_D24X4S4 or fmt == types.D3DFMT_D15S1;
+}
+
+fn forceD24S8IfNeeded(device: *anyopaque) void {
+    // GetDepthStencilSurface(ppSurface)
+    var pDS: ?*anyopaque = null;
+    const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(sc) i32 =
+        @ptrFromInt(vt(device)[types.VT.GetDepthStencilSurface]);
+    if (getDS(device, &pDS) < 0) return;
+    const ds = pDS orelse return;
+    defer comRelease(ds);
+
+    // IDirect3DSurface9::GetDesc — vtable index 12
+    // (IUnknown 0-2, IDirect3DResource9 3-10, GetContainer 11, GetDesc 12)
+    var desc: types.D3DSURFACE_DESC = .{};
+    const getDesc: *const fn (*anyopaque, *types.D3DSURFACE_DESC) callconv(sc) i32 =
+        @ptrFromInt(vt(ds)[12]);
+    if (getDesc(ds, &desc) < 0) return;
+
+    if (hasStencilBits(desc.Format)) return; // already good
+
+    // Get current present parameters from swap chain 0
+    // GetSwapChain(0, ppSwapChain)
+    var pSwap: ?*anyopaque = null;
+    const getSC: *const fn (*anyopaque, u32, *?*anyopaque) callconv(sc) i32 =
+        @ptrFromInt(vt(device)[types.VT.GetSwapChain]);
+    if (getSC(device, 0, &pSwap) < 0) return;
+    const swap = pSwap orelse return;
+    defer comRelease(swap);
+
+    // IDirect3DSwapChain9::GetPresentParameters — vtable index 9
+    var pp: types.D3DPRESENT_PARAMETERS = .{};
+    const getPP: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 =
+        @ptrFromInt(vt(swap)[9]);
+    if (getPP(swap, &pp) < 0) return;
+
+    // Force D24S8 and reset
+    pp.AutoDepthStencilFormat = types.D3DFMT_D24S8;
+    pp.EnableAutoDepthStencil = 1;
+
+    // Release shaders before reset (device state lost)
+    releaseShaders();
+
+    // Call Reset through our hook (which also enforces D24S8)
+    const resetFn: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 =
+        @ptrFromInt(vt(device)[types.VT.Reset]);
+    _ = resetFn(device, &pp);
+}
+
+// =============================================================================
 // Shader creation (loaded dynamically from d3dx9_43.dll)
 // =============================================================================
 
@@ -574,59 +621,32 @@ fn restoreVtableEntry(vtable_ptr: [*]usize, idx: usize, old_fn: usize) void {
 }
 
 // =============================================================================
-// D3D9 vtable discovery via dummy device
+// D3D9 vtable discovery from game's existing device
 // =============================================================================
+// Reads the device pointer from WoW's GxDevice global instead of creating a
+// dummy device. Creating a dummy device through the d3d9 proxy on the main
+// thread corrupts the proxy's internal state and causes model rendering to
+// stutter at ~10fps. Reading the existing device avoids this entirely.
+//
+// Source: UnitXP_SP3 — vanilla1121_gxDevice() / vanilla1121_d3dDevice()
+//   gxDevice   = *(uint32_t*)0xC0ED38
+//   d3dDevice  = *(void**)(gxDevice + 0x38A8)
+
+const GX_DEVICE_PTR: usize = 0xC0ED38;
+const GX_DEVICE_D3D_OFFSET: usize = 0x38A8;
 
 fn getD3D9VTable() ?[*]usize {
-    const d3d9_mod = LoadLibraryA("d3d9.dll") orelse return null;
-    const create9_raw = GetProcAddress(d3d9_mod, "Direct3DCreate9") orelse return null;
+    const gx_device = hook.readMem(u32, GX_DEVICE_PTR);
+    if (gx_device == 0) return null;
 
-    // Direct3DCreate9(D3D_SDK_VERSION=32) → IDirect3D9*
-    const Direct3DCreate9: *const fn (u32) callconv(sc) ?*anyopaque = @ptrCast(create9_raw);
-    const pD3D = Direct3DCreate9(32) orelse return null;
+    const d3d_device = hook.readMem(u32, gx_device + GX_DEVICE_D3D_OFFSET);
+    if (d3d_device == 0) return null;
 
-    // Register dummy window class
-    const inst = GetModuleHandleA(null);
-    var wc = types.WNDCLASSEXA{};
-    wc.lpfnWndProc = &DefWindowProcA;
-    wc.hInstance = inst;
-    wc.lpszClassName = "WU_DummyD3D9";
-    _ = RegisterClassExA(&wc);
+    // First dword of the COM object is the vtable pointer
+    const vtable_addr = hook.readMem(u32, d3d_device);
+    if (vtable_addr == 0) return null;
 
-    const hwnd = CreateWindowExA(0, "WU_DummyD3D9", "D", 0, 0, 0, 100, 100, null, null, inst, null) orelse {
-        comRelease(pD3D);
-        return null;
-    };
-
-    // IDirect3D9::CreateDevice — vtable[16]
-    // (self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPP, ppDevice)
-    var pp = types.D3DPRESENT_PARAMETERS{};
-    pp.Windowed = 1;
-    pp.SwapEffect = 1; // D3DSWAPEFFECT_DISCARD
-    pp.hDeviceWindow = @intFromPtr(hwnd);
-
-    var pDevice: ?*anyopaque = null;
-    const createDev: *const fn (*anyopaque, u32, u32, *anyopaque, u32, *types.D3DPRESENT_PARAMETERS, *?*anyopaque) callconv(sc) i32 =
-        @ptrFromInt(vt(pD3D)[16]);
-    const hr = createDev(pD3D, 0, 1, hwnd, 0x20, &pp, &pDevice); // HAL, SOFTWARE_VERTEXPROCESSING
-
-    if (hr < 0 or pDevice == null) {
-        comRelease(pD3D);
-        _ = DestroyWindow(hwnd);
-        _ = UnregisterClassA("WU_DummyD3D9", inst);
-        return null;
-    }
-
-    // Read vtable — shared across all IDirect3DDevice9 instances
-    const vtable_ptr: [*]usize = @ptrFromInt(hook.readMem(u32, @intFromPtr(pDevice.?)));
-
-    // Cleanup dummy objects
-    comRelease(pDevice.?);
-    comRelease(pD3D);
-    _ = DestroyWindow(hwnd);
-    _ = UnregisterClassA("WU_DummyD3D9", inst);
-
-    return vtable_ptr;
+    return @ptrFromInt(vtable_addr);
 }
 
 // =============================================================================
