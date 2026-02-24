@@ -1,8 +1,14 @@
 //! Per-frame model tracking for the outline system.
 //!
-//! Maintains fixed-size arrays for dead-player GUIDs, raid-marked GUIDs,
-//! the current target, and the per-frame set of outline model entries.
+//! Maintains fixed-size arrays of tracked object pointers (target, raid marks,
+//! dead players) and the per-frame set of outline model entries.
 //! All state is single-threaded (main WoW thread) — no synchronisation needed.
+//!
+//! Model classification uses forward mapping: scanObjects stores object pointers
+//! from the object manager, then classifyModel (ManageRenderListNode) reads the
+//! model's back-pointers (model+0x28, model+0x3C0) and compares them against
+//! known object pointers.  No dereferencing of unknown memory — just value
+//! comparison against the object manager's validated set.
 
 const hook = @import("hook");
 const wow = @import("wow.zig");
@@ -13,23 +19,28 @@ const types = @import("types.zig");
 // Tracking limits
 // =============================================================================
 
-const MAX_DEAD_GUIDS = 64;
-const MAX_RAID_MARKS = 8;
+const MAX_TRACKED_OBJS = 128;
+const MAX_UNIT_OBJS = 512;
 const MAX_OUTLINE_MODELS = 256;
-const MAX_UNIT_MODELS = 512;
 
 // =============================================================================
-// Persistent tracking (survives across frames until scan refresh)
+// Tracked object set (populated by scanObjects from the object manager)
 // =============================================================================
+// Stores obj_ptr + category for entities we want to outline.
+// classifyModel matches model back-pointers against these — no pointer chasing.
 
-var dead_guids: [MAX_DEAD_GUIDS]u64 = .{0} ** MAX_DEAD_GUIDS;
-var dead_guid_count: usize = 0;
+const TrackedObj = struct {
+    obj_ptr: u32,
+    category: types.ModelCategory,
+    raid_mark: u8,
+};
 
-var raid_mark_guids: [MAX_RAID_MARKS]u64 = .{0} ** MAX_RAID_MARKS;
-var raid_mark_indices: [MAX_RAID_MARKS]u8 = .{0} ** MAX_RAID_MARKS;
-var raid_mark_count: usize = 0;
+var tracked_objs: [MAX_TRACKED_OBJS]TrackedObj = undefined;
+var tracked_obj_count: usize = 0;
 
-var target_guid_val: u64 = 0;
+// All unit/player object pointers for stencil occlusion detection.
+var unit_obj_ptrs: [MAX_UNIT_OBJS]u32 = .{0} ** MAX_UNIT_OBJS;
+var unit_obj_count: usize = 0;
 
 // =============================================================================
 // Per-frame outline model set (populated by ManageRenderListNode hook)
@@ -38,14 +49,8 @@ var target_guid_val: u64 = 0;
 var frame_outlines: [MAX_OUTLINE_MODELS]types.OutlineEntry = undefined;
 var frame_outline_count: usize = 0;
 
-// =============================================================================
-// Per-frame unit model cache (populated by ManageRenderListNode hook)
-// =============================================================================
-// Caches which model pointers belong to units (players/NPCs), so DrawBatchProj
-// can check unit status without raw pointer chasing through model structs.
-// This mirrors the C++ g_modelToOwner hashmap approach.
-
-var frame_unit_models: [MAX_UNIT_MODELS]u32 = .{0} ** MAX_UNIT_MODELS;
+// Per-frame unit model cache (model pointers belonging to units).
+var frame_unit_models: [MAX_UNIT_OBJS]u32 = .{0} ** MAX_UNIT_OBJS;
 var frame_unit_model_count: usize = 0;
 
 // =============================================================================
@@ -68,7 +73,7 @@ pub fn findOutlineEntry(model_ptr: u32) ?*const types.OutlineEntry {
 
 /// Check if any outline targets are tracked this frame.
 pub fn hasTargets() bool {
-    return dead_guid_count > 0 or raid_mark_count > 0 or target_guid_val != 0;
+    return tracked_obj_count > 0;
 }
 
 /// Get the outline colour for a model, or null if not tracked.
@@ -115,54 +120,47 @@ pub fn isUnitModel(model_ptr: u32) bool {
 // Per-frame model registration (called from ManageRenderListNode hook)
 // =============================================================================
 
-/// Try to classify a model and add it to the per-frame outline set.
-/// Also caches unit status for stencil occlusion in DrawBatchProj.
+/// Classify a model by comparing its back-pointers against known object pointers.
+/// Safe: only reads from the model struct (which WoW just handed us via the
+/// ManageRenderListNode __thiscall), then compares values — never dereferences
+/// the back-pointer values as pointers.
 pub fn classifyModel(model_ptr: u32) void {
     if (model_ptr == 0 or !enabled) return;
 
-    // Try to resolve the owning game object
-    const owner = wow.resolveModelOwner(model_ptr);
-    if (owner == 0) return;
+    // Read the model's back-pointers to its owning game object.
+    // Safe reads: the model struct is guaranteed valid — WoW is calling
+    // ManageRenderListNode on it right now.  We read u32 values and
+    // compare them; we never dereference these values as pointers.
+    const owner_direct = hook.readMem(u32, model_ptr + o.MODEL_OWNER_DIRECT);
+    const owner_callback = hook.readMem(u32, model_ptr + o.MODEL_OWNER_CALLBACK);
 
-    // Cache unit status for stencil occlusion (regardless of outline status)
-    const obj_type = wow.getObjectType(owner);
-    if (obj_type == .unit or obj_type == .player) {
-        addUnitModel(model_ptr);
-    }
-
-    // Already tracked as outline this frame?
-    if (frame_outline_count >= MAX_OUTLINE_MODELS) return;
-    if (findOutlineEntry(model_ptr) != null) return;
-
-    const guid = wow.getObjectGUID(owner);
-    if (guid == 0) return;
-
-    // Priority 1: current target
-    if (guid == target_guid_val and target_guid_val != 0) {
-        addEntry(model_ptr, .target, 0);
-        return;
-    }
-
-    // Priority 2: raid mark
-    for (raid_mark_guids[0..raid_mark_count], raid_mark_indices[0..raid_mark_count]) |rg, ri| {
-        if (rg == guid) {
-            addEntry(model_ptr, .raid_marked, ri);
-            return;
+    // Match against tracked outline objects (target, raid marks, dead players).
+    // Priority is implicit in insertion order: target first, then raid marks,
+    // then dead players — first match wins.
+    if (tracked_obj_count > 0 and frame_outline_count < MAX_OUTLINE_MODELS) {
+        if (findOutlineEntry(model_ptr) == null) {
+            for (tracked_objs[0..tracked_obj_count]) |tracked| {
+                if (owner_callback == tracked.obj_ptr or owner_direct == tracked.obj_ptr) {
+                    addOutlineEntry(model_ptr, tracked.category, tracked.raid_mark);
+                    break;
+                }
+            }
         }
     }
 
-    // Priority 3: dead friendly player
-    for (dead_guids[0..dead_guid_count]) |dg| {
-        if (dg == guid) {
-            addEntry(model_ptr, .dead_player, 0);
-            return;
+    // Match against all unit/player objects for stencil occlusion.
+    if (unit_obj_count > 0 and frame_unit_model_count < MAX_UNIT_OBJS) {
+        for (unit_obj_ptrs[0..unit_obj_count]) |uptr| {
+            if (owner_callback == uptr or owner_direct == uptr) {
+                addUnitModel(model_ptr);
+                break;
+            }
         }
     }
 }
 
 fn addUnitModel(model_ptr: u32) void {
-    if (frame_unit_model_count >= MAX_UNIT_MODELS) return;
-    // Deduplicate
+    if (frame_unit_model_count >= MAX_UNIT_OBJS) return;
     for (frame_unit_models[0..frame_unit_model_count]) |m| {
         if (m == model_ptr) return;
     }
@@ -170,7 +168,7 @@ fn addUnitModel(model_ptr: u32) void {
     frame_unit_model_count += 1;
 }
 
-fn addEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
+fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
     if (frame_outline_count >= MAX_OUTLINE_MODELS) return;
     frame_outlines[frame_outline_count] = .{
         .model_ptr = model_ptr,
@@ -184,16 +182,15 @@ fn addEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 // Per-frame scan (called from EndScene)
 // =============================================================================
 
-/// Scan all visible objects and rebuild tracking lists.
+/// Scan all visible objects and build the tracked object pointer sets.
+/// Stores object pointers directly so classifyModel can match model
+/// back-pointers without any pointer dereferencing.
 pub fn scanObjects() void {
-    // Clear per-frame model sets
+    // Clear per-frame sets
     frame_outline_count = 0;
     frame_unit_model_count = 0;
-
-    // Clear persistent tracking (rebuilt every frame from scan)
-    dead_guid_count = 0;
-    raid_mark_count = 0;
-    target_guid_val = 0;
+    tracked_obj_count = 0;
+    unit_obj_count = 0;
 
     if (!wow.isInGame()) return;
     const local_player = wow.getLocalPlayer();
@@ -202,8 +199,14 @@ pub fn scanObjects() void {
     // Cache raid target GUIDs
     wow.cacheRaidTargets();
 
-    // Read target GUID
-    target_guid_val = wow.getTargetGUID();
+    // Resolve target to object pointer (highest priority — added first)
+    const target_guid = wow.getTargetGUID();
+    if (target_guid != 0) {
+        const target_obj = wow.getObjectByGUID(target_guid);
+        if (target_obj != 0) {
+            addTrackedObj(target_obj, .target, 0);
+        }
+    }
 
     // Iterate all visible objects
     var obj = wow.objectFirst();
@@ -214,22 +217,25 @@ pub fn scanObjects() void {
 
         switch (obj_type) {
             .player => {
-                // Dead friendly players → through-wall outline
+                addUnitObjPtr(obj);
+
                 if (wow.isUnitDead(obj) and wow.isUnitFriendly(obj, local_player)) {
-                    addDeadGUID(guid);
+                    addTrackedObj(obj, .dead_player, 0);
                 }
-                // Raid marks
-                addRaidMarkIfMarked(guid);
+                const mark = wow.getRaidMarkForGUID(guid);
+                if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
             },
             .unit => {
-                // Raid marks on NPCs
-                addRaidMarkIfMarked(guid);
+                addUnitObjPtr(obj);
+
+                const mark = wow.getRaidMarkForGUID(guid);
+                if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
             },
             .corpse => {
-                // Non-skeleton corpses owned by players
+                // Track the corpse object itself — its model's back-pointer
+                // (model+0x28) should point back to this corpse object.
                 if (!wow.isSkeletonCorpse(obj)) {
-                    const owner_guid = wow.getCorpseOwnerGUID(obj);
-                    if (owner_guid != 0) addDeadGUID(owner_guid);
+                    addTrackedObj(obj, .dead_player, 0);
                 }
             },
             else => {},
@@ -237,24 +243,28 @@ pub fn scanObjects() void {
     }
 }
 
-fn addDeadGUID(guid: u64) void {
-    if (guid == 0 or dead_guid_count >= MAX_DEAD_GUIDS) return;
-    // Deduplicate
-    for (dead_guids[0..dead_guid_count]) |dg| {
-        if (dg == guid) return;
+fn addTrackedObj(obj_ptr: u32, cat: types.ModelCategory, mark: u8) void {
+    if (obj_ptr == 0 or tracked_obj_count >= MAX_TRACKED_OBJS) return;
+    // Deduplicate; higher priority (lower enum value) wins
+    for (tracked_objs[0..tracked_obj_count]) |*existing| {
+        if (existing.obj_ptr == obj_ptr) {
+            if (@intFromEnum(cat) < @intFromEnum(existing.category)) {
+                existing.category = cat;
+                existing.raid_mark = mark;
+            }
+            return;
+        }
     }
-    dead_guids[dead_guid_count] = guid;
-    dead_guid_count += 1;
+    tracked_objs[tracked_obj_count] = .{
+        .obj_ptr = obj_ptr,
+        .category = cat,
+        .raid_mark = mark,
+    };
+    tracked_obj_count += 1;
 }
 
-fn addRaidMarkIfMarked(guid: u64) void {
-    const mark = wow.getRaidMarkForGUID(guid);
-    if (mark == 0 or raid_mark_count >= MAX_RAID_MARKS) return;
-    // Deduplicate
-    for (raid_mark_guids[0..raid_mark_count]) |rg| {
-        if (rg == guid) return;
-    }
-    raid_mark_guids[raid_mark_count] = guid;
-    raid_mark_indices[raid_mark_count] = mark;
-    raid_mark_count += 1;
+fn addUnitObjPtr(obj_ptr: u32) void {
+    if (obj_ptr == 0 or unit_obj_count >= MAX_UNIT_OBJS) return;
+    unit_obj_ptrs[unit_obj_count] = obj_ptr;
+    unit_obj_count += 1;
 }
