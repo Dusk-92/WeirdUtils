@@ -42,6 +42,15 @@ SlashCmdList["WEIRDUTILS"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("Interact: InteractNearest() and LootAllCorpses() available")
         DEFAULT_CHAT_FRAME:AddMessage("  Bind in Key Bindings > Interact, or use /run InteractNearest(0)")
         DEFAULT_CHAT_FRAME:AddMessage("  /run LootAllCorpses() - Loot all nearby corpses")
+    elseif msg == "outline" or msg == "outline status" then
+        local on = OutlineCommand()
+        DEFAULT_CHAT_FRAME:AddMessage("Outlines: " .. (on and "|cff00ff00ON|r" or "|cffff0000OFF|r"))
+    elseif msg == "outline on" then
+        OutlineCommand("on")
+        DEFAULT_CHAT_FRAME:AddMessage("Outlines |cff00ff00enabled|r")
+    elseif msg == "outline off" then
+        OutlineCommand("off")
+        DEFAULT_CHAT_FRAME:AddMessage("Outlines |cffff0000disabled|r")
     else
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00WeirdUtils|r commands:")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu version - Show version")
@@ -50,5 +59,7 @@ SlashCmdList["WEIRDUTILS"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  /wu ss on|off - Enable/disable PNG screenshots")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu ss 0-9 - Set compression level")
         DEFAULT_CHAT_FRAME:AddMessage("  /wu interact - Interact/loot info")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wu outline - Outline status")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wu outline on|off - Enable/disable outlines")
     end
 end

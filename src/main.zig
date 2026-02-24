@@ -2,6 +2,7 @@ const std = @import("std");
 const hook = @import("hook");
 const screenshot = @import("screenshot.zig");
 const interact = @import("interact.zig");
+const outline = @import("outline/api.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -99,7 +100,7 @@ pub const lua = struct {
     }
 
     pub fn pushcclosure(L: State, func: usize, n: i32) void {
-        const f: *const fn (State, usize, i32) callconv(fc) void = @ptrFromInt(0x6F3B80);
+        const f: *const fn (State, usize, i32) callconv(fc) void = @ptrFromInt(0x6F3920);
         f(L, func, n);
     }
 
@@ -239,6 +240,7 @@ fn registerLuaFunctions() void {
     registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
     registerFunction("InteractNearest", @intFromPtr(&interact.interactNearest));
     registerFunction("LootAllCorpses", @intFromPtr(&interact.lootAllCorpses));
+    registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
 }
 
 // =============================================================================
@@ -452,6 +454,7 @@ fn engineInitDetour() callconv(sc) void {
     const orig = engine_init_hook.getTrampoline(*const fn () callconv(sc) void);
     orig();
     screenshot.installHook();
+    _ = outline.init();
 }
 
 // =============================================================================
@@ -503,6 +506,7 @@ fn install() void {
 fn uninstall() void {
     shutdown_hook.remove();
     engine_init_hook.remove();
+    outline.cleanup();
     screenshot.removeHook();
     interact.removeHooks();
     load_addons_hook.remove();
