@@ -1,0 +1,5 @@
+## Interface: 11200
+## Title: WeirdUtils
+## Notes: Utility functions provided by weirdutils DLL
+## Version: 1.0
+WeirdUtils.lua
