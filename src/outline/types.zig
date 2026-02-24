@@ -72,13 +72,6 @@ pub const OUTLINE_PIXELS_RAID_MARK: f32 = 1.5;
 pub const OUTLINE_PIXELS_DEAD_PLAYER: f32 = 2.5;
 
 // =============================================================================
-// Stencil bit definitions
-// =============================================================================
-
-pub const STENCIL_BIT_BODY: u32 = 0x01;
-pub const STENCIL_BIT_OUTLINE: u32 = 0x02;
-
-// =============================================================================
 // D3D9 Render State IDs (D3DRENDERSTATETYPE)
 // =============================================================================
 
@@ -86,6 +79,7 @@ pub const D3DRS = struct {
     pub const ZENABLE: u32 = 7;
     pub const FILLMODE: u32 = 8;
     pub const ZWRITEENABLE: u32 = 14;
+    pub const ALPHATESTENABLE: u32 = 15;
     pub const SRCBLEND: u32 = 19;
     pub const DESTBLEND: u32 = 20;
     pub const CULLMODE: u32 = 22;
@@ -115,13 +109,22 @@ pub const D3DCMP_LESSEQUAL: u32 = 4;
 pub const D3DSTENCILOP_KEEP: u32 = 1;
 pub const D3DSTENCILOP_REPLACE: u32 = 3;
 
+pub const D3DCULL_NONE: u32 = 1;
 pub const D3DCULL_CW: u32 = 2;
 pub const D3DCULL_CCW: u32 = 3;
 
 pub const D3DZB_FALSE: u32 = 0;
 pub const D3DZB_TRUE: u32 = 1;
 
+pub const D3DCLEAR_TARGET: u32 = 1;
 pub const D3DCLEAR_STENCIL: u32 = 4;
+
+// =============================================================================
+// D3D9 blend modes
+// =============================================================================
+
+pub const D3DBLEND_SRCALPHA: u32 = 5;
+pub const D3DBLEND_INVSRCALPHA: u32 = 6;
 
 // =============================================================================
 // D3D9 texture stage state IDs
@@ -138,6 +141,34 @@ pub const D3DTOP_SELECTARG1: u32 = 2;
 pub const D3DTA_TFACTOR: u32 = 3;
 
 // =============================================================================
+// D3D9 sampler state IDs (D3DSAMPLERSTATETYPE)
+// =============================================================================
+
+pub const D3DSAMP = struct {
+    pub const ADDRESSU: u32 = 1;
+    pub const ADDRESSV: u32 = 2;
+    pub const MAGFILTER: u32 = 5;
+    pub const MINFILTER: u32 = 6;
+    pub const MIPFILTER: u32 = 7;
+};
+
+pub const D3DTADDRESS_CLAMP: u32 = 3;
+
+// =============================================================================
+// D3D9 texture filter types
+// =============================================================================
+
+pub const D3DTEXF_NONE: u32 = 0;
+pub const D3DTEXF_POINT: u32 = 1;
+
+// =============================================================================
+// D3D9 surface/texture formats
+// =============================================================================
+
+pub const D3DFMT_A8R8G8B8: u32 = 21;
+pub const D3DFMT_G16R16F: u32 = 112;
+
+// =============================================================================
 // D3D9 depth/stencil formats
 // =============================================================================
 
@@ -147,29 +178,53 @@ pub const D3DFMT_D15S1: u32 = 73;
 pub const D3DFMT_D24FS8: u32 = 83;
 
 // =============================================================================
+// D3D9 pool / usage / FVF / primitive types
+// =============================================================================
+
+pub const D3DPOOL_DEFAULT: u32 = 0;
+pub const D3DUSAGE_RENDERTARGET: u32 = 1;
+
+pub const D3DFVF_XYZRHW: u32 = 0x004;
+pub const D3DFVF_TEX1: u32 = 0x100;
+
+pub const D3DPT_TRIANGLESTRIP: u32 = 5;
+
+pub const D3DSBT_ALL: u32 = 1;
+
+// =============================================================================
 // IDirect3DDevice9 vtable indices
 // =============================================================================
 
 pub const VT = struct {
     pub const Release: usize = 2;
-    pub const Reset: usize = 16;
     pub const GetSwapChain: usize = 14;
+    pub const Reset: usize = 16;
+    pub const CreateTexture: usize = 23;
     pub const CreateDepthStencilSurface: usize = 29;
+    pub const StretchRect: usize = 34;
+    pub const SetRenderTarget: usize = 37;
     pub const GetRenderTarget: usize = 38;
     pub const SetDepthStencilSurface: usize = 39;
     pub const GetDepthStencilSurface: usize = 40;
+    pub const BeginScene: usize = 41;
     pub const EndScene: usize = 42;
     pub const Clear: usize = 43;
     pub const SetViewport: usize = 47;
     pub const GetViewport: usize = 48;
+    pub const CreateStateBlock: usize = 59;
     pub const SetRenderState: usize = 57;
     pub const GetRenderState: usize = 58;
+    pub const GetTexture: usize = 64;
     pub const SetTexture: usize = 65;
     pub const SetTextureStageState: usize = 67;
+    pub const GetSamplerState: usize = 68;
+    pub const SetSamplerState: usize = 69;
     pub const DrawIndexedPrimitive: usize = 82;
+    pub const DrawPrimitiveUP: usize = 83;
     pub const CreateVertexDeclaration: usize = 86;
     pub const SetVertexDeclaration: usize = 87;
     pub const GetVertexDeclaration: usize = 88;
+    pub const SetFVF: usize = 89;
     pub const CreateVertexShader: usize = 91;
     pub const SetVertexShader: usize = 92;
     pub const GetVertexShader: usize = 93;

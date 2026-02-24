@@ -1,7 +1,7 @@
 //! WoW model rendering pipeline hooks.
 //!
 //! Hooks three WoW functions to integrate outline rendering:
-//!  - CM2SceneRenderDraw  — reorders batches so outline targets render first.
+//!  - CM2SceneRenderDraw  — captures terrain depth before M2 models draw.
 //!  - CM2Model_ManageRenderListNode — classifies models on render-list add.
 //!  - CM2Scene_DrawBatchProjected — flags the DIP hook for outline rendering.
 //!
@@ -18,6 +18,7 @@ const api = @import("api.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");
 const tracker = @import("tracker.zig");
+const d3d9_hook = @import("d3d9_hook.zig");
 const wow = @import("wow.zig");
 
 // =============================================================================
@@ -48,15 +49,8 @@ pub var rendering_outline: bool = false;
 /// Model pointer currently being rendered (for colour lookup in DIP).
 pub var current_model: u32 = 0;
 
-/// Set after outline targets render; tells DIP to apply stencil test on
-/// subsequent unit batches so outlines aren't covered by nearby players.
-pub var test_outline_stencil: bool = false;
-
-/// True while the current DrawBatchProj batch is a unit (player/NPC).
-pub var rendering_unit: bool = false;
-
 // =============================================================================
-// Batch reordering limits
+// Batch reordering
 // =============================================================================
 
 const MAX_REORDER = 1024;
@@ -67,6 +61,10 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // =============================================================================
 // __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
 // Native thiscall detour — no thunk needed.
+//
+// Reorders batch indices so outline targets draw first, when the game's
+// depth buffer contains only terrain + WMO geometry. The DIP hook renders
+// silhouettes using the game's own DS for depth testing (ZWRITEENABLE=FALSE).
 
 fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(THISCALL) void {
     // One-time: install D3D9 hooks now that the game is actively rendering.
@@ -75,54 +73,51 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         api.initD3D9Deferred();
     }
 
-    // If outlines disabled or nothing tracked, fast-path to original
-    if (!tracker.enabled or !tracker.hasTargets() or batch_count == 0 or
-        batch_data == 0 or batch_indices == 0 or batch_count > MAX_REORDER)
-    {
+    // Skip reordering if nothing to outline or too many batches
+    if (!tracker.enabled or !tracker.hasTargets() or batch_count == 0 or batch_count > MAX_REORDER) {
         callOrigRenderDraw(this, view_matrix, batch_data, batch_indices, batch_count);
         return;
     }
 
-    // Single pass: partition batches into outline-targets vs normal,
-    // keeping relative order within each group.
-    var outline_buf: [MAX_REORDER]i32 = undefined;
-    var normal_buf: [MAX_REORDER]i32 = undefined;
-    var o_count: usize = 0;
-    var n_count: usize = 0;
+    const indices: [*]i32 = @ptrFromInt(batch_indices);
 
-    const indices: [*]const i32 = @ptrFromInt(batch_indices);
+    // Pass 1: count outline targets
+    var outline_count: u32 = 0;
     for (0..batch_count) |i| {
-        const idx = indices[i];
-        const batch_ptr = batch_data +% @as(u32, @bitCast(idx)) *% 0x40;
-        const model_ptr = hook.readMem(u32, batch_ptr + 4);
-
+        const idx_u: u32 = @bitCast(indices[i]);
+        const model_ptr = hook.readMem(u32, batch_data +% idx_u *% 0x40 +% 4);
         if (model_ptr != 0 and tracker.findOutlineEntry(model_ptr) != null) {
-            outline_buf[o_count] = idx;
-            o_count += 1;
-        } else {
-            normal_buf[n_count] = idx;
-            n_count += 1;
+            outline_count += 1;
         }
     }
 
-    if (o_count == 0) {
-        // Nothing to reorder
+    if (outline_count == 0) {
         callOrigRenderDraw(this, view_matrix, batch_data, batch_indices, batch_count);
         return;
     }
 
-    // Build reordered array: outline targets FIRST (populate stencil), then normals
-    var total: usize = 0;
-    for (outline_buf[0..o_count]) |v| {
-        reordered_indices[total] = v;
-        total += 1;
-    }
-    for (normal_buf[0..n_count]) |v| {
-        reordered_indices[total] = v;
-        total += 1;
+    // Pass 2: partition — outline targets first, then everything else.
+    var outline_pos: u32 = 0;
+    var normal_pos: u32 = outline_count;
+    for (0..batch_count) |i| {
+        const batch_idx = indices[i];
+        const idx_u: u32 = @bitCast(batch_idx);
+        const model_ptr = hook.readMem(u32, batch_data +% idx_u *% 0x40 +% 4);
+        if (model_ptr != 0 and tracker.findOutlineEntry(model_ptr) != null) {
+            reordered_indices[outline_pos] = batch_idx;
+            outline_pos += 1;
+        } else {
+            reordered_indices[normal_pos] = batch_idx;
+            normal_pos += 1;
+        }
     }
 
-    callOrigRenderDraw(this, view_matrix, batch_data, @intFromPtr(&reordered_indices), @intCast(total));
+    // Write reordered indices back to game's array in-place
+    for (0..batch_count) |i| {
+        indices[i] = reordered_indices[i];
+    }
+
+    callOrigRenderDraw(this, view_matrix, batch_data, batch_indices, batch_count);
 }
 
 fn callOrigRenderDraw(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) void {
@@ -216,22 +211,9 @@ fn drawBatchProjImpl(ctx: u32, _edx: u32) callconv(.c) void {
 
         rendering_outline = false;
         current_model = 0;
-
-        // After outline targets render, enable stencil test for subsequent units
-        test_outline_stencil = true;
     } else {
-        // Normal rendering.  Determine if this is a unit for stencil testing.
-        rendering_outline = false;
-        current_model = 0;
-        rendering_unit = false;
-
-        if (model_ptr != 0) {
-            rendering_unit = tracker.isUnitModel(model_ptr);
-        }
-
+        // Normal rendering — no special handling needed
         callOrigDrawBatch(ctx);
-
-        rendering_unit = false;
     }
 }
 

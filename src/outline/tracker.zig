@@ -10,6 +10,7 @@
 //! known object pointers.  No dereferencing of unknown memory — just value
 //! comparison against the object manager's validated set.
 
+const std = @import("std");
 const hook = @import("hook");
 const wow = @import("wow.zig");
 const o = @import("offsets.zig");
@@ -20,7 +21,6 @@ const types = @import("types.zig");
 // =============================================================================
 
 const MAX_TRACKED_OBJS = 128;
-const MAX_UNIT_OBJS = 512;
 const MAX_OUTLINE_MODELS = 256;
 
 // =============================================================================
@@ -38,20 +38,12 @@ const TrackedObj = struct {
 var tracked_objs: [MAX_TRACKED_OBJS]TrackedObj = undefined;
 pub var tracked_obj_count: usize = 0;
 
-// All unit/player object pointers for stencil occlusion detection.
-var unit_obj_ptrs: [MAX_UNIT_OBJS]u32 = .{0} ** MAX_UNIT_OBJS;
-var unit_obj_count: usize = 0;
-
 // =============================================================================
 // Per-frame outline model set (populated by ManageRenderListNode hook)
 // =============================================================================
 
 var frame_outlines: [MAX_OUTLINE_MODELS]types.OutlineEntry = undefined;
 var frame_outline_count: usize = 0;
-
-// Per-frame unit model cache (model pointers belonging to units).
-var frame_unit_models: [MAX_UNIT_OBJS]u32 = .{0} ** MAX_UNIT_OBJS;
-var frame_unit_model_count: usize = 0;
 
 // =============================================================================
 // Global enable flag
@@ -106,16 +98,6 @@ pub fn getOutlinePixels(cat: types.ModelCategory) f32 {
     };
 }
 
-/// Check if a model was classified as a unit (player/NPC) this frame.
-/// Used by DrawBatchProj to decide stencil testing without raw pointer chasing.
-pub fn isUnitModel(model_ptr: u32) bool {
-    if (model_ptr == 0) return false;
-    for (frame_unit_models[0..frame_unit_model_count]) |m| {
-        if (m == model_ptr) return true;
-    }
-    return false;
-}
-
 // =============================================================================
 // Per-frame model registration (called from ManageRenderListNode hook)
 // =============================================================================
@@ -128,15 +110,10 @@ pub fn classifyModel(model_ptr: u32) void {
     if (model_ptr == 0 or !enabled) return;
 
     // Read the model's back-pointers to its owning game object.
-    // Safe reads: the model struct is guaranteed valid — WoW is calling
-    // ManageRenderListNode on it right now.  We read u32 values and
-    // compare them; we never dereference these values as pointers.
     const owner_direct = hook.readMem(u32, model_ptr + o.MODEL_OWNER_DIRECT);
     const owner_callback = hook.readMem(u32, model_ptr + o.MODEL_OWNER_CALLBACK);
 
     // Match against tracked outline objects (target, raid marks, dead players).
-    // Priority is implicit in insertion order: target first, then raid marks,
-    // then dead players — first match wins.
     if (tracked_obj_count > 0 and frame_outline_count < MAX_OUTLINE_MODELS) {
         if (findOutlineEntry(model_ptr) == null) {
             for (tracked_objs[0..tracked_obj_count]) |tracked| {
@@ -147,25 +124,6 @@ pub fn classifyModel(model_ptr: u32) void {
             }
         }
     }
-
-    // Match against all unit/player objects for stencil occlusion.
-    if (unit_obj_count > 0 and frame_unit_model_count < MAX_UNIT_OBJS) {
-        for (unit_obj_ptrs[0..unit_obj_count]) |uptr| {
-            if (owner_callback == uptr or owner_direct == uptr) {
-                addUnitModel(model_ptr);
-                break;
-            }
-        }
-    }
-}
-
-fn addUnitModel(model_ptr: u32) void {
-    if (frame_unit_model_count >= MAX_UNIT_OBJS) return;
-    for (frame_unit_models[0..frame_unit_model_count]) |m| {
-        if (m == model_ptr) return;
-    }
-    frame_unit_models[frame_unit_model_count] = model_ptr;
-    frame_unit_model_count += 1;
 }
 
 fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
@@ -176,6 +134,14 @@ fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
         .raid_mark = mark,
     };
     frame_outline_count += 1;
+
+    // Diagnostic: count classified models by category
+    switch (cat) {
+        .target => diag.classify_target += 1,
+        .raid_marked => diag.classify_raid_mark += 1,
+        .dead_player => diag.classify_dead_player += 1,
+        .none => {},
+    }
 }
 
 // =============================================================================
@@ -188,9 +154,8 @@ fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 pub fn scanObjects() void {
     // Clear per-frame sets
     frame_outline_count = 0;
-    frame_unit_model_count = 0;
     tracked_obj_count = 0;
-    unit_obj_count = 0;
+    resetDiag();
 
     if (!wow.isInGame()) return;
     const local_player = wow.getLocalPlayer();
@@ -217,8 +182,6 @@ pub fn scanObjects() void {
 
         switch (obj_type) {
             .player => {
-                addUnitObjPtr(obj);
-
                 if (wow.isUnitDead(obj) and wow.isUnitFriendly(obj, local_player)) {
                     addTrackedObj(obj, .dead_player, 0);
                 }
@@ -226,14 +189,10 @@ pub fn scanObjects() void {
                 if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
             },
             .unit => {
-                addUnitObjPtr(obj);
-
                 const mark = wow.getRaidMarkForGUID(guid);
                 if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
             },
             .corpse => {
-                // Track the corpse object itself — its model's back-pointer
-                // (model+0x28) should point back to this corpse object.
                 if (!wow.isSkeletonCorpse(obj)) {
                     addTrackedObj(obj, .dead_player, 0);
                 }
@@ -261,10 +220,68 @@ fn addTrackedObj(obj_ptr: u32, cat: types.ModelCategory, mark: u8) void {
         .raid_mark = mark,
     };
     tracked_obj_count += 1;
+
+    // Diagnostic: count tracked objects by category
+    switch (cat) {
+        .target => diag.scan_targets += 1,
+        .raid_marked => diag.scan_raid_marks += 1,
+        .dead_player => diag.scan_dead_players += 1,
+        .none => {},
+    }
 }
 
-fn addUnitObjPtr(obj_ptr: u32) void {
-    if (obj_ptr == 0 or unit_obj_count >= MAX_UNIT_OBJS) return;
-    unit_obj_ptrs[unit_obj_count] = obj_ptr;
-    unit_obj_count += 1;
+// =============================================================================
+// Diagnostics (per-frame counters, logged from EndScene)
+// =============================================================================
+
+pub const Diag = struct {
+    // scanObjects counts (how many objects were added to tracked_objs)
+    scan_targets: u16 = 0,
+    scan_raid_marks: u16 = 0,
+    scan_dead_players: u16 = 0,
+    // classifyModel counts (how many models matched tracked objects)
+    classify_target: u16 = 0,
+    classify_raid_mark: u16 = 0,
+    classify_dead_player: u16 = 0,
+    // Number of frames logged so far
+    log_count: u16 = 0,
+};
+
+pub var diag: Diag = .{};
+
+const WINAPI = std.builtin.CallingConvention.winapi;
+extern "kernel32" fn OutputDebugStringA(lpOutputString: [*:0]const u8) callconv(WINAPI) void;
+
+/// Log diagnostic counters via OutputDebugStringA. Called from EndScene.
+/// Only logs when outline activity is detected, limited to first 20 events.
+pub fn logDiagnostics(cached_draw_count: u32) void {
+    const has_activity = diag.scan_targets > 0 or diag.scan_raid_marks > 0 or
+        diag.scan_dead_players > 0 or diag.classify_target > 0 or
+        diag.classify_raid_mark > 0 or diag.classify_dead_player > 0 or
+        cached_draw_count > 0;
+
+    if (!has_activity or diag.log_count >= 20) return;
+    diag.log_count += 1;
+
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "[Outline] scan t={d} r={d} d={d} | classify t={d} r={d} d={d} | cached={d}\x00", .{
+        diag.scan_targets,
+        diag.scan_raid_marks,
+        diag.scan_dead_players,
+        diag.classify_target,
+        diag.classify_raid_mark,
+        diag.classify_dead_player,
+        cached_draw_count,
+    }) catch return;
+    OutputDebugStringA(@ptrCast(msg.ptr));
+}
+
+/// Reset per-frame diagnostic counters. Called at start of scanObjects.
+fn resetDiag() void {
+    diag.scan_targets = 0;
+    diag.scan_raid_marks = 0;
+    diag.scan_dead_players = 0;
+    diag.classify_target = 0;
+    diag.classify_raid_mark = 0;
+    diag.classify_dead_player = 0;
 }
