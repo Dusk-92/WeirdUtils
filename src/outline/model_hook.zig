@@ -1,7 +1,7 @@
 //! WoW model rendering pipeline hooks.
 //!
 //! Hooks three WoW functions to integrate outline rendering:
-//!  - CM2SceneRenderDraw  — captures terrain depth before M2 models draw.
+//!  - CM2SceneRenderDraw  — reorders batches so outline targets render last.
 //!  - CM2Model_ManageRenderListNode — classifies models on render-list add.
 //!  - CM2Scene_DrawBatchProjected — flags the DIP hook for outline rendering.
 //!
@@ -62,9 +62,11 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
 // Native thiscall detour — no thunk needed.
 //
-// Reorders batch indices so outline targets draw first, when the game's
-// depth buffer contains only terrain + WMO geometry. The DIP hook renders
-// silhouettes using the game's own DS for depth testing (ZWRITEENABLE=FALSE).
+// Reorders batch indices so outline targets draw LAST. Non-outline models
+// (game objects, other characters, NPCs) render first, filling the depth
+// buffer with full scene geometry. When outline targets then render, the
+// DIP hook writes stencil marks against this complete depth buffer, so
+// outlines are properly occluded by all scene objects (not just terrain/WMOs).
 
 fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(THISCALL) void {
     // One-time: install D3D9 hooks now that the game is actively rendering.
@@ -96,9 +98,13 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         return;
     }
 
-    // Pass 2: partition — outline targets first, then everything else.
-    var outline_pos: u32 = 0;
-    var normal_pos: u32 = outline_count;
+    // Pass 2: partition — non-outline models first, outline targets last.
+    // Rendering non-outline models first fills the depth buffer with game
+    // objects, other characters, etc., so outline target stencil marks
+    // respect full scene occlusion (not just terrain+WMO).
+    const normal_count = batch_count - outline_count;
+    var normal_pos: u32 = 0;
+    var outline_pos: u32 = normal_count;
     for (0..batch_count) |i| {
         const batch_idx = indices[i];
         const idx_u: u32 = @bitCast(batch_idx);

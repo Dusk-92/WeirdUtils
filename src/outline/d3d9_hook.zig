@@ -8,10 +8,11 @@
 //!   marks where models pass the terrain depth test (stencil=1 = visible).
 //! - **Reset**: forces D24S8 depth/stencil format, releases resources.
 //!
-//! Batch reordering in model_hook.zig ensures outline targets render first in
-//! CM2SceneRenderDraw, when only terrain+WMO depth exists. The DIP hook writes
-//! stencil marks using the game's own depth buffer; EndScene replay uses these
-//! marks to gate silhouette drawing (terrain/WMO occlusion without DS copy).
+//! Batch reordering in model_hook.zig ensures outline targets render LAST in
+//! CM2SceneRenderDraw, after all other M2 models (game objects, characters,
+//! NPCs) have filled the depth buffer. The DIP hook writes stencil marks
+//! using the game's own depth buffer; EndScene replay uses these marks to
+//! gate silhouette drawing (full scene occlusion including game objects).
 
 const std = @import("std");
 const hook = @import("hook");
@@ -796,10 +797,11 @@ fn hkDIP(
             frame_has_outlines = true;
         }
 
-        // Mark terrain-visible pixels in stencil for this outline target.
-        // At this point (outline targets draw first due to batch reordering),
-        // the game's DS has only terrain+WMO depth. Pixels that pass the depth
-        // test get stencil=1; pixels behind terrain fail and keep stencil=0.
+        // Mark visible pixels in stencil for this outline target.
+        // At this point (outline targets draw last due to batch reordering),
+        // the game's DS has terrain+WMO+all non-outline M2 model depth.
+        // Pixels that pass the depth test get stencil=1; pixels behind any
+        // scene geometry fail and keep stencil=0.
         // EndScene uses these marks to gate silhouette rendering.
         const s_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
         const s_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
