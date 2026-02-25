@@ -4,12 +4,14 @@
 //! and Reset via the game's existing device (shared vtable across all devices).
 //!
 //! - **EndScene**: per-frame object scan, JFA pipeline for outline compositing.
-//! - **DIP**: redirects outline-target draws to silhouette render target.
+//! - **DIP**: caches outline-target draws for EndScene replay; writes stencil
+//!   marks where models pass the terrain depth test (stencil=1 = visible).
 //! - **Reset**: forces D24S8 depth/stencil format, releases resources.
 //!
 //! Batch reordering in model_hook.zig ensures outline targets render first in
-//! CM2SceneRenderDraw, when only terrain+WMO depth exists. The DIP hook uses
-//! the game's own depth buffer (no copy needed) for silhouette Z-testing.
+//! CM2SceneRenderDraw, when only terrain+WMO depth exists. The DIP hook writes
+//! stencil marks using the game's own depth buffer; EndScene replay uses these
+//! marks to gate silhouette drawing (terrain/WMO occlusion without DS copy).
 
 const std = @import("std");
 const hook = @import("hook");
@@ -98,6 +100,7 @@ var resource_height: u32 = 0;
 // =============================================================================
 
 var frame_has_outlines: bool = false;
+var silhouette_cleared: bool = false;
 
 // =============================================================================
 // Cached draw calls for EndScene replay (avoids double-DIP in hook)
@@ -385,6 +388,14 @@ fn argbToFloat4(argb: u32) [4]f32 {
 }
 
 // =============================================================================
+// Terrain depth snapshot
+// =============================================================================
+
+// (Terrain DS snapshot removed — DXVK does not support StretchRect for
+//  depth-stencil surfaces. Terrain occlusion is achieved via stencil marks
+//  written during the DIP hook, when the game's DS already has terrain depth.)
+
+// =============================================================================
 // Resource management
 // =============================================================================
 
@@ -422,6 +433,7 @@ fn ensureResources(device: *anyopaque) void {
         &rt_jfa_b_tex) < 0) { releaseResources(); return; }
     rt_jfa_b_surf = textureGetSurfaceLevel(rt_jfa_b_tex.?);
     if (rt_jfa_b_surf == null) { releaseResources(); return; }
+
 }
 
 fn releaseResources() void {
@@ -784,8 +796,38 @@ fn hkDIP(
             frame_has_outlines = true;
         }
 
-        // Single normal DIP call — no state modification whatsoever
-        return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
+        // Mark terrain-visible pixels in stencil for this outline target.
+        // At this point (outline targets draw first due to batch reordering),
+        // the game's DS has only terrain+WMO depth. Pixels that pass the depth
+        // test get stencil=1; pixels behind terrain fail and keep stencil=0.
+        // EndScene uses these marks to gate silhouette rendering.
+        const s_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
+        const s_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
+        const s_ref = deviceGetRS(device, types.D3DRS.STENCILREF);
+        const s_wmask = deviceGetRS(device, types.D3DRS.STENCILWRITEMASK);
+        const s_pass = deviceGetRS(device, types.D3DRS.STENCILPASS);
+        const s_fail = deviceGetRS(device, types.D3DRS.STENCILFAIL);
+        const s_zfail = deviceGetRS(device, types.D3DRS.STENCILZFAIL);
+
+        deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
+        deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_ALWAYS);
+        deviceSetRS(device, types.D3DRS.STENCILREF, 1);
+        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0xFF);
+        deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_REPLACE);
+        deviceSetRS(device, types.D3DRS.STENCILFAIL, types.D3DSTENCILOP_KEEP);
+        deviceSetRS(device, types.D3DRS.STENCILZFAIL, types.D3DSTENCILOP_KEEP);
+
+        const result = origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
+
+        // Restore stencil state to match WoW's GxDevice cache
+        deviceSetRS(device, types.D3DRS.STENCILENABLE, s_enable);
+        deviceSetRS(device, types.D3DRS.STENCILFUNC, s_func);
+        deviceSetRS(device, types.D3DRS.STENCILREF, s_ref);
+        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, s_wmask);
+        deviceSetRS(device, types.D3DRS.STENCILPASS, s_pass);
+        deviceSetRS(device, types.D3DRS.STENCILFAIL, s_fail);
+        deviceSetRS(device, types.D3DRS.STENCILZFAIL, s_zfail);
+        return result;
     }
 
     // ---- Normal path ----
@@ -853,6 +895,14 @@ fn runJfaPipeline(device: *anyopaque) void {
     const saved_atest = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
     const saved_cwrite = deviceGetRS(device, types.D3DRS.COLORWRITEENABLE);
 
+    // Stencil states (Phase 1 reads stencil marks written by DIP hook)
+    const saved_stencil_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
+    const saved_stencil_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
+    const saved_stencil_ref = deviceGetRS(device, types.D3DRS.STENCILREF);
+    const saved_stencil_mask = deviceGetRS(device, types.D3DRS.STENCILMASK);
+    const saved_stencil_wmask = deviceGetRS(device, types.D3DRS.STENCILWRITEMASK);
+    const saved_stencil_pass = deviceGetRS(device, types.D3DRS.STENCILPASS);
+
     // Sampler states (samplers 0 and 1, 5 states each)
     const SampState = struct { addru: u32, addrv: u32, mag: u32, min: u32, mip: u32 };
     const readSamp = struct {
@@ -884,13 +934,16 @@ fn runJfaPipeline(device: *anyopaque) void {
             @ptrFromInt(orig_dip);
 
         deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
-
-        // Unbind DS — depth testing is disabled for all silhouette replay draws
-        deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
         clearRenderTarget(device, 0x00000000);
 
-        deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
+        // Keep game's DS bound — it has stencil marks from DIP hook where
+        // outline targets passed the terrain depth test (stencil=1 = visible).
+        // Don't write depth or stencil during replay.
         deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
+        deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
+
+        deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
         deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
 
@@ -907,19 +960,30 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // Disable depth test for ALL categories during EndScene replay.
-            // By EndScene the depth buffer has the full scene (terrain + all models),
-            // so LESSEQUAL depth testing creates holes in the silhouette wherever
-            // other models overlap the target — breaking the JFA outline.
-            // Terrain occlusion for targets can be added later via a depth snapshot
-            // captured during the render pass when only terrain depth exists.
-            deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+            // Per-category stencil logic:
+            // - dead_player: no stencil test (visible through walls for corpse finding)
+            // - target/raid_marked: stencil test gates on terrain visibility
+            if (draw.category == .dead_player) {
+                deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+            } else {
+                deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
+                deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_EQUAL);
+                deviceSetRS(device, types.D3DRS.STENCILREF, 1);
+                deviceSetRS(device, types.D3DRS.STENCILMASK, 0xFF);
+                deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_KEEP);
+            }
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx,
                 draw.num_verts, draw.start_idx, draw.prim_count);
         }
 
         clearCachedDraws();
+
+        // Clear stencil marks to avoid affecting next frame's rendering
+        deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+        const clearFn: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(sc) i32 =
+            @ptrFromInt(vt(device)[types.VT.Clear]);
+        _ = clearFn(device, 0, null, types.D3DCLEAR_STENCIL, 0, 1.0, 0);
     }
 
     // =====================================================================
@@ -999,6 +1063,14 @@ fn runJfaPipeline(device: *anyopaque) void {
     deviceSetRS(device, types.D3DRS.CULLMODE, saved_cull);
     deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, saved_atest);
     deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, saved_cwrite);
+
+    // Stencil states
+    deviceSetRS(device, types.D3DRS.STENCILENABLE, saved_stencil_enable);
+    deviceSetRS(device, types.D3DRS.STENCILFUNC, saved_stencil_func);
+    deviceSetRS(device, types.D3DRS.STENCILREF, saved_stencil_ref);
+    deviceSetRS(device, types.D3DRS.STENCILMASK, saved_stencil_mask);
+    deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, saved_stencil_wmask);
+    deviceSetRS(device, types.D3DRS.STENCILPASS, saved_stencil_pass);
 
     // Sampler states
     const writeSamp = struct {
@@ -1119,8 +1191,8 @@ fn restoreVtableEntry(vtable_ptr: [*]usize, idx: usize, old_fn: usize) void {
 // D3D9 device / vtable discovery from game's existing device
 // =============================================================================
 
-const GX_DEVICE_PTR: usize = 0xC0ED38;
-const GX_DEVICE_D3D_OFFSET: usize = 0x38A8;
+pub const GX_DEVICE_PTR: usize = 0xC0ED38;
+pub const GX_DEVICE_D3D_OFFSET: usize = 0x38A8;
 
 fn getD3D9VTable() ?[*]usize {
     const gx_device = hook.readMem(u32, GX_DEVICE_PTR);
