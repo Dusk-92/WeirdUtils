@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: Interact
+## Notes: Nearest NPC/object interaction and bulk looting
+## Version: 1.0
+## Dependencies: WeirdUtils
+
+Interact.lua
+Bindings.xml

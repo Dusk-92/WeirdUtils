@@ -1,5 +1,5 @@
 <Bindings>
-    <Binding name="Interact" header="WEIRDUTILS">
+    <Binding name="Interact" header="INTERACT">
         InteractNearest(0)
     </Binding>
     <Binding name="Interact (auto-loot)">

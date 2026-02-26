@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: Outline
+## Notes: Screen-space outline rendering for targets, raid marks, and corpses
+## Version: 1.0
+## Dependencies: WeirdUtils
+
+Outline.lua
+Bindings.xml

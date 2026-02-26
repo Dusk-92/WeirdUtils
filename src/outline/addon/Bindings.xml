@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="Toggle Outlines" header="OUTLINE">
+        local on = OutlineCommand(); OutlineCommand(on and "off" or "on")
+    </Binding>
+</Bindings>

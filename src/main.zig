@@ -1,8 +1,17 @@
 const std = @import("std");
 const hook = @import("hook");
-const screenshot = @import("screenshot.zig");
-const interact = @import("interact.zig");
-const outline = @import("outline/api.zig");
+
+// Build options for conditional module compilation
+const build_opts = struct {
+    const screenshot = @import("build_options").enable_screenshot;
+    const interact = @import("build_options").enable_interact;
+    const outline = @import("build_options").enable_outline;
+};
+
+// Conditional module imports
+const screenshot = if (build_opts.screenshot) @import("screenshot/screenshot.zig") else struct {};
+const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
+const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -14,8 +23,6 @@ const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 var protection_hook: hook.Hook = .{};
 
-/// Empty detour — replaces the Lua callback address validator at 0x42a320.
-/// Prologue: 55 8B EC 83 EC 40 = 6 bytes, no fixups
 fn luaProtectionDetour() callconv(.c) void {}
 
 // =============================================================================
@@ -145,7 +152,6 @@ pub const lua = struct {
     }
 
     pub fn luaError(L: State, msg: [*:0]const u8) void {
-        // lua_error is __cdecl(L, msg) at 0x6F4940
         asm volatile (
             \\push %[msg]
             \\push %[L]
@@ -179,14 +185,10 @@ pub const lua = struct {
 // Game function wrappers
 // =============================================================================
 
-/// FrameScript::Register(name_ECX, func_EDX) at 0x704120
 fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
     hook.fastcall(void, 0x704120, @intFromPtr(name), func_addr);
 }
 
-/// M2_AllocateModelBuffer(size, source_file, line, flags) at 0x6462E0
-/// __stdcall, 4 params, ret 0x10 — allocates from WoW's internal memory pool.
-/// Returned buffer can be freed by game code via FreeFileResourceMemory.
 fn allocateGameBuffer(size: u32) ?[*]u8 {
     return asm volatile (
         \\push $0
@@ -205,13 +207,6 @@ fn allocateGameBuffer(size: u32) ?[*]u8 {
 // =============================================================================
 // Custom C functions (callable from Lua)
 // =============================================================================
-//
-// FIX: Cannot use the lua.* wrappers (e.g. lua.pushstring) from inside Lua
-// C callbacks. The wrappers call through typed callconv(fc) function pointers,
-// but Zig 0.15's x86 codegen is broken for callconv(fc) — it generates
-// `ret 0x4` instead of plain `ret` for fastcall calls with ≤2 register params,
-// corrupting the stack. Work around by using hook.fastcall / raw inline asm
-// which bypasses Zig's calling-convention codegen entirely.
 
 fn weirdUtilsTest(L: lua.State) callconv(.c) u32 {
     hook.fastcall(void, 0x6F3890, @intFromPtr(L), @intFromPtr(@as([*:0]const u8, "WeirdUtils is working!")));
@@ -219,8 +214,6 @@ fn weirdUtilsTest(L: lua.State) callconv(.c) u32 {
 }
 
 fn weirdUtilsVersion(L: lua.State) callconv(.c) u32 {
-    // lua_pushnumber is __fastcall(L_ECX, f64_stack) — f64 skips EDX and goes
-    // on the stack. Callee cleans with ret 8.
     asm volatile (
         \\sub $8, %%esp
         \\fld1
@@ -235,66 +228,109 @@ fn weirdUtilsVersion(L: lua.State) callconv(.c) u32 {
 }
 
 fn registerLuaFunctions() void {
+    // Core functions (always registered)
     registerFunction("WeirdUtilsTest", @intFromPtr(&weirdUtilsTest));
     registerFunction("WeirdUtilsVersion", @intFromPtr(&weirdUtilsVersion));
-    registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
-    registerFunction("InteractNearest", @intFromPtr(&interact.interactNearest));
-    registerFunction("LootAllCorpses", @intFromPtr(&interact.lootAllCorpses));
-    registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
+
+    // Conditional module functions
+    if (build_opts.screenshot) {
+        registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
+    }
+    if (build_opts.interact) {
+        registerFunction("InteractNearest", @intFromPtr(&interact.interactNearest));
+        registerFunction("LootAllCorpses", @intFromPtr(&interact.lootAllCorpses));
+    }
+    if (build_opts.outline) {
+        registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
+    }
 }
 
 // =============================================================================
 // Embedded addon files
 // =============================================================================
 
-const addon_prefix = "Interface\\AddOns\\WeirdUtils\\";
+const AddonPrefix = struct {
+    prefix: []const u8,
+    files: []const FileEntry,
+};
 
 const FileEntry = struct {
     name: []const u8,
     data: []const u8,
 };
 
-const embedded_files = [_]FileEntry{
-    .{ .name = "WeirdUtils.toc", .data = @embedFile("addon/WeirdUtils.toc") },
-    .{ .name = "Bindings.xml", .data = @embedFile("addon/Bindings.xml") },
-    .{ .name = "WeirdUtils.lua", .data = @embedFile("addon/WeirdUtils.lua") },
+// Core addon (always included)
+const core_prefix = "Interface\\AddOns\\WeirdUtils\\";
+const core_files = [_]FileEntry{
+    .{ .name = "WeirdUtils.toc", .data = @embedFile("core/addon/WeirdUtils.toc") },
+    .{ .name = "WeirdUtils.lua", .data = @embedFile("core/addon/WeirdUtils.lua") },
+};
+
+// Conditional module addons
+const screenshot_files = if (build_opts.screenshot) [_]FileEntry{
+    .{ .name = "Screenshot.toc", .data = @embedFile("screenshot/addon/Screenshot.toc") },
+    .{ .name = "Screenshot.lua", .data = @embedFile("screenshot/addon/Screenshot.lua") },
+    .{ .name = "Bindings.xml", .data = @embedFile("screenshot/addon/Bindings.xml") },
+} else [_]FileEntry{};
+
+const interact_files = if (build_opts.interact) [_]FileEntry{
+    .{ .name = "Interact.toc", .data = @embedFile("interact/addon/Interact.toc") },
+    .{ .name = "Interact.lua", .data = @embedFile("interact/addon/Interact.lua") },
+    .{ .name = "Bindings.xml", .data = @embedFile("interact/addon/Bindings.xml") },
+} else [_]FileEntry{};
+
+const outline_files = if (build_opts.outline) [_]FileEntry{
+    .{ .name = "Outline.toc", .data = @embedFile("outline/addon/Outline.toc") },
+    .{ .name = "Outline.lua", .data = @embedFile("outline/addon/Outline.lua") },
+    .{ .name = "Bindings.xml", .data = @embedFile("outline/addon/Bindings.xml") },
+} else [_]FileEntry{};
+
+// All addon prefixes to check
+const addon_prefixes = [_]AddonPrefix{
+    .{ .prefix = core_prefix, .files = &core_files },
+    .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
+    .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
+    .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
 };
 
 fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
     const path_span = std.mem.span(path);
-    if (path_span.len <= addon_prefix.len) return null;
-    // Case-insensitive prefix check — WoW paths use mixed case
-    for (path_span[0..addon_prefix.len], addon_prefix) |a, b| {
-        const la = if (a >= 'A' and a <= 'Z') a + 32 else a;
-        const lb = if (b >= 'A' and b <= 'Z') b + 32 else b;
-        if (la != lb) return null;
-    }
-    const relative = path_span[addon_prefix.len..];
-    for (&embedded_files) |*entry| {
-        if (relative.len != entry.name.len) continue;
-        var match = true;
-        for (relative, entry.name) |a, b| {
+
+    for (&addon_prefixes) |*addon| {
+        if (path_span.len <= addon.prefix.len) continue;
+
+        // Case-insensitive prefix check
+        var prefix_match = true;
+        for (path_span[0..addon.prefix.len], addon.prefix) |a, b| {
             const la = if (a >= 'A' and a <= 'Z') a + 32 else a;
             const lb = if (b >= 'A' and b <= 'Z') b + 32 else b;
             if (la != lb) {
-                match = false;
+                prefix_match = false;
                 break;
             }
         }
-        if (match) return entry;
+        if (!prefix_match) continue;
+
+        const relative = path_span[addon.prefix.len..];
+        for (addon.files) |*entry| {
+            if (relative.len != entry.name.len) continue;
+            var match = true;
+            for (relative, entry.name) |a, b| {
+                const la = if (a >= 'A' and a <= 'Z') a + 32 else a;
+                const lb = if (b >= 'A' and b <= 'Z') b + 32 else b;
+                if (la != lb) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return entry;
+        }
     }
     return null;
 }
 
 // =============================================================================
 // Hook: LoadFileWithTextureResourceFallback (0x648620)
-// __stdcall(unk, path, buf_out, size_out, extra_alloc, flags, async) → ret 0x1C
-// Prologue: 55 8B EC 8B 4D 1C = 6 bytes, no fixups
-//
-// The central file I/O function — all .toc, .lua, .xml, and texture file reads
-// go through here. We intercept reads for our addon prefix and serve from
-// DLL-embedded memory, allocated with the game's own allocator so the game
-// can free the buffer normally.
 // =============================================================================
 
 var file_hook: hook.Hook = .{};
@@ -315,7 +351,6 @@ fn loadFileDetour(
 
         @memcpy(buf[0..entry.data.len], entry.data);
 
-        // Zero extra bytes (null terminator for text files when extra_alloc=1)
         if (extra_alloc > 0) {
             @memset(buf[entry.data.len..][0..extra_alloc], 0);
         }
@@ -325,7 +360,6 @@ fn loadFileDetour(
         return 1;
     }
 
-    // Not our file — forward to original
     const orig = file_hook.getTrampoline(
         *const fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(sc) u32,
     );
@@ -334,7 +368,6 @@ fn loadFileDetour(
 
 // =============================================================================
 // Hook: LoadScriptFunctions (0x490250)
-// Prologue: 56 E8 FA 60 27 00 = 6 bytes, fixup at offset 1
 // =============================================================================
 
 var lsf_hook: hook.Hook = .{};
@@ -347,10 +380,6 @@ fn loadScriptFunctionsDetour() callconv(sc) void {
 
 // =============================================================================
 // Hook: LoadAddonsRecursively (0x51F600)
-// __fastcall(error_handler_ECX) — prologue: 53 8B 1D ... = 7 bytes, no fixups
-// After all real addons load, we call loadFileListWithIncludes with our .toc
-// path, triggering the full addon loading pipeline (toc parse → lua exec →
-// xml parse) with file reads served from embedded memory via the file hook.
 // =============================================================================
 
 var load_addons_hook: hook.Hook = .{};
@@ -358,32 +387,54 @@ var load_addons_hook: hook.Hook = .{};
 fn loadAddonsDetour(error_handler: u32, _edx: u32) callconv(.c) void {
     _ = _edx;
 
-    // Call original — loads all player addons
     callOrigLoadAddons(error_handler);
 
-    // Trigger our addon through the real loading pipeline.
-    // loadFileListWithIncludes will read our .toc via LoadFileWithTextureResourceFallback
-    // (intercepted by file_hook), parse it, and call processIncludeFile for each entry,
-    // which loads .lua files through the same hooked path.
-    //
-    // FIX: loadFileListWithIncludes unconditionally calls MD5_Update on the md5ctx
-    // param (EDX). Passing NULL here caused the original crash-on-load — an access
-    // violation inside MD5_Update. Allocate a zeroed 88-byte context on the stack.
     var md5ctx = std.mem.zeroes([88]u8);
+
+    // Always load core addon
     callLoadFileListWithIncludes(
         "Interface\\AddOns\\WeirdUtils\\WeirdUtils.toc",
         &md5ctx,
         error_handler,
     );
 
-    // Load bindings — LoadAddonRecursive normally calls LoadUIBindingsFromFile
-    // explicitly for each addon's Bindings.xml (separate from .toc processing).
-    // Since our addon isn't in the game's addon list, we must call it ourselves.
-    callLoadUIBindingsFromFile(
-        "Interface\\AddOns\\WeirdUtils\\Bindings.xml",
-        &md5ctx,
-        error_handler,
-    );
+    // Conditionally load module addons
+    if (build_opts.screenshot) {
+        callLoadFileListWithIncludes(
+            "Interface\\AddOns\\Screenshot\\Screenshot.toc",
+            &md5ctx,
+            error_handler,
+        );
+        callLoadUIBindingsFromFile(
+            "Interface\\AddOns\\Screenshot\\Bindings.xml",
+            &md5ctx,
+            error_handler,
+        );
+    }
+    if (build_opts.interact) {
+        callLoadFileListWithIncludes(
+            "Interface\\AddOns\\Interact\\Interact.toc",
+            &md5ctx,
+            error_handler,
+        );
+        callLoadUIBindingsFromFile(
+            "Interface\\AddOns\\Interact\\Bindings.xml",
+            &md5ctx,
+            error_handler,
+        );
+    }
+    if (build_opts.outline) {
+        callLoadFileListWithIncludes(
+            "Interface\\AddOns\\Outline\\Outline.toc",
+            &md5ctx,
+            error_handler,
+        );
+        callLoadUIBindingsFromFile(
+            "Interface\\AddOns\\Outline\\Bindings.xml",
+            &md5ctx,
+            error_handler,
+        );
+    }
 }
 
 fn callOrigLoadAddons(error_handler: u32) void {
@@ -396,11 +447,7 @@ fn callOrigLoadAddons(error_handler: u32) void {
     );
 }
 
-/// loadFileListWithIncludes(path_ECX, md5ctx_EDX, error_handler_stack)
-/// __fastcall at 0x6EDB90, ret 4 (1 stack param)
 fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_handler: u32) void {
-    // __fastcall: ECX=path, EDX=md5ctx, stack: error_handler
-    // Callee cleans the 1 stack arg (ret 4)
     asm volatile (
         \\push %[eh]
         \\call *%[func]
@@ -413,12 +460,8 @@ fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_
     );
 }
 
-/// LoadUIBindingsFromFile(path_stack, md5ctx_stack, callback_stack)
-/// __thiscall at 0x4B6F70: ECX=binding_mgr [0xB71290], ret 0x0C (3 stack params)
-/// Parses Bindings.xml and registers binding entries in the key binding manager.
 fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u32) void {
     const binding_mgr = hook.readMem(u32, 0xB71290);
-    // Pin func to EDX to stay within 3 "r" registers (EBX/ESI/EDI)
     asm volatile (
         \\push %[cb]
         \\push %[md5]
@@ -436,16 +479,6 @@ fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u3
 
 // =============================================================================
 // Hook: GameEngine_MainInitialize (0x46a400)
-// __stdcall(void) — prologue: 55 8B EC 83 EC 28 = 6 bytes, no fixups
-//
-// Called once from InitializeAllSubsystems during the init callback inside
-// WinMain. Fires after Lua env, UI frames, event tables, and DB tables are
-// set up, but before the event loop starts frame callbacks (i.e. before the
-// login screen renders and screenshots become possible).
-//
-// We install the screenshot hook here to guarantee it runs AFTER all
-// DLL_PROCESS_ATTACH hooks (including UnitXP's CTgaFile::Write hook),
-// making us the outermost detour in the hook chain.
 // =============================================================================
 
 var engine_init_hook: hook.Hook = .{};
@@ -453,13 +486,17 @@ var engine_init_hook: hook.Hook = .{};
 fn engineInitDetour() callconv(sc) void {
     const orig = engine_init_hook.getTrampoline(*const fn () callconv(sc) void);
     orig();
-    screenshot.installHook();
-    _ = outline.init();
+
+    if (build_opts.screenshot) {
+        screenshot.installHook();
+    }
+    if (build_opts.outline) {
+        _ = outline.init();
+    }
 }
 
 // =============================================================================
 // Hook: CGGameUI_Shutdown (0x490BD0)
-// Prologue: 56 E8 7A 83 FC FF = 6 bytes, fixup at offset 1
 // =============================================================================
 
 var shutdown_hook: hook.Hook = .{};
@@ -474,41 +511,38 @@ fn shutdownDetour() callconv(sc) void {
 // =============================================================================
 
 fn install() void {
-    // 1. Lua protection bypass — empty stub replaces address validator
     _ = protection_hook.install(0x42a320, 6, @intFromPtr(&luaProtectionDetour), &.{});
-
-    // 2. File I/O hook — serve embedded addon files from memory
-    //    Must be installed before LoadAddonsRecursively hook fires
     _ = file_hook.install(0x648620, 6, @intFromPtr(&loadFileDetour), &.{});
-
-    // 3. LoadScriptFunctions — register C functions after built-in commands
     _ = lsf_hook.install(0x490250, 6, @intFromPtr(&loadScriptFunctionsDetour), &.{1});
 
-    // 4. LoadAddonsRecursively — trigger our addon load after real addons
-    //    Uses thunk: __fastcall(ECX) → cdecl(ecx_val, edx_val)
     if (load_addons_hook.prepare(0x51F600, 7, &.{})) {
         const thunk = load_addons_hook.mem.? + 32;
         _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&loadAddonsDetour), 0);
         load_addons_hook.activate(@intFromPtr(thunk));
     }
 
-    // 5. Interact hooks — SceneEnd for per-frame loot queue processing
-    interact.installHooks();
+    if (build_opts.interact) {
+        interact.installHooks();
+    }
 
-    // 6. GameEngine_MainInitialize — install screenshot hook after all DLLs load
-    //    Fires once inside WinMain, before the login screen renders.
     _ = engine_init_hook.install(0x46a400, 6, @intFromPtr(&engineInitDetour), &.{});
-
-    // 7. CGGameUI_Shutdown — cleanup
     _ = shutdown_hook.install(0x490BD0, 6, @intFromPtr(&shutdownDetour), &.{1});
 }
 
 fn uninstall() void {
     shutdown_hook.remove();
     engine_init_hook.remove();
-    outline.cleanup();
-    screenshot.removeHook();
-    interact.removeHooks();
+
+    if (build_opts.outline) {
+        outline.cleanup();
+    }
+    if (build_opts.screenshot) {
+        screenshot.removeHook();
+    }
+    if (build_opts.interact) {
+        interact.removeHooks();
+    }
+
     load_addons_hook.remove();
     lsf_hook.remove();
     file_hook.remove();
@@ -525,8 +559,8 @@ pub export fn DllMain(
     _: ?*anyopaque,
 ) callconv(WINAPI) i32 {
     switch (reason) {
-        1 => install(), // DLL_PROCESS_ATTACH
-        0 => uninstall(), // DLL_PROCESS_DETACH
+        1 => install(),
+        0 => uninstall(),
         else => {},
     }
     return 1;
