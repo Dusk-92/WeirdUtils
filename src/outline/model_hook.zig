@@ -62,11 +62,14 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
 // Native thiscall detour — no thunk needed.
 //
-// Reorders batch indices so outline targets draw LAST. Non-outline models
-// (game objects, other characters, NPCs) render first, filling the depth
-// buffer with full scene geometry. When outline targets then render, the
-// DIP hook writes stencil marks against this complete depth buffer, so
-// outlines are properly occluded by all scene objects (not just terrain/WMOs).
+// Reorders batch indices into 3 groups:
+//   1. Game objects/doodads — render first, write depth so outlines respect them
+//   2. Outline targets — render second, DIP hook writes stencil against depth
+//   3. Other players, gear, NPCs — render last, draw over targets normally
+//
+// This gives outlines that are occluded by world/WMO/game objects but show
+// through other players and gear (since those aren't in depth when stencil
+// is written). The outline composites on top of everything in EndScene.
 
 fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(THISCALL) void {
     // One-time: install D3D9 hooks now that the game is actively rendering.
@@ -83,13 +86,18 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
 
     const indices: [*]i32 = @ptrFromInt(batch_indices);
 
-    // Pass 1: count outline targets
+    // Pass 1: count outline targets and game objects for partitioning
     var outline_count: u32 = 0;
+    var game_obj_count: u32 = 0;
     for (0..batch_count) |i| {
         const idx_u: u32 = @bitCast(indices[i]);
         const model_ptr = hook.readMem(u32, batch_data +% idx_u *% 0x40 +% 4);
-        if (model_ptr != 0 and tracker.findOutlineEntry(model_ptr) != null) {
-            outline_count += 1;
+        if (model_ptr != 0) {
+            if (tracker.findOutlineEntry(model_ptr) != null) {
+                outline_count += 1;
+            } else if (tracker.isGameObjectModel(model_ptr)) {
+                game_obj_count += 1;
+            }
         }
     }
 
@@ -98,13 +106,13 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         return;
     }
 
-    // Pass 2: partition — non-outline models first, outline targets last.
-    // Rendering non-outline models first fills the depth buffer with game
-    // objects, other characters, etc., so outline target stencil marks
-    // respect full scene occlusion (not just terrain+WMO).
-    const normal_count = batch_count - outline_count;
-    var normal_pos: u32 = 0;
-    var outline_pos: u32 = normal_count;
+    // Pass 2: 3-way partition:
+    //   [0 .. game_obj_count)           → game objects (write depth first)
+    //   [game_obj_count .. +outline)    → outline targets (stencil against depth)
+    //   [remainder ..]                  → other players, gear, NPCs
+    var go_pos: u32 = 0;
+    var outline_pos: u32 = game_obj_count;
+    var rest_pos: u32 = game_obj_count + outline_count;
     for (0..batch_count) |i| {
         const batch_idx = indices[i];
         const idx_u: u32 = @bitCast(batch_idx);
@@ -112,9 +120,12 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         if (model_ptr != 0 and tracker.findOutlineEntry(model_ptr) != null) {
             reordered_indices[outline_pos] = batch_idx;
             outline_pos += 1;
+        } else if (model_ptr != 0 and tracker.isGameObjectModel(model_ptr)) {
+            reordered_indices[go_pos] = batch_idx;
+            go_pos += 1;
         } else {
-            reordered_indices[normal_pos] = batch_idx;
-            normal_pos += 1;
+            reordered_indices[rest_pos] = batch_idx;
+            rest_pos += 1;
         }
     }
 

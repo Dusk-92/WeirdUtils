@@ -46,6 +46,21 @@ var frame_outlines: [MAX_OUTLINE_MODELS]types.OutlineEntry = undefined;
 var frame_outline_count: usize = 0;
 
 // =============================================================================
+// Per-frame game object tracking (for render ordering — game objects first)
+// =============================================================================
+// Game object M2 models need to render before outline targets so their depth
+// is in the buffer when stencil marks are written. Tracked separately from
+// outline entries since game objects don't get outlines.
+
+const MAX_GAME_OBJ_MODELS = 256;
+
+var game_obj_ptrs: [MAX_TRACKED_OBJS]u32 = undefined;
+var game_obj_ptr_count: usize = 0;
+
+var game_obj_models: [MAX_GAME_OBJ_MODELS]u32 = undefined;
+var game_obj_model_count: usize = 0;
+
+// =============================================================================
 // Global enable flag
 // =============================================================================
 
@@ -88,6 +103,14 @@ pub fn getModelCategory(model_ptr: u32) types.ModelCategory {
     return entry.category;
 }
 
+/// Check if a model belongs to a game object (for render ordering).
+pub fn isGameObjectModel(model_ptr: u32) bool {
+    for (game_obj_models[0..game_obj_model_count]) |m| {
+        if (m == model_ptr) return true;
+    }
+    return false;
+}
+
 /// Get screen-space outline thickness in pixels for a category.
 pub fn getOutlinePixels(cat: types.ModelCategory) f32 {
     return switch (cat) {
@@ -124,6 +147,24 @@ pub fn classifyModel(model_ptr: u32) void {
             }
         }
     }
+
+    // Match against game object pointers (for render ordering).
+    if (game_obj_ptr_count > 0 and game_obj_model_count < MAX_GAME_OBJ_MODELS) {
+        for (game_obj_ptrs[0..game_obj_ptr_count]) |go_ptr| {
+            if (owner_callback == go_ptr or owner_direct == go_ptr) {
+                // Deduplicate
+                var found = false;
+                for (game_obj_models[0..game_obj_model_count]) |m| {
+                    if (m == model_ptr) { found = true; break; }
+                }
+                if (!found) {
+                    game_obj_models[game_obj_model_count] = model_ptr;
+                    game_obj_model_count += 1;
+                }
+                break;
+            }
+        }
+    }
 }
 
 fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
@@ -155,11 +196,20 @@ pub fn scanObjects() void {
     // Clear per-frame sets
     frame_outline_count = 0;
     tracked_obj_count = 0;
+    game_obj_ptr_count = 0;
+    game_obj_model_count = 0;
     resetDiag();
 
     if (!wow.isInGame()) return;
     const local_player = wow.getLocalPlayer();
     if (local_player == 0) return;
+
+    // Local player renders before outline targets (occludes outlines) unless
+    // the local player IS an outline target (partition logic checks outline first).
+    if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
+        game_obj_ptrs[game_obj_ptr_count] = local_player;
+        game_obj_ptr_count += 1;
+    }
 
     // Cache raid target GUIDs
     wow.cacheRaidTargets();
@@ -195,6 +245,12 @@ pub fn scanObjects() void {
             .corpse => {
                 if (!wow.isSkeletonCorpse(obj)) {
                     addTrackedObj(obj, .dead_player, 0);
+                }
+            },
+            .game_object => {
+                if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
+                    game_obj_ptrs[game_obj_ptr_count] = obj;
+                    game_obj_ptr_count += 1;
                 }
             },
             else => {},

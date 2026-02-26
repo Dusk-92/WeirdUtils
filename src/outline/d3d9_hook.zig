@@ -8,11 +8,10 @@
 //!   marks where models pass the terrain depth test (stencil=1 = visible).
 //! - **Reset**: forces D24S8 depth/stencil format, releases resources.
 //!
-//! Batch reordering in model_hook.zig ensures outline targets render LAST in
-//! CM2SceneRenderDraw, after all other M2 models (game objects, characters,
-//! NPCs) have filled the depth buffer. The DIP hook writes stencil marks
-//! using the game's own depth buffer; EndScene replay uses these marks to
-//! gate silhouette drawing (full scene occlusion including game objects).
+//! Batch reordering in model_hook.zig partitions M2 batches into 3 groups:
+//! game objects first (write depth), then outline targets (DIP hook writes
+//! stencil against that depth), then other players/gear/NPCs. Outlines are
+//! occluded by world/WMO/game objects but show through other players.
 
 const std = @import("std");
 const hook = @import("hook");
@@ -70,7 +69,13 @@ var outline_ps: ?*anyopaque = null; // flat-color PS (silhouettes)
 var jfa_init_ps: ?*anyopaque = null; // JFA seed init PS
 var jfa_prop_ps: ?*anyopaque = null; // JFA propagation PS
 var jfa_decode_ps: ?*anyopaque = null; // JFA decode + composite PS
+var debug_sil_ps: ?*anyopaque = null; // debug: composite silhouette directly
 var shaders_attempted: bool = false;
+
+// Debug: set to true to skip JFA and composite raw silhouette RT to backbuffer.
+// Used to diagnose whether banding artifacts originate in the silhouette (Phase 1
+// replay / stale VB) or in the JFA pipeline (Phase 2 shader bug).
+const DEBUG_SHOW_SILHOUETTE = false;
 
 // D3DXAssembleShader function pointer (loaded dynamically)
 const D3DXAssembleShaderFn = *const fn (
@@ -459,10 +464,11 @@ fn releaseResources() void {
 /// Flat colour pixel shader — outputs PS constant c0.
 const ps_flat_src = "ps_3_0\nmov oC0, c0\n";
 
-/// JFA init: sample silhouette, output own UV as seed or sentinel (1,1).
+/// JFA init: sample silhouette, output own UV as seed or sentinel (-1,-1).
+/// Sentinel must be outside [0,1] UV space so it never wins distance comparisons.
 const jfa_init_src =
     "ps_3_0\n" ++
-    "def c0, 1.0, 1.0, -0.002, 0.0\n" ++
+    "def c0, -1.0, -1.0, -0.002, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
     "texld r0, v0, s0\n" ++
@@ -587,6 +593,18 @@ const jfa_decode_src =
     "mov r4.xyz, r2.xyz\n" ++ // outline colour from seed
     "mov oC0, r4\n";
 
+/// Debug: composite silhouette RT directly. Forces alpha to 1.0 where silhouette
+/// has any content (alpha >= 0.002), 0.0 elsewhere. Bypasses JFA entirely.
+const debug_sil_src =
+    "ps_3_0\n" ++
+    "def c0, 0.0, 0.0, -0.002, 1.0\n" ++
+    "dcl_2d s0\n" ++
+    "dcl_texcoord0 v0\n" ++
+    "texld r0, v0, s0\n" ++
+    "add r1.x, r0.a, c0.z\n" ++ // alpha - 0.002
+    "cmp r0.w, r1.x, c0.w, c0.x\n" ++ // >= 0 → 1.0 (opaque), < 0 → 0.0 (transparent)
+    "mov oC0, r0\n";
+
 // =============================================================================
 // Shader creation
 // =============================================================================
@@ -620,6 +638,14 @@ fn ensureShaders(device: *anyopaque) void {
         releaseShaders();
         return;
     };
+
+    // --- Debug silhouette composite PS (only when diagnostic enabled) ---
+    if (DEBUG_SHOW_SILHOUETTE) {
+        debug_sil_ps = assemblePS(device, assemble, debug_sil_src, debug_sil_src.len) orelse {
+            releaseShaders();
+            return;
+        };
+    }
 }
 
 /// Assemble a pixel shader from source text, create device PS object.
@@ -645,7 +671,7 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 }
 
 fn releaseShaders() void {
-    inline for (.{ &outline_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps }) |ps| {
+    inline for (.{ &outline_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
         if (ps.*) |p| { comRelease(p); ps.* = null; }
     }
     shaders_attempted = false;
@@ -806,7 +832,7 @@ fn hkDIP(
         const s_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
         const s_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
         const s_ref = deviceGetRS(device, types.D3DRS.STENCILREF);
-        const s_wmask = deviceGetRS(device, types.D3DRS.STENCILWRITEMASK);
+        // (STENCILWRITEMASK not saved — intentionally set to 0 on restore)
         const s_pass = deviceGetRS(device, types.D3DRS.STENCILPASS);
         const s_fail = deviceGetRS(device, types.D3DRS.STENCILFAIL);
         const s_zfail = deviceGetRS(device, types.D3DRS.STENCILZFAIL);
@@ -821,14 +847,19 @@ fn hkDIP(
 
         const result = origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
 
-        // Restore stencil state to match WoW's GxDevice cache
+        // Restore stencil state to match WoW's GxDevice cache, but lock
+        // stencil writes to protect our marks from subsequent draws (other
+        // players' gear, NPCs, etc. that render after outline targets).
         deviceSetRS(device, types.D3DRS.STENCILENABLE, s_enable);
         deviceSetRS(device, types.D3DRS.STENCILFUNC, s_func);
         deviceSetRS(device, types.D3DRS.STENCILREF, s_ref);
-        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, s_wmask);
         deviceSetRS(device, types.D3DRS.STENCILPASS, s_pass);
         deviceSetRS(device, types.D3DRS.STENCILFAIL, s_fail);
         deviceSetRS(device, types.D3DRS.STENCILZFAIL, s_zfail);
+        // Write mask 0 instead of restoring original — prevents any
+        // subsequent DIP from overwriting our stencil=1 marks.
+        // Restored properly in EndScene before the JFA pipeline.
+        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
         return result;
     }
 
@@ -989,6 +1020,38 @@ fn runJfaPipeline(device: *anyopaque) void {
     }
 
     // =====================================================================
+    // Debug: skip JFA, composite raw silhouette RT to see if banding is
+    // in the silhouette (stale VB / replay issue) or the JFA pipeline.
+    // =====================================================================
+    if (DEBUG_SHOW_SILHOUETTE) {
+        if (debug_sil_ps) |dps| {
+            if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
+            deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
+            deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
+            deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
+            deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+            deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
+            deviceSetRS(device, types.D3DRS.CULLMODE, types.D3DCULL_NONE);
+            deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
+            deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
+            deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
+            deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
+            deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
+            deviceSetTexture(device, 0, rt_silhouette_tex);
+            deviceSetPtr(device, types.VT.SetPixelShader, dps);
+
+            const quad = buildFullscreenQuad(vp.Width, vp.Height);
+            deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), @sizeOf(QuadVertex));
+        }
+        // Skip JFA — jump straight to state restore
+    } else {
+
+    // =====================================================================
     // Phase 2: JFA pipeline (silhouette → outline composite)
     // =====================================================================
 
@@ -1024,18 +1087,35 @@ fn runJfaPipeline(device: *anyopaque) void {
     deviceSetPtr(device, types.VT.SetPixelShader, jfa_init_ps.?);
     deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // Pass 2: JFA Propagation step=2 (JFA_A → JFA_B)
+    // JFA Propagation: steps [8, 4, 2, 1] ping-ponging between A and B.
+    deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
+    var c0: [4]f32 = undefined;
+
+    // step=8 (JFA_A → JFA_B)
     deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
     deviceSetTexture(device, 0, rt_jfa_a_tex);
-    var c0 = [4]f32{ 2.0 / fw, 2.0 / fh, 0.0, 0.0 };
+    c0 = .{ 8.0 / fw, 8.0 / fh, 0.0, 0.0 };
     deviceSetPSConstF(device, 0, &c0);
-    deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
     deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // Pass 3: JFA Propagation step=1 (JFA_B → JFA_A)
+    // step=4 (JFA_B → JFA_A)
     deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
     deviceSetTexture(device, 0, rt_jfa_b_tex);
-    c0 = [4]f32{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
+    c0 = .{ 4.0 / fw, 4.0 / fh, 0.0, 0.0 };
+    deviceSetPSConstF(device, 0, &c0);
+    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+
+    // step=2 (JFA_A → JFA_B)
+    deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
+    deviceSetTexture(device, 0, rt_jfa_a_tex);
+    c0 = .{ 2.0 / fw, 2.0 / fh, 0.0, 0.0 };
+    deviceSetPSConstF(device, 0, &c0);
+    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+
+    // step=1 (JFA_B → JFA_A)
+    deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
+    deviceSetTexture(device, 0, rt_jfa_b_tex);
+    c0 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
     deviceSetPSConstF(device, 0, &c0);
     deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
@@ -1050,6 +1130,8 @@ fn runJfaPipeline(device: *anyopaque) void {
     deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
     deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
     deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+
+    } // end else (normal JFA path)
 
     // =====================================================================
     // Restore ALL state
