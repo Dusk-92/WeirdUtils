@@ -219,6 +219,11 @@ OutlineCommand("off")     -- disable outlines
   (mount is parent, rider is attached, gear is attached to rider?). All child models
   (rider body, gear) should be included in the silhouette.
 
+- ** MISC **: target outlines on players should be diff color than on mobs. Also when a mob and you are in melee range your outline should merge with his probably, so show you who you'te attacking.
+  Also we should shade targeted units not just outline them. And each outline and shade be a setting toggle
+
+- **debug**: we should add to our debug mode coloring that colors each object type a different solid color, so that they issues arise it's easy to determine what object type is causing issues
+
 ## Future Architecture Notes
 
 - **Hook "should render" function for model tracking**: the perfboost system uses a

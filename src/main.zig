@@ -1,17 +1,20 @@
 const std = @import("std");
 const hook = @import("hook");
+pub const con = @import("console.zig");
 
 // Build options for conditional module compilation
 const build_opts = struct {
     const screenshot = @import("build_options").enable_screenshot;
     const interact = @import("build_options").enable_interact;
     const outline = @import("build_options").enable_outline;
+    const markers = @import("build_options").enable_markers;
 };
 
 // Conditional module imports
 const screenshot = if (build_opts.screenshot) @import("screenshot/screenshot.zig") else struct {};
 const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
 const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
+const markers = if (build_opts.markers) @import("markers/markers.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -243,6 +246,12 @@ fn registerLuaFunctions() void {
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
+    if (build_opts.markers) {
+        registerFunction("TestMarkerCreate", @intFromPtr(&markers.luaTestMarkerCreate));
+        registerFunction("TestMarkerDestroy", @intFromPtr(&markers.luaTestMarkerDestroy));
+        registerFunction("TestMarkerToggle", @intFromPtr(&markers.luaTestMarkerToggle));
+        registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
+    }
 }
 
 // =============================================================================
@@ -285,12 +294,25 @@ const outline_files = if (build_opts.outline) [_]FileEntry{
     .{ .name = "Bindings.xml", .data = @embedFile("outline/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
+const markers_files = if (build_opts.markers) [_]FileEntry{
+    .{ .name = "Markers.toc", .data = @embedFile("markers/addon/Markers.toc") },
+    .{ .name = "Markers.lua", .data = @embedFile("markers/addon/Markers.lua") },
+    .{ .name = "Bindings.xml", .data = @embedFile("markers/addon/Bindings.xml") },
+} else [_]FileEntry{};
+
+const markers_assets = if (build_opts.markers) [_]FileEntry{
+    .{ .name = "xyz.m2", .data = @embedFile("markers/assets/World/ArtTest/Boxtest/xyz.m2") },
+    .{ .name = "xyz.blp", .data = @embedFile("markers/assets/World/ArtTest/Boxtest/xyz.blp") },
+} else [_]FileEntry{};
+
 // All addon prefixes to check
 const addon_prefixes = [_]AddonPrefix{
     .{ .prefix = core_prefix, .files = &core_files },
     .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
     .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
     .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
+    .{ .prefix = "Interface\\AddOns\\Markers\\", .files = &markers_files },
+    .{ .prefix = "World\\ArtTest\\Boxtest\\", .files = &markers_assets },
 };
 
 fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
@@ -357,6 +379,7 @@ fn loadFileDetour(
 
         buf_out.* = buf;
         if (size_out) |s| s.* = data_len;
+        con.fmt("[file] served embedded: {s} ({d} bytes)\n", .{ std.mem.span(path), data_len });
         return 1;
     }
 
@@ -431,6 +454,18 @@ fn loadAddonsDetour(error_handler: u32, _edx: u32) callconv(.c) void {
         );
         callLoadUIBindingsFromFile(
             "Interface\\AddOns\\Outline\\Bindings.xml",
+            &md5ctx,
+            error_handler,
+        );
+    }
+    if (build_opts.markers) {
+        callLoadFileListWithIncludes(
+            "Interface\\AddOns\\Markers\\Markers.toc",
+            &md5ctx,
+            error_handler,
+        );
+        callLoadUIBindingsFromFile(
+            "Interface\\AddOns\\Markers\\Bindings.xml",
             &md5ctx,
             error_handler,
         );
@@ -511,6 +546,8 @@ fn shutdownDetour() callconv(sc) void {
 // =============================================================================
 
 fn install() void {
+    con.init();
+    con.print("[weirdutils] Installing hooks\n");
     _ = protection_hook.install(0x42a320, 6, @intFromPtr(&luaProtectionDetour), &.{});
     _ = file_hook.install(0x648620, 6, @intFromPtr(&loadFileDetour), &.{});
     _ = lsf_hook.install(0x490250, 6, @intFromPtr(&loadScriptFunctionsDetour), &.{1});
@@ -547,6 +584,7 @@ fn uninstall() void {
     lsf_hook.remove();
     file_hook.remove();
     protection_hook.remove();
+    con.deinit();
 }
 
 // =============================================================================

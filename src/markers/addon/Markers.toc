@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: Markers
+## Notes: Client-side raid markers and indicators
+## Version: 1.0
+## Dependencies: WeirdUtils
+
+Markers.lua
+Bindings.xml
