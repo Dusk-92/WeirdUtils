@@ -17,80 +17,55 @@ pub const MOVEMENT_POS_Y: usize = 0x14;
 pub const MOVEMENT_POS_Z: usize = 0x18;
 
 // =============================================================================
-// GameObject creation functions
+// Entity creation (high-level API)
 // =============================================================================
 
-/// CreateGameObject_WithProperties(model_ECX, callback1_EDX, callback2, x, y, z, flags)
-/// __fastcall — ECX=model, EDX=callback1, 5 stack params. Callee cleans (RET 0x14).
-/// Ghidra: 55 8B EC 83 EC 14 ... 89 4D FC (saves ECX) ... 89 55 F8 (saves EDX) ... C2 14 00.
-pub const FN_CREATE_GAMEOBJECT: usize = 0x00670db0;
+/// CreateEntityInstance_WithAttachment — __fastcall, RET 0x14 (5 stack params).
+/// ECX = modelPath (char*), EDX = position (float[3]*)
+/// Stack: facing (float), flags (int), updateNow (int), param6 (int), param7 (int)
+/// Returns: entity pointer (int*).
+///
+/// Routes M2 models (no ".wmo" in path) through CreateWorldUnit.
+/// Routes WMO models (".wmo" in path) through CreateGameObject + ModelAttachment_CreateNode
+/// + global list insertion + SetObjectTransformation.
+///
+/// Both paths call UpdateWorldPosition when updateNow != 0.
+/// Increments refcount at entity+0x0E.
+pub const FN_CREATE_ENTITY_INSTANCE: usize = 0x006707c0;
+
+// =============================================================================
+// World object lifecycle
+// =============================================================================
 
 /// AllocateAndInitializeWorldObject(initializeFlag)
 /// __fastcall returns void**
 pub const FN_ALLOCATE_WORLD_OBJECT: usize = 0x006a0930;
 
-/// CleanupWorldObject(object)
-/// __thiscall
-pub const FN_CLEANUP_WORLD_OBJECT: usize = 0x0069d730;
-
-/// DestroyWorldObjectAndRelease(object)
-/// __fastcall
+/// DestroyWorldObjectAndRelease(object) — __fastcall, ECX=obj, no stack params.
+/// Unlinks from world object list (+0x10/+0x14), calls virtual destructor, frees heap.
+/// Ends with tail JMP to ReleaseToHeap — from caller's perspective, a normal return.
 pub const FN_DESTROY_WORLD_OBJECT: usize = 0x006a0a70;
 
-// =============================================================================
-// Model loading
-// =============================================================================
-
-/// loadModelByName(path)
-/// __fastcall returns model cache entry
-pub const FN_LOAD_MODEL_BY_NAME: usize = 0x006d4640;
-
-/// createModelAttachment(resourceManager, path, flags)
-/// __thiscall returns render context
-pub const FN_CREATE_MODEL_ATTACHMENT: usize = 0x00707350;
+/// DecrementReferenceCount(obj) — __fastcall, ECX=obj, no stack params.
+/// Decrements ref count; when it reaches 0, calls virtual destructor to free.
+pub const FN_DECREMENT_REFCOUNT: usize = 0x007103a0;
 
 // =============================================================================
-// Animation control
+// Model creation
 // =============================================================================
 
-/// PlayAnimation(object, animId)
-/// __thiscall
-pub const FN_PLAY_ANIMATION: usize = 0x0076cf50;
-
-/// CM2Model__PlayBoneAnimation(model, boneIndex, animId, seqIndex, animData, speed, blend, queue)
-/// __thiscall
-pub const FN_PLAY_BONE_ANIMATION: usize = 0x007121a0;
-
-/// HasAnimation(model, animId)
-/// __thiscall returns bool
-pub const FN_HAS_ANIMATION: usize = 0x00711960;
+/// CM2Model_CreateForModelObject(modelPath_ECX, worldObj_EDX, forceInit)
+/// __fastcall, RET 0x04. ECX=modelPath(char*), EDX=worldObject, 1 stack param.
+/// Complete model creation pipeline: createModelAttachment, SetModelScale,
+/// SetCallbackFunctions, SetRenderCallbacks, PlayBoneAnimation, CM2Model_Initialize.
+/// Returns 1 on success, 0 on failure. Stores render context at worldObj+0x88.
+pub const FN_CM2_CREATE_FOR_MODEL_OBJECT: usize = 0x00695100;
 
 // =============================================================================
-// Animation IDs (from string table)
+// Transform and position
 // =============================================================================
 
-pub const ANIM_SPAWN: u32 = 0;      // TODO: find actual ID
-pub const ANIM_DESPAWN: u32 = 0;    // TODO: find actual ID
-pub const ANIM_BIRTH: u32 = 0;      // TODO: find actual ID
-
-// =============================================================================
-// Object structure offsets (from CreateGameObject_WithProperties analysis)
-// =============================================================================
-
-/// WorldObject + this → model pointer
-pub const OBJ_MODEL: usize = 0x88;
-
-/// WorldObject + this → position X (float*)
-pub const OBJ_POS_X: usize = 0xC0;
-
-/// WorldObject + this → position Y (float*)
-pub const OBJ_POS_Y: usize = 0xC4;
-
-/// WorldObject + this → position Z (float*)
-pub const OBJ_POS_Z: usize = 0xC8;
-
-/// WorldObject + this → color ARGB (alpha in high byte)
-pub const OBJ_COLOR: usize = 0x24;
-
-/// WorldObject + this → flags
-pub const OBJ_FLAGS: usize = 0x90;
+/// UpdateObjectTransform_CalculateBounds — __fastcall, RET 0x0C
+/// ECX = world object, EDX = 4x4 transform matrix (float[16])
+/// Stack: bounds (float[6] min/max), halfExtents (float[3]), forceUpdate (int)
+pub const FN_UPDATE_OBJECT_TRANSFORM: usize = 0x006717d0;

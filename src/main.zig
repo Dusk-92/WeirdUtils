@@ -537,6 +537,12 @@ fn engineInitDetour() callconv(sc) void {
 var shutdown_hook: hook.Hook = .{};
 
 fn shutdownDetour() callconv(sc) void {
+    // Clean up world objects BEFORE game shutdown — atexit handlers run before DllMain
+    // so we must destroy markers here, not in uninstall().
+    if (build_opts.markers) {
+        markers.removeHooks();
+    }
+
     const orig = shutdown_hook.getTrampoline(*const fn () callconv(sc) void);
     orig();
 }
@@ -570,6 +576,10 @@ fn uninstall() void {
     shutdown_hook.remove();
     engine_init_hook.remove();
 
+    // Markers must be cleaned up first — destroys world objects while game systems are still alive
+    if (build_opts.markers) {
+        markers.removeHooks();
+    }
     if (build_opts.outline) {
         outline.cleanup();
     }

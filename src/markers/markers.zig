@@ -1,7 +1,12 @@
-//! Client-side marker system using CreateGameObject_WithProperties
+//! Client-side marker system
 //!
 //! Creates world objects at arbitrary positions for raid markers,
 //! player indicators, etc.
+//!
+//! Uses CreateEntityInstance_WithAttachment (0x6707c0) — the game's
+//! native high-level entity creation API. For M2 models, this routes
+//! through CreateWorldUnit which handles all spatial registration,
+//! render setup, and lifecycle management.
 
 const hook = @import("hook");
 const o = @import("offsets.zig");
@@ -33,28 +38,21 @@ pub fn getUnitPosition(unit: u32) Vec3 {
 }
 
 // =============================================================================
-// GameObject creation - function pointer wrappers
+// Game function wrappers
 // =============================================================================
 
-/// CreateGameObject_WithProperties — __fastcall:
-///   ECX = model, EDX = callback1
-///   Stack (callee-clean, RET 0x14): callback2, x, y, z, flags
-pub fn createGameObject(
-    model: ?*anyopaque,
-    callback1: ?*anyopaque,
-    callback2: ?*anyopaque,
-    x: f32,
-    y: f32,
-    z: f32,
-    flags: u32,
-) ?*anyopaque {
-    // 5 stack params (callee cleans via RET 0x14)
+/// CreateEntityInstance_WithAttachment — __fastcall, RET 0x14.
+/// ECX=modelPath, EDX=positionVec3ptr, stack: facing, flags, updateNow, param6, param7.
+/// Routes M2 models through CreateWorldUnit, WMO models through CreateGameObject.
+/// Returns a fully-registered game entity pointer.
+fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u32, update_now: u32) ?*anyopaque {
+    const facing_bits: u32 = @bitCast(facing);
     const stack_args = [5]u32{
-        if (callback2) |c| @intCast(@intFromPtr(c)) else 0,
-        @as(u32, @bitCast(x)),
-        @as(u32, @bitCast(y)),
-        @as(u32, @bitCast(z)),
-        flags,
+        facing_bits, // param_3: facing angle
+        flags, // param_4: flags/type
+        update_now, // param_5: update position immediately (1=yes)
+        0, // param_6
+        0, // param_7
     };
 
     const result: u32 = asm volatile (
@@ -65,55 +63,22 @@ pub fn createGameObject(
         \\ push (%[a])
         \\ call *%[func]
         : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (if (model) |m| @intFromPtr(m) else @as(usize, 0)),
-          [_] "{edx}" (if (callback1) |c| @intFromPtr(c) else @as(usize, 0)),
+        : [_] "{ecx}" (@intFromPtr(path)),
+          [_] "{edx}" (@intFromPtr(pos)),
           [a] "r" (&stack_args),
-          [func] "r" (o.FN_CREATE_GAMEOBJECT),
+          [func] "r" (o.FN_CREATE_ENTITY_INSTANCE),
         : .{ .memory = true, .cc = true }
     );
 
     return if (result != 0) @ptrFromInt(result) else null;
 }
 
-/// CleanupWorldObject(obj) - __thiscall: ECX = obj, 0 stack params
-pub fn cleanupWorldObject(obj: *anyopaque) void {
+/// DestroyWorldObjectAndRelease — __fastcall(ECX=obj), tail JMP.
+fn destroyWorldObject(obj: *anyopaque) void {
     asm volatile ("call *%[func]"
         :
         : [_] "{ecx}" (@intFromPtr(obj)),
-          [func] "r" (o.FN_CLEANUP_WORLD_OBJECT),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
-    );
-}
-
-/// Update object position directly
-pub fn setObjectPosition(obj: *anyopaque, pos: Vec3) void {
-    const ptr: u32 = @intCast(@intFromPtr(obj));
-    @as(*f32, @ptrFromInt(ptr + o.OBJ_POS_X)).* = pos.x;
-    @as(*f32, @ptrFromInt(ptr + o.OBJ_POS_Y)).* = pos.y;
-    @as(*f32, @ptrFromInt(ptr + o.OBJ_POS_Z)).* = pos.z;
-}
-
-/// Set object alpha (0-255)
-pub fn setObjectAlpha(obj: *anyopaque, alpha: u8) void {
-    const ptr: u32 = @intCast(@intFromPtr(obj));
-    // ARGB format - alpha in high byte
-    const color: u32 = (@as(u32, alpha) << 24) | 0x00189680;
-    @as(*u32, @ptrFromInt(ptr + o.OBJ_COLOR)).* = color;
-}
-
-// =============================================================================
-// Animation
-// =============================================================================
-
-/// PlayAnimation(obj, animId) - __thiscall: ECX = obj, 1 stack param (callee-clean, RET 4)
-pub fn playAnimation(obj: *anyopaque, anim_id: u32) void {
-    asm volatile (
-        \\push %[anim]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(obj)),
-          [anim] "r" (anim_id),
-          [func] "r" (o.FN_PLAY_ANIMATION),
+          [func] "r" (o.FN_DESTROY_WORLD_OBJECT),
         : .{ .eax = true, .edx = true, .memory = true, .cc = true }
     );
 }
@@ -124,30 +89,18 @@ pub fn playAnimation(obj: *anyopaque, anim_id: u32) void {
 
 var test_marker: ?*anyopaque = null;
 
-const MODEL_PATH: [*:0]const u8 = "World\\ArtTest\\Boxtest\\xyz.m2";
+const MODEL_PATH: [*:0]const u8 = "Spells\\ErrorCube.mdx";
 
-/// loadModelByName — __fastcall(ECX=path), returns model cache entry or null.
-fn loadModel(path: [*:0]const u8) ?*anyopaque {
-    con.fmt("[markers] loadModelByName(\"{s}\")\n", .{@as([*:0]const u8, path)});
-    const result: u32 = asm volatile ("call *%[func]"
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@intFromPtr(path)),
-          [func] "r" (o.FN_LOAD_MODEL_BY_NAME),
-        : .{ .edx = true, .memory = true, .cc = true }
-    );
-    if (result != 0) {
-        con.fmt("[markers]   -> model at 0x{X:0>8}\n", .{result});
-    } else {
-        con.print("[markers]   -> FAILED (returned null)\n");
-    }
-    return if (result != 0) @ptrFromInt(result) else null;
-}
-
-/// Create a test marker at player position
+/// Create a test marker at player position using the native entity creation API.
 pub fn createTestMarker() ?*anyopaque {
+    if (test_marker != null) {
+        con.print("[markers] marker already exists, destroy first\n");
+        return test_marker;
+    }
+
     const player = wow.getLocalPlayer();
     if (player == 0) {
-        con.print("[markers] createTestMarker: no local player\n");
+        con.print("[markers] no local player\n");
         return null;
     }
 
@@ -155,42 +108,39 @@ pub fn createTestMarker() ?*anyopaque {
     con.fmt("[markers] player pos = {d:.1}, {d:.1}, {d:.1}\n", .{ pos.x, pos.y, pos.z });
     if (pos.x == 0 and pos.y == 0 and pos.z == 0) return null;
 
-    const model = loadModel(MODEL_PATH);
-    con.fmt("[markers] createGameObject(model={?}, pos=({d:.1},{d:.1},{d:.1}))\n", .{
-        @as(?usize, if (model) |m| @intFromPtr(m) else null),
-        pos.x, pos.y, pos.z + 1.0,
-    });
-    const marker = createGameObject(model, null, null, pos.x, pos.y, pos.z + 1.0, 0);
+    var position = [3]f32{ pos.x, pos.y, pos.z + 2.0 };
 
-    if (marker) |m| {
-        con.fmt("[markers]   -> object at 0x{X:0>8}\n", .{@intFromPtr(m)});
-        test_marker = m;
-    } else {
-        con.print("[markers]   -> createGameObject FAILED\n");
-    }
+    con.print("[markers] calling CreateEntityInstance_WithAttachment...\n");
+    const obj = createEntityInstance(MODEL_PATH, &position, 0.0, 0, 1) orelse {
+        con.print("[markers] CreateEntityInstance_WithAttachment FAILED\n");
+        return null;
+    };
 
-    return marker;
+    const obj_ptr: u32 = @intCast(@intFromPtr(obj));
+    con.fmt("[markers] entity created at 0x{X:0>8}\n", .{obj_ptr});
+
+    // Debug dump key fields
+    const refcount = hook.readMem(u16, obj_ptr + 0xE);
+    const flags_90 = hook.readMem(u32, obj_ptr + 0x90);
+    const model_88 = hook.readMem(u32, obj_ptr + 0x88);
+    const pos_x = hook.readMem(f32, obj_ptr + 0x5C);
+    const pos_y = hook.readMem(f32, obj_ptr + 0x60);
+    const pos_z = hook.readMem(f32, obj_ptr + 0x64);
+    con.fmt("[markers] refcount={d} flags90=0x{X:0>8} model88=0x{X:0>8}\n", .{ refcount, flags_90, model_88 });
+    con.fmt("[markers] bsph(+5C)={d:.1},{d:.1},{d:.1}\n", .{ pos_x, pos_y, pos_z });
+
+    test_marker = obj;
+    return obj;
 }
 
-/// Destroy test marker
+/// Destroy the test marker. Safe to call multiple times.
 pub fn destroyTestMarker() void {
-    if (test_marker) |m| {
-        cleanupWorldObject(m);
-        test_marker = null;
-    }
-}
+    const marker = test_marker orelse return;
+    test_marker = null;
 
-/// Update test marker position to follow player
-pub fn updateTestMarker() void {
-    if (test_marker == null) return;
-
-    const player = wow.getLocalPlayer();
-    if (player == 0) return;
-
-    const pos = getUnitPosition(player);
-    if (pos.x == 0 and pos.y == 0 and pos.z == 0) return;
-
-    setObjectPosition(test_marker.?, .{ .x = pos.x, .y = pos.y, .z = pos.z + 1.0 });
+    con.print("[markers] destroying marker...\n");
+    destroyWorldObject(marker);
+    con.print("[markers] marker destroyed\n");
 }
 
 // =============================================================================
@@ -263,7 +213,7 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHooks() void {
-    // Nothing to hook yet - markers are created via Lua commands
+    // Nothing to hook - markers are created via Lua commands
 }
 
 pub fn removeHooks() void {
