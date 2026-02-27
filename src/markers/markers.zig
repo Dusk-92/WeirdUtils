@@ -73,12 +73,14 @@ fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u
     return if (result != 0) @ptrFromInt(result) else null;
 }
 
-/// DestroyWorldObjectAndRelease — __fastcall(ECX=obj), tail JMP.
-fn destroyWorldObject(obj: *anyopaque) void {
+/// CleanupEntity_ProcessAttachments — __fastcall(ECX=entity), no stack params.
+/// High-level destructor: frees attachments, decrements refcount, dispatches
+/// to type-specific cleanup (render detach + scene graph removal + heap free).
+fn cleanupEntity(obj: *anyopaque) void {
     asm volatile ("call *%[func]"
         :
         : [_] "{ecx}" (@intFromPtr(obj)),
-          [func] "r" (o.FN_DESTROY_WORLD_OBJECT),
+          [func] "r" (o.FN_CLEANUP_ENTITY),
         : .{ .eax = true, .edx = true, .memory = true, .cc = true }
     );
 }
@@ -139,7 +141,7 @@ pub fn destroyTestMarker() void {
     test_marker = null;
 
     con.print("[markers] destroying marker...\n");
-    destroyWorldObject(marker);
+    cleanupEntity(marker);
     con.print("[markers] marker destroyed\n");
 }
 

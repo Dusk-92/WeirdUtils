@@ -43,8 +43,17 @@ pub const FN_ALLOCATE_WORLD_OBJECT: usize = 0x006a0930;
 
 /// DestroyWorldObjectAndRelease(object) — __fastcall, ECX=obj, no stack params.
 /// Unlinks from world object list (+0x10/+0x14), calls virtual destructor, frees heap.
-/// Ends with tail JMP to ReleaseToHeap — from caller's perspective, a normal return.
+/// ONLY for objects on WENTITY heap (from AllocateAndInitializeWorldObject).
 pub const FN_DESTROY_WORLD_OBJECT: usize = 0x006a0a70;
+
+/// CleanupEntity_ProcessAttachments(entity) — __fastcall, ECX=entity, no stack params.
+/// High-level destructor counterpart to CreateEntityInstance_WithAttachment.
+/// Walks and frees attachment children, decrements refcount at +0x0E, then
+/// dispatches to type-specific destructor based on flags at +0x8:
+///   flag 0x8 (M2):  destroyWorldEnvironment (0x6a6870) — scene graph removal + free
+///   flag 0x40 (WMO): cleanupGameObject (0x6a67a0) — render detach + spatial unlink + free
+/// Only actually frees when refcount reaches 0.
+pub const FN_CLEANUP_ENTITY: usize = 0x00670d50;
 
 /// DecrementReferenceCount(obj) — __fastcall, ECX=obj, no stack params.
 /// Decrements ref count; when it reaches 0, calls virtual destructor to free.
