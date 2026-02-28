@@ -45,6 +45,12 @@ pub fn getUnitPosition(unit: u32) Vec3 {
 /// ECX=modelPath, EDX=positionVec3ptr, stack: facing, flags, updateNow, param6, param7.
 /// Routes M2 models through CreateWorldUnit, WMO models through CreateGameObject.
 /// Returns a fully-registered game entity pointer.
+///
+/// NOTE: When updateNow=1, UpdateWorldPosition (0x698110) modifies the position
+/// vector in-place, snapping the entity's bounding sphere to the terrain chunk
+/// grid. This means the entity may render a few units away from the requested
+/// position. The offset varies depending on proximity to grid boundaries.
+/// Pass updateNow=0 to skip this, at the cost of no spatial grid registration.
 fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u32, update_now: u32) ?*anyopaque {
     const facing_bits: u32 = @bitCast(facing);
     const stack_args = [5]u32{
@@ -108,7 +114,7 @@ pub fn createTestMarker() ?*anyopaque {
     con.fmt("[markers] player pos = {d:.1}, {d:.1}, {d:.1}\n", .{ pos.x, pos.y, pos.z });
     if (pos.x == 0 and pos.y == 0 and pos.z == 0) return null;
 
-    var position = [3]f32{ pos.x + 10.0, pos.y + 10.0, pos.z + 2.0 };
+    var position = [3]f32{ pos.x, pos.y, pos.z + 2.0 };
 
     con.print("[markers] calling CreateEntityInstance_WithAttachment...\n");
     const obj = createEntityInstance(MODEL_PATH, &position, 0.0, 0, 1) orelse {
