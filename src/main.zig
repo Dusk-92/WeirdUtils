@@ -485,7 +485,7 @@ fn callCleanupFileContext(ctx: [*]u8) void {
         :
         : [_] "{ecx}" (@intFromPtr(ctx)),
           [func] "r" (@as(u32, 0x6472d0)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
 }
 
@@ -537,7 +537,7 @@ fn openFileDetour(
         }
 
         handle_out.* = @intFromPtr(ctx);
-        con.fmt("[file] fake ctx: {s} ({d} bytes)\n", .{ path_span, entry.data.len });
+        con.fmt("[file] fake ctx @0x{x}: {s} ({d} bytes)\n", .{ @intFromPtr(ctx), path_span, entry.data.len });
         return 2; // success (non-zero type code)
     }
 
@@ -555,7 +555,9 @@ fn getFileSizeDetour(
 ) callconv(sc) u32 {
     if (isFakeFileContext(file_ctx)) {
         if (high_size_out) |h| h.* = 0;
-        return hook.readMem(u32, file_ctx + 0x34);
+        const size = hook.readMem(u32, file_ctx + 0x34);
+        con.fmt("[file] getFileSize fake @0x{x} = {d}\n", .{ file_ctx, size });
+        return size;
     }
 
     const orig = get_file_size_hook.getTrampoline(
@@ -578,6 +580,8 @@ fn readFileDetour(
         const data_ptr = hook.readMem(u32, ctx + 0x30);
         const data_size = hook.readMem(u32, ctx + 0x34);
         const read_size = @min(size, data_size);
+
+        con.fmt("[file] readFile fake @0x{x} size={d}/{d} async=0x{x}\n", .{ ctx, read_size, data_size, async_ptr });
 
         const src: [*]const u8 = @ptrFromInt(data_ptr);
         @memcpy(buffer[0..read_size], src[0..read_size]);
@@ -657,22 +661,25 @@ fn processAsyncDetour(param1: u32, _edx: u32) callconv(.c) void {
 // --- Hook 6: CleanupFileHandleResources (0x648730) ---
 
 fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
-    if (isFakeFileContext(file_ctx)) {
-        const ctx: [*]u8 = @ptrFromInt(file_ctx);
-
-        // cleanupFileContext frees +0x0C, +0x10, +0x18, +0x1C and destroys critical section.
-        // Do NOT manually free +0x0C here — that would be a double-free.
-        callCleanupFileContext(ctx);
-
-        // Free the 0x60-byte context block
-        freeGameBuffer(ctx);
-        return;
+    const fake = isFakeFileContext(file_ctx);
+    if (fake) {
+        const path_ptr = hook.readMem(u32, file_ctx + 0x0C);
+        if (path_ptr != 0) {
+            const path: [*:0]const u8 = @ptrFromInt(path_ptr);
+            con.fmt("[file] cleanup FAKE @0x{x}: {s}\n", .{ file_ctx, std.mem.span(path) });
+        } else {
+            con.fmt("[file] cleanup FAKE @0x{x}: (no path)\n", .{file_ctx});
+        }
     }
 
+    // Always use original CleanupFileHandleResources — it handles fake contexts correctly
+    // (NULL-safe checks on +0x04/+0x3C/+0x40/+0x08, then cleanupFileContext + FreeMemory).
     const orig = cleanup_file_handle_hook.getTrampoline(
         *const fn (u32) callconv(sc) void,
     );
     orig(file_ctx);
+
+    if (fake) con.fmt("[file] cleanup FAKE @0x{x} done\n", .{file_ctx});
 }
 
 // --- Hook 5: loadModelFromFileAsync (0x71d4e0) ---
@@ -729,16 +736,49 @@ fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_call
         @as(*align(1) u32, @ptrFromInt(model + 0x0c)).* = 0;
         con.print("[file]   task=0 set\n");
 
-        // Skip cleanup for now (leaks 0x60 bytes) — investigate separately
-        // cleanupFileHandleDetour(file_handle);
-        con.print("[file]   skipping cleanup (leak ok)\n");
+        // Match onModelLoadComplete ordering: clean up file handle BEFORE processing.
+        // The original async flow does: CleanupFileHandleResources → ReturnAsyncTaskToPool
+        // → model+0x0c=0 → processLoadedModelData. We must close the file context before
+        // processLoadedModelData runs, because initializeModelResources creates texture
+        // async tasks that interact with the file I/O system.
+        // Call original CleanupFileHandleResources through the trampoline (bypasses our
+        // detour, avoids the callconv crash from Issue 1). Original is __stdcall(1).
+        con.fmt("[file]   cleanup via trampoline fh=0x{x}\n", .{file_handle});
+        asm volatile (
+            \\push %[fh]
+            \\call *%[func]
+            :
+            : [fh] "r" (file_handle),
+              [func] "r" (cleanup_file_handle_hook.trampoline),
+            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
+        );
+        con.print("[file]   cleanup done\n");
+
+        // Dump model fields before processLoadedModelData
+        con.fmt("[file]   PRE  model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
+            hook.readMem(u32, model + 0x0c),
+            hook.readMem(u32, model + 0x130),
+            hook.readMem(u32, model + 0x134),
+            hook.readMem(u32, model + 0x138),
+        });
 
         // Call processLoadedModelData directly — __fastcall(ECX=model)
         con.fmt("[file]   calling processLoadedModelData(0x{x})...\n", .{model});
         const result = hook.fastcall(u32, 0x71d640, model, 0);
-        con.fmt("[file]   processLoadedModelData returned 0x{x}\n", .{result});
+        con.print("[file]   processLoadedModelData returned\n");
+        con.fmt("[file]   result=0x{x}\n", .{result});
 
-        con.fmt("[file] loadModelAsync: sync loaded {d} bytes\n", .{data_size});
+        // Dump model fields after processLoadedModelData — check if texture async task was created
+        con.print("[file]   POST dump:\n");
+        con.fmt("[file]   POST model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
+            hook.readMem(u32, model + 0x0c),
+            hook.readMem(u32, model + 0x130),
+            hook.readMem(u32, model + 0x134),
+            hook.readMem(u32, model + 0x138),
+        });
+
+        con.fmt("[file]   sync loaded {d} bytes, returning 1\n", .{data_size});
+        con.print("[file]   === loadModelAsyncDetour EXIT ===\n");
         return 1;
     }
 
