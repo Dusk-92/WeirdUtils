@@ -10,6 +10,9 @@ const build_opts = struct {
     const markers = @import("build_options").enable_markers;
     const framecrash = @import("build_options").enable_framecrash;
     const combatlog = @import("build_options").enable_combatlog;
+    const minimapicons = @import("build_options").enable_minimapicons;
+    const transmogfix = @import("build_options").enable_transmogfix;
+    const assetfix = @import("build_options").enable_assetfix;
 };
 
 // Conditional module imports
@@ -19,6 +22,9 @@ const outline = if (build_opts.outline) @import("outline/api.zig") else struct {
 const markers = if (build_opts.markers) @import("markers/markers.zig") else struct {};
 const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig") else struct {};
 const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") else struct {};
+const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
+const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix.zig") else struct {};
+const assetfix = if (build_opts.assetfix) @import("assetfix/assetfix.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -312,12 +318,6 @@ const markers_spells_assets = if (build_opts.markers) [_]FileEntry{
     .{ .name = "Raid_UI_FX_Green.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Green.m2") },
     .{ .name = "Raid_UI_FX_Purple.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Purple.m2") },
     .{ .name = "Raid_UI_FX_Red.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Red.m2") },
-    // Skin files
-    .{ .name = "Raid_UI_FX_Yellow00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Yellow00.skin") },
-    .{ .name = "Raid_UI_FX_Cyan00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Cyan00.skin") },
-    .{ .name = "Raid_UI_FX_Green00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Green00.skin") },
-    .{ .name = "Raid_UI_FX_Purple00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Purple00.skin") },
-    .{ .name = "Raid_UI_FX_Red00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Red00.skin") },
     // Per-model raid target icon textures
     .{ .name = "RaidTarget_Star.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Star.blp") },
     .{ .name = "RaidTarget_Square.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Square.blp") },
@@ -687,18 +687,10 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
 fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_callback: u32) callconv(.c) u32 {
     _ = _edx;
 
-    // Debug: log every call to confirm the hook is firing
-    con.fmt("[file] loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
-    con.fmt("[file]   fh type={d} handle=0x{x} embed=0x{x} isFake={}\n", .{
-        hook.readMem(u32, file_handle),
-        hook.readMem(u32, file_handle + 0x04),
-        hook.readMem(u32, file_handle + 0x30),
-        isFakeFileContext(file_handle),
-    });
-
     // file_handle IS the file context address directly (Ghidra shows pointer* but
     // the assembly pushes it directly to GetFileSizeFromHandle — no dereference)
     if (isFakeFileContext(file_handle)) {
+        con.fmt("[file] loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
         const data_ptr = hook.readMem(u32, file_handle + 0x30);
         const data_size = hook.readMem(u32, file_handle + 0x34);
         con.fmt("[file]   embed_ptr=0x{x} embed_size={d}\n", .{ data_ptr, data_size });
@@ -993,11 +985,20 @@ fn install() void {
     _ = file_hook.install(0x648620, 6, @intFromPtr(&loadFileDetour), &.{});
     _ = lsf_hook.install(0x490250, 6, @intFromPtr(&loadScriptFunctionsDetour), &.{1});
 
+    if (build_opts.assetfix) {
+        _ = assetfix.installHooks();
+    }
     if (build_opts.framecrash) {
         framecrash.installHooks();
     }
     if (build_opts.combatlog) {
         combatlog.installHooks();
+    }
+    if (build_opts.transmogfix) {
+        _ = transmogfix.installHooks();
+    }
+    if (build_opts.minimapicons) {
+        minimapicons.installHooks();
     }
 
     if (load_addons_hook.prepare(0x51F600, 7, &.{})) {
@@ -1036,6 +1037,15 @@ fn uninstall() void {
     }
     if (build_opts.combatlog) {
         combatlog.removeHooks();
+    }
+    if (build_opts.minimapicons) {
+        minimapicons.removeHooks();
+    }
+    if (build_opts.transmogfix) {
+        transmogfix.removeHooks();
+    }
+    if (build_opts.assetfix) {
+        assetfix.removeHooks();
     }
 
     load_addons_hook.remove();

@@ -43,6 +43,11 @@ extern "kernel32" fn WriteFile(
 ) callconv(WINAPI) i32;
 
 extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(WINAPI) i32;
+extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: [*:0]const u8) callconv(WINAPI) ?HANDLE;
+extern "kernel32" fn ReleaseMutex(hMutex: HANDLE) callconv(WINAPI) i32;
+extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
+const ERROR_ALREADY_EXISTS: u32 = 183;
 
 // =============================================================================
 // State
@@ -76,6 +81,8 @@ var queue_tail: usize = 0;
 var queue_count: usize = 0;
 var mutex: std.Thread.Mutex = .{};
 var worker_running: bool = false;
+var g_mutex: ?HANDLE = null;
+var g_is_hook_owner: bool = false;
 
 fn enqueue(shot: PendingScreenshot) bool {
     if (queue_count >= MAX_PENDING) return false;
@@ -342,6 +349,24 @@ pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
 
 pub fn installHook() void {
     con.print("[screenshot] Module loaded\n");
+
+    // Multi-DLL safety: only one instance per process should hook
+    var mutex_name_buf: [64]u8 = undefined;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\ScreenshotHook_{d}", .{GetCurrentProcessId()}) catch return;
+    mutex_name_buf[mutex_name.len] = 0;
+
+    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
+    if (g_mutex == null) return;
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        _ = CloseHandle(g_mutex.?);
+        g_mutex = null;
+        g_is_hook_owner = false;
+        con.print("[screenshot] Another DLL owns hooks (mutex taken), skipping\n");
+        return;
+    }
+    g_is_hook_owner = true;
+
     // CTgaFile::Write at 0x5a4810
     // __thiscall(self, filename) — prologue: 55 8B EC 83 EC 08 = 6 bytes, no fixups
     // Thunk: fastcall(ECX=self, EDX, stack: filename) → cdecl(self, edx, filename)
@@ -359,5 +384,16 @@ pub fn installHook() void {
 }
 
 pub fn removeHook() void {
-    tga_hook.remove();
+    if (g_is_hook_owner) {
+        tga_hook.remove();
+    }
+
+    if (g_is_hook_owner) {
+        if (g_mutex) |m| {
+            _ = ReleaseMutex(m);
+            _ = CloseHandle(m);
+            g_mutex = null;
+        }
+    }
+    g_is_hook_owner = false;
 }

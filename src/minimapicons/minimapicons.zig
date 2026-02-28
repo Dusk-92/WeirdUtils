@@ -1,9 +1,12 @@
-//! Combat log freshness module.
+//! Custom minimap icons module.
 //!
-//! Appends a timestamp to the combat log filename so each client session
-//! gets a fresh log file (e.g. WoWCombatLog_20260227_123456.txt).
+//! Adds distinct minimap icons for specific NPC types: flight masters,
+//! mailboxes, reagent vendors, class trainers, etc.
 //!
-//! TODO: Find and hook the combat log open/create function.
+//! See: VanillaHelpers addon (https://github.com/nicholasgasior/VanillaHelpers)
+//! for reference on NPC type detection and minimap icon overlay patterns.
+//!
+//! TODO: Hook minimap icon rendering, classify NPCs by type, overlay custom icons.
 
 const std = @import("std");
 const con = @import("../console.zig");
@@ -20,11 +23,11 @@ var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
 pub fn installHooks() void {
-    con.print("[combatlog] Module loaded (stub)\n");
+    con.print("[minimapicons] Module loaded (stub)\n");
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\CombatlogHook_{d}", .{GetCurrentProcessId()}) catch return;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\MinimapiconsHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
@@ -34,7 +37,7 @@ pub fn installHooks() void {
         _ = CloseHandle(g_mutex.?);
         g_mutex = null;
         g_is_hook_owner = false;
-        con.print("[combatlog] Another DLL owns hooks (mutex taken), skipping\n");
+        con.print("[minimapicons] Another DLL owns hooks (mutex taken), skipping\n");
         return;
     }
     g_is_hook_owner = true;

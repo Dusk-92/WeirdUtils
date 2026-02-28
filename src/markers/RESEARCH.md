@@ -178,6 +178,80 @@ The trampoline memory (VirtualAlloc'd) contained zeros instead of the saved prol
 
 **Fix**: Install Storm I/O hooks (`installFileHooks`) BEFORE `file_hook` at 0x648620. Remove in reverse order.
 
-### Open Questions
-- Does M2 async loading go through `ReadFileFromMultipleSources` or bypass it via direct `fileReadWithLock`? The `processAsyncDetour` hook catches the latter path. If M2 still shows ErrorCube, may need hook 5 (`loadModelFromFileAsync` at 0x71d4e0).
-- `openFileWithOptions` return value: returns type code (0=fail, 1-4=success per type). We return 2 for fakes. Callers primarily check handle_out != NULL.
+### Two Async Systems (Confirmed)
+
+There are TWO independent async systems for file I/O:
+
+**1. High-level async task system** (used by M2 model + texture loading):
+- Queue: `AsyncTask_QueueForExecution` (0x443ae0)
+- Worker: `AsyncTaskWorkerThread` (0x443360) — calls **ReadFileFromMultipleSources** (our hook 3!)
+- Main thread: `ProcessAsyncTasksWithTimeLimit` (0x443E70) — calls completion callbacks
+- Task structure: `[0]=file_ctx, [1]=buffer, [2]=size, [3]=callback_ctx, [4]=callback_fn`
+- For M2 models: callback = `onModelLoadComplete` (0x71d5e0), executor = `asyncFileReader` (0x71d610)
+- For textures: callback = `TextureLoadCallback` (0x44a500), queued from `LoadTextureFromPath` (0x44a310)
+
+**2. Low-level file async system** (NOT used for texture/M2 loading):
+- `processAsyncFileOperation` (0x647350) — calls **fileReadWithLock** (0x740c97) directly
+- Request: `+0x08=file_ctx, +0x0C=dest_buf, +0x10=read_size, +0x14=seek/event`
+- Type-dispatched: type 0→fileReadWithLock, type 1→decompressFileData, type 2/3→stream, type 4→archive
+- Has close-after-read flag at ctx+0x58, refcount at ctx+0x5c
+- NOT installed as a hook — not needed since texture loading uses the high-level system
+
+### onModelLoadComplete (0x71d5e0) — Verified Decompile
+```c
+void __fastcall onModelLoadComplete(void *modelObject) {
+    CleanupFileHandleResources(**(int **)(modelObject + 0xc));  // free file handle via task
+    ReturnAsyncTaskToPool(*(int *)(modelObject + 0xc));          // return task
+    *(undefined4 *)(modelObject + 0xc) = 0;                      // clear task ptr
+    processLoadedModelData(modelObject);                          // process M2 data
+}
+```
+**Critical**: cleanup file handle BEFORE processLoadedModelData. Our hook matches this order.
+
+### cleanupFileContext (0x6472d0) — Verified Decompile
+```c
+void __fastcall cleanupFileContext(int param_1) {
+    if (*(param_1 + 0x1c)) { cleanupInflateContext(*(param_1+0x1c)); FreeMemory(*(param_1+0x1c)); }
+    if (*(param_1 + 0x0c)) { FreeMemory(*(param_1 + 0x0c)); }  // path string
+    if (*(param_1 + 0x10)) { FreeMemory(*(param_1 + 0x10)); }
+    if (*(param_1 + 0x18)) { FreeMemory(*(param_1 + 0x18)); }
+    DeleteCriticalSection(param_1 + 0x24);
+}
+```
+NOTE: cleanupFileContext DOES free +0x0C (path string). Do NOT free it manually.
+
+### TextureLoadCallback (0x44a500) — Verified Decompile
+```c
+void __fastcall TextureLoadCallback(int texture_obj) {
+    puVar1 = ProcessTextureData(texture_obj);
+    if (puVar1 == NULL) CreateSolidColorTexture(&fallback, texture_obj);
+    CleanupFileHandleResources(**(int **)(texture_obj + 0x138));  // task[0] = file ctx
+    **(int **)(texture_obj + 0x138) = 0;                          // clear file ctx in task
+    ReturnAsyncTaskToPool(*(int *)(texture_obj + 0x138));
+    *(int *)(texture_obj + 0x138) = 0;
+}
+```
+Called by ProcessAsyncTasksWithTimeLimit on the main thread after worker completes.
+
+### LoadTextureFromPath (0x44a310) — Texture Async Task Setup
+```c
+puVar5 = openFileWithOptions(NULL, path, flags, &file_handle);  // hook 1 creates fake
+puVar7 = AllocateAsyncTaskObject();
+texture_obj[0x4e] = puVar7;                // +0x138 = task ptr
+puVar7[3] = texture_obj;                    // task[3] = texture obj
+*(task + 0x10) = TextureLoadCallback;       // task[4] = completion callback
+*(task + 0x00) = file_handle;               // task[0] = file context
+size = GetFileSizeFromHandle(file_handle);  // hook 2 returns size
+*(task + 0x08) = size;                      // task[2] = file size
+*(task + 0x04) = global_buffer_pool_ptr;    // task[1] = buffer
+AsyncTask_QueueForExecution(task);
+```
+
+### Current Crash: EIP=0 During TextureLoadCallback
+- Crash at EIP=0x00000000 after processLoadedModelData returns 1
+- Stack shows TextureLoadCallback (0x44A526 = after CALL CleanupFileHandleResources)
+- File context 0x36596088 on stack (was M2 ctx, freed, reused as BLP ctx)
+- EDX=0x36596080 (ctx-8), EBP=04AA3212 (in weirdutils.dll — corrupted frame ptr)
+- Crash appears to be inside our cleanupFileHandleDetour during BLP context cleanup
+- BLP data IS served correctly (AsyncTaskWorkerThread → ReadFileFromMultipleSources → hook 3)
+- Investigation ongoing: possible stack corruption in callCleanupFileContext or freeGameBuffer

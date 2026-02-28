@@ -1,8 +1,15 @@
+const std = @import("std");
 const hook = @import("hook");
 const con = @import("../console.zig");
 
-const WINAPI = @import("std").builtin.CallingConvention.winapi;
+const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
+extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
+extern "kernel32" fn ReleaseMutex(hMutex: *anyopaque) callconv(WINAPI) i32;
+extern "kernel32" fn CloseHandle(hObject: *anyopaque) callconv(WINAPI) i32;
+extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
+const ERROR_ALREADY_EXISTS: u32 = 183;
 
 // =============================================================================
 // Offsets
@@ -267,6 +274,9 @@ pub fn interactNearest(L: *anyopaque) callconv(.c) u32 {
 
 const MAX_LOOT_QUEUE: usize = 100;
 
+var g_mutex: ?*anyopaque = null;
+var g_is_hook_owner: bool = false;
+
 var loot_queue: [MAX_LOOT_QUEUE]u64 = .{0} ** MAX_LOOT_QUEUE;
 var loot_queue_count: usize = 0;
 var loot_queue_index: usize = 0;
@@ -402,6 +412,24 @@ fn callOriginalSceneEnd(device: u32) void {
 
 pub fn installHooks() void {
     con.print("[interact] Module loaded\n");
+
+    // Multi-DLL safety: only one instance per process should hook
+    var mutex_name_buf: [64]u8 = undefined;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\InteractHook_{d}", .{GetCurrentProcessId()}) catch return;
+    mutex_name_buf[mutex_name.len] = 0;
+
+    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
+    if (g_mutex == null) return;
+
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        _ = CloseHandle(g_mutex.?);
+        g_mutex = null;
+        g_is_hook_owner = false;
+        con.print("[interact] Another DLL owns hooks (mutex taken), skipping\n");
+        return;
+    }
+    g_is_hook_owner = true;
+
     // SceneEnd — per-frame loot queue processing
     // Uses thunk: __fastcall(ECX=device, EDX) → cdecl(device, edx)
     if (scene_end_hook.prepare(Offsets.ADDR_SceneEnd, 9, &.{})) {
@@ -412,5 +440,16 @@ pub fn installHooks() void {
 }
 
 pub fn removeHooks() void {
-    scene_end_hook.remove();
+    if (g_is_hook_owner) {
+        scene_end_hook.remove();
+    }
+
+    if (g_is_hook_owner) {
+        if (g_mutex) |m| {
+            _ = ReleaseMutex(m);
+            _ = CloseHandle(m);
+            g_mutex = null;
+        }
+    }
+    g_is_hook_owner = false;
 }
