@@ -8,6 +8,8 @@ const build_opts = struct {
     const interact = @import("build_options").enable_interact;
     const outline = @import("build_options").enable_outline;
     const markers = @import("build_options").enable_markers;
+    const framecrash = @import("build_options").enable_framecrash;
+    const combatlog = @import("build_options").enable_combatlog;
 };
 
 // Conditional module imports
@@ -15,6 +17,8 @@ const screenshot = if (build_opts.screenshot) @import("screenshot/screenshot.zig
 const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
 const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
 const markers = if (build_opts.markers) @import("markers/markers.zig") else struct {};
+const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig") else struct {};
+const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -300,9 +304,47 @@ const markers_files = if (build_opts.markers) [_]FileEntry{
     .{ .name = "Bindings.xml", .data = @embedFile("markers/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
-const markers_assets = if (build_opts.markers) [_]FileEntry{
-    .{ .name = "xyz.m2", .data = @embedFile("markers/assets/World/ArtTest/Boxtest/xyz.m2") },
-    .{ .name = "xyz.blp", .data = @embedFile("markers/assets/World/ArtTest/Boxtest/xyz.blp") },
+// Marker model + skin + textures served under Spells\ prefix
+const markers_spells_assets = if (build_opts.markers) [_]FileEntry{
+    // Models (5 colors)
+    .{ .name = "Raid_UI_FX_Yellow.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Yellow.m2") },
+    .{ .name = "Raid_UI_FX_Cyan.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Cyan.m2") },
+    .{ .name = "Raid_UI_FX_Green.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Green.m2") },
+    .{ .name = "Raid_UI_FX_Purple.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Purple.m2") },
+    .{ .name = "Raid_UI_FX_Red.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Red.m2") },
+    // Skin files
+    .{ .name = "Raid_UI_FX_Yellow00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Yellow00.skin") },
+    .{ .name = "Raid_UI_FX_Cyan00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Cyan00.skin") },
+    .{ .name = "Raid_UI_FX_Green00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Green00.skin") },
+    .{ .name = "Raid_UI_FX_Purple00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Purple00.skin") },
+    .{ .name = "Raid_UI_FX_Red00.skin", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Red00.skin") },
+    // Per-model raid target icon textures
+    .{ .name = "RaidTarget_Star.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Star.blp") },
+    .{ .name = "RaidTarget_Square.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Square.blp") },
+    .{ .name = "RaidTarget_Triangle.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Triangle.blp") },
+    .{ .name = "RaidTarget_Diamond.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Diamond.blp") },
+    .{ .name = "RaidTarget_X.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_X.blp") },
+    // Shared effect textures
+    .{ .name = "T_VFX_FLARE05_32ALPHA.BLP", .data = @embedFile("markers/assets/Spells/T_VFX_FLARE05_32ALPHA.BLP") },
+    .{ .name = "GRAD2D.BLP", .data = @embedFile("markers/assets/Spells/GRAD2D.BLP") },
+    .{ .name = "GRAD2C2.BLP", .data = @embedFile("markers/assets/Spells/GRAD2C2.BLP") },
+    .{ .name = "NEXUS_FIREBEAM_FAINT_SQUARE_ORA.BLP", .data = @embedFile("markers/assets/Spells/NEXUS_FIREBEAM_FAINT_SQUARE_ORA.BLP") },
+} else [_]FileEntry{};
+
+// Shared effect textures served under World\Expansion01\Doodads\Zulaman\Doors\ prefix
+const markers_world_assets = if (build_opts.markers) [_]FileEntry{
+    .{ .name = "T_VFX_FIRE03_A.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_FIRE03_A.BLP") },
+    .{ .name = "T_VFX_BORDER6.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_BORDER6.BLP") },
+} else [_]FileEntry{};
+
+// XYZ debug model (renamed to avoid collision with game's built-in xyz.m2)
+const markers_xyz_model = if (build_opts.markers) [_]FileEntry{
+    .{ .name = "WU_XYZ.m2", .data = @embedFile("markers/assets/Spells/WU_XYZ.m2") },
+} else [_]FileEntry{};
+
+// XYZ texture served under World\ArtTest\Boxtest\ (matches M2 internal reference)
+const markers_xyz_texture = if (build_opts.markers) [_]FileEntry{
+    .{ .name = "xyz.blp", .data = @embedFile("markers/assets/Spells/xyz.blp") },
 } else [_]FileEntry{};
 
 // All addon prefixes to check
@@ -312,7 +354,10 @@ const addon_prefixes = [_]AddonPrefix{
     .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
     .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
     .{ .prefix = "Interface\\AddOns\\Markers\\", .files = &markers_files },
-    .{ .prefix = "World\\ArtTest\\Boxtest\\", .files = &markers_assets },
+    .{ .prefix = "Spells\\", .files = &markers_spells_assets },
+    .{ .prefix = "Spells\\", .files = &markers_xyz_model },
+    .{ .prefix = "World\\Expansion01\\Doodads\\Zulaman\\Doors\\", .files = &markers_world_assets },
+    .{ .prefix = "World\\ArtTest\\Boxtest\\", .files = &markers_xyz_texture },
 };
 
 fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
@@ -387,6 +432,355 @@ fn loadFileDetour(
         *const fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(sc) u32,
     );
     return orig(unk, path, buf_out, size_out, extra_alloc, flags, async_ptr);
+}
+
+// =============================================================================
+// In-memory file serving hooks (Storm file I/O layer)
+// =============================================================================
+//
+// M2 model loading bypasses our LoadFileWithTextureResourceFallback hook.
+// These hooks intercept at the lower Storm file I/O level (openFileWithOptions
+// and friends) to create fake file contexts for embedded files and serve data
+// from memory.
+//
+// Fake context detection: type==0, handle(+0x04)==NULL, embedded_ptr(+0x30)!=0
+
+var open_file_hook: hook.Hook = .{};
+var get_file_size_hook: hook.Hook = .{};
+var read_file_hook: hook.Hook = .{};
+var cleanup_file_handle_hook: hook.Hook = .{};
+var process_async_hook: hook.Hook = .{};
+var model_load_hook: hook.Hook = .{};
+
+// Windows API imports for async handling
+extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
+extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
+extern "kernel32" fn SetEvent(hEvent: *anyopaque) callconv(WINAPI) i32;
+
+/// Check if a file context is one of our fakes
+fn isFakeFileContext(ctx_addr: u32) bool {
+    if (ctx_addr < 0x10000) return false;
+    return hook.readMem(u32, ctx_addr) == 0 and // type == 0 (disk)
+        hook.readMem(u32, ctx_addr + 0x04) == 0 and // handle == NULL
+        hook.readMem(u32, ctx_addr + 0x30) != 0; // embedded ptr set
+}
+
+/// Call initializeFileContext (0x647290) — __thiscall(ECX=ctx, type)
+fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
+    asm volatile (
+        \\push %[ftype]
+        \\call *%[func]
+        :
+        : [_] "{ecx}" (@intFromPtr(ctx)),
+          [ftype] "r" (file_type),
+          [func] "r" (@as(u32, 0x647290)),
+        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+    );
+}
+
+/// Call cleanupFileContext (0x6472d0) — __thiscall(ECX=ctx)
+fn callCleanupFileContext(ctx: [*]u8) void {
+    asm volatile (
+        \\call *%[func]
+        :
+        : [_] "{ecx}" (@intFromPtr(ctx)),
+          [func] "r" (@as(u32, 0x6472d0)),
+        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+    );
+}
+
+/// Free a buffer via FreeMemory/SMemFree (0x646430) — __stdcall(ptr, src, flags)
+fn freeGameBuffer(ptr: [*]u8) void {
+    asm volatile (
+        \\push $0xffffffff
+        \\push %[src]
+        \\push %[ptr]
+        \\call *%[func]
+        :
+        : [ptr] "r" (@intFromPtr(ptr)),
+          [src] "r" (@intFromPtr(@as([*:0]const u8, "weirdutils"))),
+          [func] "r" (@as(u32, 0x646430)),
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
+    );
+}
+
+// --- Hook 1: openFileWithOptions (0x6477c0) ---
+
+fn openFileDetour(
+    archive_ptr: u32,
+    path: [*:0]const u8,
+    flags: u32,
+    handle_out: *u32,
+) callconv(sc) u32 {
+    if (findEmbeddedFile(path)) |entry| {
+        // Allocate and zero-fill 0x60-byte file context
+        const ctx = allocateGameBuffer(0x60) orelse {
+            handle_out.* = 0;
+            return 0;
+        };
+        @memset(ctx[0..0x60], 0);
+
+        // Initialize critical section and set type=0
+        callInitFileContext(ctx, 0);
+
+        // Store embedded data pointer and size in unused fields
+        @as(*align(1) u32, @ptrFromInt(@intFromPtr(ctx) + 0x30)).* = @intCast(@intFromPtr(entry.data.ptr));
+        @as(*align(1) u32, @ptrFromInt(@intFromPtr(ctx) + 0x34)).* = @intCast(entry.data.len);
+
+        // Duplicate path string at +0x0C for game's use
+        const path_span = std.mem.span(path);
+        const path_len: u32 = @intCast(path_span.len + 1);
+        if (allocateGameBuffer(path_len)) |path_buf| {
+            @memcpy(path_buf[0..path_span.len], path_span);
+            path_buf[path_span.len] = 0;
+            @as(*align(1) u32, @ptrFromInt(@intFromPtr(ctx) + 0x0C)).* = @intFromPtr(path_buf);
+        }
+
+        handle_out.* = @intFromPtr(ctx);
+        con.fmt("[file] fake ctx: {s} ({d} bytes)\n", .{ path_span, entry.data.len });
+        return 2; // success (non-zero type code)
+    }
+
+    const orig = open_file_hook.getTrampoline(
+        *const fn (u32, [*:0]const u8, u32, *u32) callconv(sc) u32,
+    );
+    return orig(archive_ptr, path, flags, handle_out);
+}
+
+// --- Hook 2: GetFileSizeFromHandle (0x6487f0) ---
+
+fn getFileSizeDetour(
+    file_ctx: u32,
+    high_size_out: ?*u32,
+) callconv(sc) u32 {
+    if (isFakeFileContext(file_ctx)) {
+        if (high_size_out) |h| h.* = 0;
+        return hook.readMem(u32, file_ctx + 0x34);
+    }
+
+    const orig = get_file_size_hook.getTrampoline(
+        *const fn (u32, ?*u32) callconv(sc) u32,
+    );
+    return orig(file_ctx, high_size_out);
+}
+
+// --- Hook 3: ReadFileFromMultipleSources (0x648460) ---
+
+fn readFileDetour(
+    ctx: u32,
+    buffer: [*]u8,
+    size: u32,
+    bytes_read_out: ?*u32,
+    async_ptr: u32,
+    param6: u32,
+) callconv(sc) u32 {
+    if (isFakeFileContext(ctx)) {
+        const data_ptr = hook.readMem(u32, ctx + 0x30);
+        const data_size = hook.readMem(u32, ctx + 0x34);
+        const read_size = @min(size, data_size);
+
+        const src: [*]const u8 = @ptrFromInt(data_ptr);
+        @memcpy(buffer[0..read_size], src[0..read_size]);
+
+        if (bytes_read_out) |out| out.* = read_size;
+
+        // If async, signal the completion event immediately
+        if (async_ptr != 0) {
+            const event_handle = hook.readMem(u32, async_ptr + 4);
+            if (event_handle != 0) {
+                _ = SetEvent(@ptrFromInt(event_handle));
+            }
+        }
+
+        return 1; // success
+    }
+
+    const orig = read_file_hook.getTrampoline(
+        *const fn (u32, [*]u8, u32, ?*u32, u32, u32) callconv(sc) u32,
+    );
+    return orig(ctx, buffer, size, bytes_read_out, async_ptr, param6);
+}
+
+// --- Hook 4: processAsyncFileOperation (0x647350) ---
+
+fn processAsyncDetour(param1: u32, _edx: u32) callconv(.c) void {
+    _ = _edx;
+    const ctx_addr = hook.readMem(u32, param1 + 0x08);
+
+    if (isFakeFileContext(ctx_addr)) {
+        // Enter critical section (same as original prologue)
+        EnterCriticalSection(@ptrFromInt(ctx_addr + 0x24));
+
+        // Read request fields
+        const dest = hook.readMem(u32, param1 + 0x0C);
+        const req_size = hook.readMem(u32, param1 + 0x10);
+        const data_ptr = hook.readMem(u32, ctx_addr + 0x30);
+        const data_size = hook.readMem(u32, ctx_addr + 0x34);
+        const read_size = @min(req_size, data_size);
+
+        // Copy embedded data to destination buffer
+        const src: [*]const u8 = @ptrFromInt(data_ptr);
+        const dst: [*]u8 = @ptrFromInt(dest);
+        @memcpy(dst[0..read_size], src[0..read_size]);
+
+        // Replicate cleanup epilogue from original function:
+        // 1. Decrement refcount at *(ctx + 0x5c)
+        const rc_addr = ctx_addr + 0x5c;
+        const cur_rc = hook.readMem(i32, rc_addr);
+        @as(*align(1) i32, @ptrFromInt(rc_addr)).* = cur_rc - 1;
+
+        // 2. Leave critical section
+        LeaveCriticalSection(@ptrFromInt(ctx_addr + 0x24));
+
+        // 3. Signal completion event: *(*(param1 + 0x14) + 4)
+        const seek_struct = hook.readMem(u32, param1 + 0x14);
+        if (seek_struct != 0) {
+            const event_handle = hook.readMem(u32, seek_struct + 4);
+            if (event_handle != 0) {
+                _ = SetEvent(@ptrFromInt(event_handle));
+            }
+        }
+
+        // 4. If close-after-read flag at *(ctx + 0x58) is set, clean up
+        const close_flag = hook.readMem(u32, ctx_addr + 0x58);
+        if (close_flag != 0) {
+            cleanupFileHandleDetour(ctx_addr);
+        }
+
+        return;
+    }
+
+    // Not our fake — call original via trampoline (__fastcall ECX=param1)
+    hook.fastcall(void, process_async_hook.trampoline, param1, 0);
+}
+
+// --- Hook 6: CleanupFileHandleResources (0x648730) ---
+
+fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
+    if (isFakeFileContext(file_ctx)) {
+        const ctx: [*]u8 = @ptrFromInt(file_ctx);
+
+        // cleanupFileContext frees +0x0C, +0x10, +0x18, +0x1C and destroys critical section.
+        // Do NOT manually free +0x0C here — that would be a double-free.
+        callCleanupFileContext(ctx);
+
+        // Free the 0x60-byte context block
+        freeGameBuffer(ctx);
+        return;
+    }
+
+    const orig = cleanup_file_handle_hook.getTrampoline(
+        *const fn (u32) callconv(sc) void,
+    );
+    orig(file_ctx);
+}
+
+// --- Hook 5: loadModelFromFileAsync (0x71d4e0) ---
+
+fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_callback: u32) callconv(.c) u32 {
+    _ = _edx;
+
+    // Debug: log every call to confirm the hook is firing
+    con.fmt("[file] loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
+    con.fmt("[file]   fh type={d} handle=0x{x} embed=0x{x} isFake={}\n", .{
+        hook.readMem(u32, file_handle),
+        hook.readMem(u32, file_handle + 0x04),
+        hook.readMem(u32, file_handle + 0x30),
+        isFakeFileContext(file_handle),
+    });
+
+    // file_handle IS the file context address directly (Ghidra shows pointer* but
+    // the assembly pushes it directly to GetFileSizeFromHandle — no dereference)
+    if (isFakeFileContext(file_handle)) {
+        const data_ptr = hook.readMem(u32, file_handle + 0x30);
+        const data_size = hook.readMem(u32, file_handle + 0x34);
+        con.fmt("[file]   embed_ptr=0x{x} embed_size={d}\n", .{ data_ptr, data_size });
+
+        // Toggle callback flag (bit 1 of model+8) based on shouldUseCallback
+        const flags = hook.readMem(u32, model + 0x08);
+        if (should_use_callback != 0) {
+            @as(*align(1) u32, @ptrFromInt(model + 0x08)).* = flags | 2;
+        } else {
+            @as(*align(1) u32, @ptrFromInt(model + 0x08)).* = flags & ~@as(u32, 2);
+        }
+
+        // Store size in model first (original does this before allocation)
+        @as(*align(1) u32, @ptrFromInt(model + 0x134)).* = data_size;
+
+        // Allocate buffer via setCullMode (0x71f9a0) — same as original path
+        // setCullMode is __fastcall(ECX=size), returns buffer pointer
+        const buffer_addr = hook.fastcall(u32, 0x71f9a0, data_size, 0);
+        if (buffer_addr == 0) {
+            con.print("[file]   setCullMode alloc failed\n");
+            return 0;
+        }
+        con.fmt("[file]   buffer=0x{x}\n", .{buffer_addr});
+
+        // Store buffer in model object
+        @as(*align(1) u32, @ptrFromInt(model + 0x130)).* = buffer_addr;
+
+        // Copy embedded data into the allocated buffer
+        const buffer: [*]u8 = @ptrFromInt(buffer_addr);
+        const src: [*]const u8 = @ptrFromInt(data_ptr);
+        @memcpy(buffer[0..data_size], src[0..data_size]);
+        con.print("[file]   memcpy done\n");
+
+        // No async task — set task pointer to NULL
+        @as(*align(1) u32, @ptrFromInt(model + 0x0c)).* = 0;
+        con.print("[file]   task=0 set\n");
+
+        // Skip cleanup for now (leaks 0x60 bytes) — investigate separately
+        // cleanupFileHandleDetour(file_handle);
+        con.print("[file]   skipping cleanup (leak ok)\n");
+
+        // Call processLoadedModelData directly — __fastcall(ECX=model)
+        con.fmt("[file]   calling processLoadedModelData(0x{x})...\n", .{model});
+        const result = hook.fastcall(u32, 0x71d640, model, 0);
+        con.fmt("[file]   processLoadedModelData returned 0x{x}\n", .{result});
+
+        con.fmt("[file] loadModelAsync: sync loaded {d} bytes\n", .{data_size});
+        return 1;
+    }
+
+    // Not our fake — call original trampoline (__thiscall: ECX=model, stack: fileHandle, shouldUseCallback)
+    return asm volatile (
+        \\push %[cb]
+        \\push %[fh]
+        \\call *%[func]
+        : [ret] "={eax}" (-> u32),
+        : [_] "{ecx}" (model),
+          [fh] "r" (file_handle),
+          [cb] "r" (should_use_callback),
+          [func] "r" (model_load_hook.trampoline),
+        : .{ .edx = true, .memory = true, .cc = true }
+    );
+}
+
+// --- Install/remove in-memory file hooks ---
+
+fn installFileHooks() void {
+    _ = open_file_hook.install(0x6477c0, 9, @intFromPtr(&openFileDetour), &.{});
+    _ = get_file_size_hook.install(0x6487f0, 6, @intFromPtr(&getFileSizeDetour), &.{});
+    _ = read_file_hook.install(0x648460, 6, @intFromPtr(&readFileDetour), &.{});
+    _ = cleanup_file_handle_hook.install(0x648730, 7, @intFromPtr(&cleanupFileHandleDetour), &.{});
+
+    // loadModelFromFileAsync is __thiscall(ECX=model, fileHandle, shouldUseCallback) — needs thunk bridge
+    if (model_load_hook.prepare(0x71d4e0, 6, &.{})) {
+        const thunk = model_load_hook.mem.? + 32;
+        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&loadModelAsyncDetour), 2);
+        model_load_hook.activate(@intFromPtr(thunk));
+    }
+
+    con.print("[file] in-memory file hooks installed\n");
+}
+
+fn removeFileHooks() void {
+    model_load_hook.remove();
+    process_async_hook.remove();
+    cleanup_file_handle_hook.remove();
+    read_file_hook.remove();
+    get_file_size_hook.remove();
+    open_file_hook.remove();
 }
 
 // =============================================================================
@@ -555,8 +949,16 @@ fn install() void {
     con.init();
     con.print("[weirdutils] Installing hooks\n");
     _ = protection_hook.install(0x42a320, 6, @intFromPtr(&luaProtectionDetour), &.{});
+    installFileHooks();
     _ = file_hook.install(0x648620, 6, @intFromPtr(&loadFileDetour), &.{});
     _ = lsf_hook.install(0x490250, 6, @intFromPtr(&loadScriptFunctionsDetour), &.{1});
+
+    if (build_opts.framecrash) {
+        framecrash.installHooks();
+    }
+    if (build_opts.combatlog) {
+        combatlog.installHooks();
+    }
 
     if (load_addons_hook.prepare(0x51F600, 7, &.{})) {
         const thunk = load_addons_hook.mem.? + 32;
@@ -589,10 +991,17 @@ fn uninstall() void {
     if (build_opts.interact) {
         interact.removeHooks();
     }
+    if (build_opts.framecrash) {
+        framecrash.removeHooks();
+    }
+    if (build_opts.combatlog) {
+        combatlog.removeHooks();
+    }
 
     load_addons_hook.remove();
     lsf_hook.remove();
     file_hook.remove();
+    removeFileHooks();
     protection_hook.remove();
     con.deinit();
 }

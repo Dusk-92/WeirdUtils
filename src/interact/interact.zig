@@ -1,4 +1,5 @@
 const hook = @import("hook");
+const con = @import("../console.zig");
 
 const WINAPI = @import("std").builtin.CallingConvention.winapi;
 extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
@@ -400,6 +401,7 @@ fn callOriginalSceneEnd(device: u32) void {
 // =============================================================================
 
 pub fn installHooks() void {
+    con.print("[interact] Module loaded\n");
     // SceneEnd — per-frame loot queue processing
     // Uses thunk: __fastcall(ECX=device, EDX) → cdecl(device, edx)
     if (scene_end_hook.prepare(Offsets.ADDR_SceneEnd, 9, &.{})) {

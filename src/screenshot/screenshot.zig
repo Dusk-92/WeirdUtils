@@ -1,5 +1,6 @@
 const std = @import("std");
 const hook = @import("hook");
+const con = @import("../console.zig");
 const png = @import("png.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -340,6 +341,7 @@ pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHook() void {
+    con.print("[screenshot] Module loaded\n");
     // CTgaFile::Write at 0x5a4810
     // __thiscall(self, filename) — prologue: 55 8B EC 83 EC 08 = 6 bytes, no fixups
     // Thunk: fastcall(ECX=self, EDX, stack: filename) → cdecl(self, edx, filename)

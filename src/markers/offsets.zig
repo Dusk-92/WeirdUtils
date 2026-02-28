@@ -78,3 +78,58 @@ pub const FN_CM2_CREATE_FOR_MODEL_OBJECT: usize = 0x00695100;
 /// ECX = world object, EDX = 4x4 transform matrix (float[16])
 /// Stack: bounds (float[6] min/max), halfExtents (float[3]), forceUpdate (int)
 pub const FN_UPDATE_OBJECT_TRANSFORM: usize = 0x006717d0;
+
+// =============================================================================
+// File I/O (Storm) — for in-memory file serving
+// =============================================================================
+
+/// openFileWithOptions — __stdcall(4), RET 0x10, prologue=9
+/// (archive_ptr, path, flags, handle_out) → type_code (0=fail, 1-4=success)
+pub const FN_OPEN_FILE_WITH_OPTIONS: usize = 0x006477c0;
+
+/// GetFileSizeFromHandle — __stdcall(2), RET 0x08, prologue=6
+/// (file_context, high_size_out) → size
+pub const FN_GET_FILE_SIZE: usize = 0x006487f0;
+
+/// ReadFileFromMultipleSources — __stdcall(6), RET 0x18, prologue=6
+/// (context, buffer, size, bytes_read_out, async_ptr, param6) → bool
+/// async_ptr==NULL: synchronous read. Non-NULL: queues async operation.
+pub const FN_READ_FILE: usize = 0x00648460;
+
+/// CleanupFileHandleResources — __stdcall(1), RET 0x04, prologue=7
+/// (file_context) → 1
+pub const FN_CLEANUP_FILE_HANDLE: usize = 0x00648730;
+
+/// processAsyncFileOperation — __fastcall(ECX=request), plain RET, prologue=7
+/// Request structure: +0x08=file_ctx, +0x0C=dest_buf, +0x10=read_size,
+/// +0x14=seek/event_struct (*(+0x14)+4 = event handle)
+pub const FN_PROCESS_ASYNC_FILE_OP: usize = 0x00647350;
+
+/// initializeFileContext — __thiscall(ECX=ctx, type)
+/// Sets context type, initializes critical section at +0x24, zeroes fields.
+pub const FN_INIT_FILE_CONTEXT: usize = 0x00647290;
+
+/// cleanupFileContext — __thiscall(ECX=ctx)
+/// Destroys critical section, cleanup companion to initializeFileContext.
+pub const FN_CLEANUP_FILE_CONTEXT: usize = 0x006472d0;
+
+/// FreeMemory (SMemFree) — __stdcall(3): (ptr, src_str, flags)
+pub const FN_FREE_MEMORY: usize = 0x00646430;
+
+// =============================================================================
+// M2 model loading (async pipeline)
+// =============================================================================
+
+/// loadModelFromFileAsync — __thiscall(ECX=model_obj), 2 stack params, RET 0x08
+/// (fileHandle: **ctx, shouldUseCallback: int) → 1
+/// Prologue: 55 8b ec 8b 55 0c 56 8b f1 — safe sizes: [6, 7, 9]
+/// Allocates async task to read file and call onModelLoadComplete when done.
+/// The async executor at 0x71d610 calls fileReadWithLock directly, bypassing
+/// our ReadFileFromMultipleSources hook — hence this hook fills the buffer
+/// synchronously for fake file contexts.
+pub const FN_LOAD_MODEL_ASYNC: usize = 0x0071d4e0;
+
+/// processLoadedModelData — __fastcall(ECX=model), no stack params, plain RET
+/// Parses model header from buffer at model+0x130 (ptr) / model+0x134 (size),
+/// initializes model resources, sets bit 0 of model+8 when done.
+pub const FN_PROCESS_LOADED_MODEL_DATA: usize = 0x0071d640;

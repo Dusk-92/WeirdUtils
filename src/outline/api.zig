@@ -4,6 +4,7 @@
 //! and a Lua C callback for `/wu outline` commands.
 
 const hook = @import("hook");
+const con = @import("../console.zig");
 const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");
 const d3d9_hook = @import("d3d9_hook.zig");
@@ -13,6 +14,7 @@ const d3d9_hook = @import("d3d9_hook.zig");
 /// dummy D3D9 device during engine init corrupts the d3d9 proxy's state and
 /// causes model rendering to stutter at ~10fps.
 pub fn init() bool {
+    con.print("[outline] Module loaded\n");
     if (!model_hook.installHooks()) return false;
     return true;
 }

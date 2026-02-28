@@ -67,8 +67,7 @@ fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u
           [_] "{edx}" (@intFromPtr(pos)),
           [a] "r" (&stack_args),
           [func] "r" (o.FN_CREATE_ENTITY_INSTANCE),
-        : .{ .memory = true, .cc = true }
-    );
+        : .{ .memory = true, .cc = true });
 
     return if (result != 0) @ptrFromInt(result) else null;
 }
@@ -81,8 +80,7 @@ fn cleanupEntity(obj: *anyopaque) void {
         :
         : [_] "{ecx}" (@intFromPtr(obj)),
           [func] "r" (o.FN_CLEANUP_ENTITY),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -91,7 +89,7 @@ fn cleanupEntity(obj: *anyopaque) void {
 
 var test_marker: ?*anyopaque = null;
 
-const MODEL_PATH: [*:0]const u8 = "Spells\\ErrorCube.mdx";
+const MODEL_PATH: [*:0]const u8 = "Spells\\WU_XYZ.m2";
 
 /// Create a test marker at player position using the native entity creation API.
 pub fn createTestMarker() ?*anyopaque {
@@ -110,7 +108,7 @@ pub fn createTestMarker() ?*anyopaque {
     con.fmt("[markers] player pos = {d:.1}, {d:.1}, {d:.1}\n", .{ pos.x, pos.y, pos.z });
     if (pos.x == 0 and pos.y == 0 and pos.z == 0) return null;
 
-    var position = [3]f32{ pos.x, pos.y, pos.z + 2.0 };
+    var position = [3]f32{ pos.x + 10.0, pos.y + 10.0, pos.z + 2.0 };
 
     con.print("[markers] calling CreateEntityInstance_WithAttachment...\n");
     const obj = createEntityInstance(MODEL_PATH, &position, 0.0, 0, 1) orelse {
@@ -161,8 +159,7 @@ fn luaPushNumber(L: u32, n: f64) void {
           [lo] "r" (raw[0]),
           [hi] "r" (raw[1]),
           [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -215,6 +212,7 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHooks() void {
+    con.print("[markers] Module loaded\n");
     // Nothing to hook - markers are created via Lua commands
 }
 

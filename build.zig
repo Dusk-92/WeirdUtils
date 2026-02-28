@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
     const enable_interact = b.option(bool, "interact", "Enable interact module") orelse true;
     const enable_outline = b.option(bool, "outline", "Enable outline module") orelse true;
     const enable_markers = b.option(bool, "markers", "Enable markers module") orelse true;
+    const enable_framecrash = b.option(bool, "framecrash", "Enable framecrash fix") orelse true;
+    const enable_combatlog = b.option(bool, "combatlog", "Enable combat log freshness") orelse true;
 
     // Create build options module
     const build_options = b.addOptions();
@@ -20,6 +22,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_interact", enable_interact);
     build_options.addOption(bool, "enable_outline", enable_outline);
     build_options.addOption(bool, "enable_markers", enable_markers);
+    build_options.addOption(bool, "enable_framecrash", enable_framecrash);
+    build_options.addOption(bool, "enable_combatlog", enable_combatlog);
     const build_options_module = build_options.createModule();
 
     const hook_mod = b.dependency("hook", .{
@@ -47,18 +51,22 @@ pub fn build(b: *std.Build) void {
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
     // Helper to create a single-module build
-    inline for (&[_]struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, markers: bool }{
-        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .markers = true },
-        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .markers = false },
-        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .markers = false },
-        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .markers = false },
-        .{ .name = "markers", .screenshot = false, .interact = false, .outline = false, .markers = true },
+    inline for (&[_]struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, markers: bool, framecrash: bool, combatlog: bool }{
+        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .markers = true, .framecrash = true, .combatlog = true },
+        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = true },
+        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .markers = false, .framecrash = true, .combatlog = true },
+        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .markers = false, .framecrash = true, .combatlog = true },
+        .{ .name = "markers", .screenshot = false, .interact = false, .outline = false, .markers = true, .framecrash = true, .combatlog = true },
+        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = false },
+        .{ .name = "combatlog", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = true },
     }) |variant| {
         const opts = b.addOptions();
         opts.addOption(bool, "enable_screenshot", variant.screenshot);
         opts.addOption(bool, "enable_interact", variant.interact);
         opts.addOption(bool, "enable_outline", variant.outline);
         opts.addOption(bool, "enable_markers", variant.markers);
+        opts.addOption(bool, "enable_framecrash", variant.framecrash);
+        opts.addOption(bool, "enable_combatlog", variant.combatlog);
 
         const variant_lib = b.addLibrary(.{
             .name = variant.name,
