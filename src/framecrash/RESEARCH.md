@@ -343,6 +343,120 @@ but its `relativeTo` field is NULL (no target frame set).
 `[0, 3, 6]`, used by the width layout pass. `SetFrameHitTestMode` iterates these
 indices to look up anchors from the frame's anchor array.
 
+---
+
+## Third Crash: GetWidth/GetHeight Stack Parameter Mismatch
+
+### Problem
+
+After hooking vtable[1] (GetWidth) and vtable[2] (GetHeight), the game crashed
+with stack corruption. The hooks were defined with signature `fn(this: u32) f32`
+but the actual functions take an extra stack parameter.
+
+### Root Cause
+
+`SetFrameHitTestMode` (0x7671a0) calls `vtable[1]` with `PUSH EAX` before the
+call — passing 1 stack argument. Since GetWidth/GetHeight are `__thiscall`, the
+callee must clean up this argument (RET 4). Our hooks with no stack parameter
+used RET 0, leaving 4 bytes on the stack after every call, causing misalignment
+and eventual crash.
+
+### Fix
+
+Changed hook signatures to include the extra parameter:
+```zig
+fn getWidthHook(this: u32, param: u32) callconv(THISCALL) f32
+fn getHeightHook(this: u32, param: u32) callconv(THISCALL) f32
+```
+
+The `param` value comes from `frame+0x58` and is passed through to the original.
+
+---
+
+## Frame Name Discovery
+
+### CFrame + 0x98 = Name String Pointer
+
+Confirmed via Ghidra decompilation of three functions:
+
+**GetName virtual** at vtable[1] (0x46ff70):
+```c
+char * GetName(CFrame *this) {
+    return *(char **)(this + 0x98);  // simply returns the name pointer
+}
+```
+
+**SetFrameName** (0x76c650):
+```c
+void SetFrameName(CFrame *this, char *name) {
+    // Frees old name at +0x98 if set
+    // Allocates + copies new name to +0x98
+}
+```
+
+**CleanupRegion** (0x76c560):
+```c
+void CleanupRegion(CFrame *this) {
+    // Frees name string at +0x98
+    *(this + 0x98) = NULL;
+    // ... other cleanup
+}
+```
+
+### CLayoutFrame Offset
+
+CLayoutFrame is an inner object within CFrame, starting at CFrame + 0x24.
+So given a CLayoutFrame pointer (e.g., relativeTo from an anchor):
+- `CFrame base = CLayoutFrame_ptr - 0x24`
+- `Frame name = *(CFrame_base + 0x98)` = `*(CLayoutFrame_ptr - 0x24 + 0x98)`
+
+---
+
+## Destruction Path Analysis (Ghidra)
+
+### cleanup_linked_list_structures (0x767720) — The Bottleneck
+
+All frame destruction goes through this function. Exactly 3 direct callers:
+
+| Caller | Address | Context |
+|--------|---------|---------|
+| `destroy_object` | 0x7676f0 | Direct frame destruction |
+| `CleanupRegion` | 0x76c560 | Region cleanup (called by WorldObjectBaseDestructor) |
+| `cleanupGraphicsResources` | 0x764390 | Graphics teardown |
+
+### WorldObjectBaseDestructor (0x7693b0) — Common Base
+
+All frame-type destructors eventually call `WorldObjectBaseDestructor`, which:
+1. Calls `cleanup_linked_list_structures(param_1 + 9)` — **our hook fires here**
+2. Calls `CleanupRegion` — also calls `cleanup_linked_list_structures`
+3. Calls `FrameScript_Destructor` (base class cleanup, list unlinking)
+
+16 callers of WorldObjectBaseDestructor (all are frame-type destructors):
+`WorldObjectDestructor`, `ChatBubbleFrame_Destructor`, `cleanup_minimap_object`,
+`CleanupLineObjectManager`, `cleanup_object_manager`, `SetAnimationRotation`,
+`CleanupPlayerModel`, `DestroyButtonResources`, `DestroyEditBoxResources`,
+`statusBarCleanupResources`, `cleanupMessageFrameResources`, `cleanupScrollFrame`,
+`CleanupObjectManager`, `CleanupColorSelectFrame`, `CleanupMovieFrame`, `luaIsVisible`
+
+### DestroyFrame (0x773240) — NOT a Destruction Path
+
+Only called from `InitializeFrameProperties` (0x7731d0). This is a **re-initialization**
+path, not frame destruction. No need to hook.
+
+### DestroyFrameScriptObject (0x4c34a0) — Vtable Entry, Already Covered
+
+Referenced only as DATA at `0x806cb8` (vtable slot). `FrameScript_Destructor` (0x4c3690)
+sets the vtable to this and does list unlinking / FreeMemory. It runs **after**
+`WorldObjectBaseDestructor`, so `cleanup_linked_list_structures` has already been
+called by the time this executes. No need to hook.
+
+### Conclusion
+
+**Our single hook on `cleanup_linked_list_structures` covers all frame destruction paths.**
+The vtable hooks (GetWidth/GetHeight/GetRelativeTo) remain as defense-in-depth but
+are not expected to fire during normal operation — they would only catch bugs in
+our cleanup logic or unknown destruction paths.
+
 ### Anchor Vtable (0x0081C44C) — Full Layout
 ```
 [0] +0x00 = 0x00767d80 → GetAnimationOrder (destructor)
