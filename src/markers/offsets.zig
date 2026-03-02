@@ -92,6 +92,15 @@ pub const WF_HIT_TERRAIN_Y: usize = 0x364;
 pub const WF_HIT_TERRAIN_Z: usize = 0x368;
 
 // =============================================================================
+// Per-frame world update
+// =============================================================================
+
+/// OnWorldUpdate — __fastcall(ECX=worldFrame), no stack params, void return.
+/// Called every frame while the world is active (in-game, not login screen).
+/// Part of CGWorldFrame update pipeline.
+pub const FN_ON_WORLD_UPDATE: usize = 0x00482EA0;
+
+// =============================================================================
 // Model creation
 // =============================================================================
 

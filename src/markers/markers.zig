@@ -47,11 +47,11 @@ const ANIM_DECAY: u32 = 159; // 666ms shrink-out
 const DECAY_DURATION_MS: u32 = 650; // slightly over 666ms to ensure animation completes
 
 const MODEL_PATHS = [NUM_MARKERS][*:0]const u8{
-    "Spells\\Raid_UI_FX_Yellow.m2",
-    "Spells\\Raid_UI_FX_Cyan.m2",
-    "Spells\\Raid_UI_FX_Green.m2",
-    "Spells\\Raid_UI_FX_Purple.m2",
-    "Spells\\Raid_UI_FX_Red.m2",
+    "Spells\\Raid_UI_FX_Cyan.m2", // 1 - Blue Square
+    "Spells\\Raid_UI_FX_Green.m2", // 2 - Green Triangle
+    "Spells\\Raid_UI_FX_Purple.m2", // 3 - Purple Diamond
+    "Spells\\Raid_UI_FX_Red.m2", // 4 - Red Cross
+    "Spells\\Raid_UI_FX_Yellow.m2", // 5 - Yellow Star
 };
 
 // =============================================================================
@@ -69,13 +69,14 @@ pub const Vec3 = struct {
 // =============================================================================
 
 var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
+var marker_positions: [NUM_MARKERS]?Vec3 = .{null} ** NUM_MARKERS;
 var marker_created_tick: [NUM_MARKERS]u32 = .{0} ** NUM_MARKERS;
 var hold_queued: [NUM_MARKERS]bool = .{false} ** NUM_MARKERS;
 
 const STAND_DURATION_MS: u32 = 3900;
 
 // Entities playing their Decay animation before destruction.
-// Cleaned up every frame by luaProcessAnimations (via Lua OnUpdate).
+// Cleaned up every frame by tickAnimations (via OnWorldUpdate hook).
 const MAX_DESPAWNING = 8;
 const DespawningEntity = struct {
     entity: *anyopaque,
@@ -322,10 +323,11 @@ fn placeMarker(index: usize, pos: Vec3) bool {
     };
 
     // Stand (grow-in) is queued by the engine in CM2Model_CreateForModelObject.
-    // Hold is deferred to the per-frame callback (luaProcessAnimations) once
+    // Hold is deferred to the per-frame callback (tickAnimations) once
     // the model is fully initialised (model+0x10 != 0), so it doesn't clobber
     // Stand in the command queue.
     marker_entities[index] = obj;
+    marker_positions[index] = pos;
     hold_queued[index] = false;
     marker_created_tick[index] = GetTickCount();
     con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
@@ -339,6 +341,7 @@ fn clearMarker(index: usize) void {
     if (marker_entities[index]) |existing| {
         beginDespawn(existing);
         marker_entities[index] = null;
+        marker_positions[index] = null;
         hold_queued[index] = false;
     }
 }
@@ -351,6 +354,7 @@ fn clearAllMarkers() void {
         if (marker_entities[i]) |existing| {
             beginDespawn(existing);
             marker_entities[i] = null;
+            marker_positions[i] = null;
             any = true;
         }
     }
@@ -435,10 +439,9 @@ pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
     return 0;
 }
 
-/// Per-frame callback (driven by Lua OnUpdate).
+/// Per-frame animation tick (driven by OnWorldUpdate hook).
 /// Queues Hold once after Stand finishes, then cleans up despawning entities.
-pub fn luaProcessAnimations(L: u32) callconv(.c) u32 {
-    _ = L;
+fn tickAnimations() void {
     const now = GetTickCount();
 
     cleanupDespawning();
@@ -451,8 +454,6 @@ pub fn luaProcessAnimations(L: u32) callconv(.c) u32 {
         playAnimation(entity, ANIM_HOLD, true);
         hold_queued[i] = true;
     }
-
-    return 0;
 }
 
 /// Lua: local x, y, z = GetPlayerPosition()
@@ -467,11 +468,46 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
     return 3;
 }
 
+/// Lua: local dist = DistanceToMark(index)
+/// Returns distance in yards from player to the stored marker position,
+/// or nil if the marker doesn't exist or there's no player.
+pub fn luaDistanceToMark(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
+    if (nargs < 1 or !lapi.isnumber(L, 1)) return 0;
+
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+    const index: usize = @intCast(raw_index - 1);
+
+    const mark_pos = marker_positions[index] orelse return 0;
+
+    const player = wow.getLocalPlayer();
+    if (player == 0) return 0;
+    const player_pos = getUnitPosition(player);
+    if (player_pos.x == 0 and player_pos.y == 0 and player_pos.z == 0) return 0;
+
+    const dx = player_pos.x - mark_pos.x;
+    const dy = player_pos.y - mark_pos.y;
+    const dz = player_pos.z - mark_pos.z;
+    const dist = @sqrt(dx * dx + dy * dy + dz * dz);
+
+    lapi.pushnumber(L, @floatCast(dist));
+    return 1;
+}
+
 // =============================================================================
 // World teardown hook
 // =============================================================================
 
 var world_cleanup_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var world_update_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
+
+/// OnWorldUpdate hook — per-frame tick while world is active.
+/// Drives animation state (Hold queue after Stand, despawn cleanup).
+fn worldUpdateDetour(frame: u32) callconv(fc) void {
+    tickAnimations();
+    world_update_hook.callOriginal(.{frame});
+}
 
 /// Pre-hook on CleanupWorldAndEntities (0x66fc40).
 /// Destroys all our entities via CleanupEntity_ProcessAttachments before the
@@ -501,6 +537,7 @@ fn destroyAllEntities() void {
     }
     for (&hold_queued) |*h| h.* = false;
     for (&marker_created_tick) |*t| t.* = 0;
+    for (&marker_positions) |*p| p.* = null;
 
     for (&despawning, 0..) |*slot, i| {
         if (slot.*) |d| {
@@ -542,10 +579,16 @@ pub fn installHooks() void {
     }
     g_is_hook_owner = true;
 
+    // Hook OnWorldUpdate for per-frame animation tick (runs every frame while world is active).
+    if (world_update_hook.attach(o.FN_ON_WORLD_UPDATE, &worldUpdateDetour) != .ok) {
+        con.print("[markers] FAILED to hook OnWorldUpdate!\n");
+    } else {
+        con.print("[markers] hooked OnWorldUpdate OK\n");
+    }
+
     // Hook CleanupWorldAndEntities to destroy our entities before world teardown.
     // This fires on map change, logout, AND exit — before heaps are destroyed.
-    const hook_result = world_cleanup_hook.attach(o.FN_CLEANUP_WORLD_AND_ENTITIES, &worldCleanupDetour);
-    if (hook_result != .ok) {
+    if (world_cleanup_hook.attach(o.FN_CLEANUP_WORLD_AND_ENTITIES, &worldCleanupDetour) != .ok) {
         con.print("[markers] FAILED to hook CleanupWorldAndEntities!\n");
     } else {
         con.print("[markers] hooked CleanupWorldAndEntities OK\n");
@@ -557,6 +600,7 @@ pub fn removeHooks() void {
         // destroyAllEntities is idempotent — if worldCleanupDetour already ran,
         // all slots are null and this is a no-op.
         destroyAllEntities();
+        world_update_hook.detach();
         world_cleanup_hook.detach();
     }
 

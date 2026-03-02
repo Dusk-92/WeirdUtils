@@ -262,7 +262,7 @@ fn registerLuaFunctions() void {
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
         registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
-        registerFunction("ProcessMarkerAnimations", @intFromPtr(&markers.luaProcessAnimations));
+        registerFunction("DistanceToMark", @intFromPtr(&markers.luaDistanceToMark));
     }
 }
 
