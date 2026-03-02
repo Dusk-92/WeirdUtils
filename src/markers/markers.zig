@@ -535,9 +535,11 @@ fn tickAnimations() void {
         if (player != 0) {
             const player_pos = getUnitPosition(player);
             if (player_pos.x != 0 or player_pos.y != 0 or player_pos.z != 0) {
+                const current_area = hook.readMem(u32, o.ZONE_AREA_ID);
                 for (0..NUM_MARKERS) |i| {
                     if (!marker_defs[i].active) continue;
                     if (marker_entities[i] != null) continue; // entity alive, skip
+                    if (marker_defs[i].area_id != current_area) continue; // wrong zone
 
                     const dx = player_pos.x - marker_defs[i].pos.x;
                     const dy = player_pos.y - marker_defs[i].pos.y;
@@ -658,6 +660,14 @@ pub fn luaGetMarkerDef(L: u32) callconv(.c) u32 {
     lapi.pushnumber(L, @floatCast(marker_defs[index].pos.z));
     lapi.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
     return 4;
+}
+
+/// Lua: local areaId = GetCurrentAreaId()
+/// Returns the current zone area ID from the game global.
+pub fn luaGetCurrentAreaId(L: u32) callconv(.c) u32 {
+    const area_id = hook.readMem(u32, o.ZONE_AREA_ID);
+    lapi.pushnumber(L, @floatCast(@as(f64, @floatFromInt(area_id))));
+    return 1;
 }
 
 // =============================================================================

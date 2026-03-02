@@ -127,7 +127,7 @@ local RawWorldMarker = WorldMarker
 function WorldMarker(index, ...)
     log("WorldMarker(" .. tostring(index) .. ")")
     -- Cancel pending sync request — we're actively placing marks
-    if syncTimer.pending then
+    if syncTimer and syncTimer.pending then
         syncTimer:Hide()
         syncTimer.pending = false
         log("sync timer cancelled (local mark placed)")
@@ -165,8 +165,31 @@ function ClearWorldMarker(index)
 end
 
 -- =============================================================================
+-- Sync response deduplication
+-- Only accept SF from the first responder after we send SR/LSR.
+-- =============================================================================
+
+local syncSender = nil -- name of the first SF responder
+
+local function resetSyncSender()
+    syncSender = nil
+end
+
+-- =============================================================================
 -- Addon message handler
 -- =============================================================================
+
+local function parseMarkerFields(parts)
+    local idx = tonumber(parts[2])
+    local x = tonumber(parts[3])
+    local y = tonumber(parts[4])
+    local z = tonumber(parts[5])
+    local areaId = tonumber(parts[6])
+    if idx and x and y and z and areaId then
+        return idx, x, y, z, areaId
+    end
+    return nil
+end
 
 local function onAddonMessage(prefix, message, channel, sender)
     if prefix ~= MSG_PREFIX then return end
@@ -202,13 +225,16 @@ local function onAddonMessage(prefix, message, channel, sender)
         broadcastAllDefs()
         return
     elseif cmd == "SF" then
-        -- Sync response: accept from anyone (they already checked canSetMarkers on their end)
-        local idx = tonumber(parts[2])
-        local x = tonumber(parts[3])
-        local y = tonumber(parts[4])
-        local z = tonumber(parts[5])
-        local areaId = tonumber(parts[6])
-        if idx and x and y and z and areaId then
+        -- Sync response: only accept from the first responder
+        if syncSender == nil then
+            syncSender = sender
+            log("  sync responder locked: " .. sender)
+        elseif syncSender ~= sender then
+            log("  ignoring SF from " .. sender .. " (locked to " .. syncSender .. ")")
+            return
+        end
+        local idx, x, y, z, areaId = parseMarkerFields(parts)
+        if idx then
             log("  SetMarkerDef(" .. idx .. "," .. x .. "," .. y .. "," .. z .. "," .. areaId .. ")")
             SetMarkerDef(idx, x, y, z, areaId)
         else
@@ -224,12 +250,8 @@ local function onAddonMessage(prefix, message, channel, sender)
     end
 
     if cmd == "P" then
-        local idx = tonumber(parts[2])
-        local x = tonumber(parts[3])
-        local y = tonumber(parts[4])
-        local z = tonumber(parts[5])
-        local areaId = tonumber(parts[6])
-        if idx and x and y and z and areaId then
+        local idx, x, y, z, areaId = parseMarkerFields(parts)
+        if idx then
             log("  SetMarkerDef(" .. idx .. "," .. x .. "," .. y .. "," .. z .. "," .. areaId .. ")")
             SetMarkerDef(idx, x, y, z, areaId)
         else
@@ -259,6 +281,8 @@ local function broadcastSyncRequest()
         log("syncReq: no channel (not in group)")
         return
     end
+    -- Reset first-responder lock before requesting
+    syncSender = nil
     local cmd = canSetMarkers() and "LSR" or "SR"
     log("SEND [" .. ch .. "] " .. cmd)
     SendAddonMessage(MSG_PREFIX, cmd, ch)
@@ -266,7 +290,7 @@ end
 
 -- Delayed sync request: roster isn't populated at PLAYER_LOGIN/ENTERING_WORLD,
 -- so we fire a one-shot 5s timer to request markers after joining the group.
-local syncTimer = CreateFrame("Frame")
+syncTimer = CreateFrame("Frame")
 syncTimer.elapsed = 0
 syncTimer.pending = false
 syncTimer:Hide()
@@ -287,6 +311,69 @@ local function scheduleSyncRequest()
     log("sync request scheduled (5s)")
 end
 
+-- =============================================================================
+-- Roster change tracking — retriggerable debounce timer
+-- Each roster event that increases group size adds 1s to the timer (starts at
+-- 5s, caps at 10s). When the timer expires, one broadcast fires. This
+-- guarantees delivery after the storm of events settles.
+-- =============================================================================
+
+local lastGroupSize = 0
+local ROSTER_INITIAL_DELAY = 5
+local ROSTER_EXTEND_SEC = 1
+local ROSTER_MAX_DELAY = 10
+
+local function getGroupSize()
+    local raid = GetNumRaidMembers()
+    if raid > 0 then return raid end
+    return GetNumPartyMembers()
+end
+
+local rosterTimer = CreateFrame("Frame")
+rosterTimer.remaining = 0
+rosterTimer.pending = false
+rosterTimer.extensions = 0
+rosterTimer:Hide()
+rosterTimer:SetScript("OnUpdate", function()
+    rosterTimer.remaining = rosterTimer.remaining - arg1
+    if rosterTimer.remaining <= 0 then
+        rosterTimer:Hide()
+        rosterTimer.pending = false
+        rosterTimer.extensions = 0
+        log("roster timer fired, broadcasting")
+        if canSetMarkers() then
+            broadcastAllDefs()
+        end
+    end
+end)
+
+local MAX_EXTENSIONS = 5
+
+local function onRosterChange()
+    local newSize = getGroupSize()
+    local oldSize = lastGroupSize
+    lastGroupSize = newSize
+
+    if newSize <= oldSize then
+        log("roster: " .. oldSize .. "->" .. newSize .. " (no increase)")
+        return
+    end
+
+    log("roster: " .. oldSize .. "->" .. newSize .. " (grew)")
+
+    if not rosterTimer.pending then
+        rosterTimer.remaining = ROSTER_INITIAL_DELAY
+        rosterTimer.pending = true
+        rosterTimer.extensions = 0
+        rosterTimer:Show()
+        log("roster timer started (" .. ROSTER_INITIAL_DELAY .. "s)")
+    elseif rosterTimer.extensions < MAX_EXTENSIONS then
+        rosterTimer.remaining = rosterTimer.remaining + ROSTER_EXTEND_SEC
+        rosterTimer.extensions = rosterTimer.extensions + 1
+        log("roster timer +" .. ROSTER_EXTEND_SEC .. "s (ext " .. rosterTimer.extensions .. "/" .. MAX_EXTENSIONS .. ")")
+    end
+end
+
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("CHAT_MSG_ADDON")
@@ -296,13 +383,16 @@ frame:RegisterEvent("RAID_ROSTER_UPDATE")
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00Markers|r v" .. MARKERS_VERSION .. " loaded")
+        lastGroupSize = getGroupSize()
         scheduleSyncRequest()
     elseif event == "CHAT_MSG_ADDON" then
         onAddonMessage(arg1, arg2, arg3, arg4)
-    elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" then
-        log("EVT " .. event .. " r=" .. GetNumRaidMembers() .. " p=" .. GetNumPartyMembers())
-        if canSetMarkers() then
-            broadcastAllDefs()
+    elseif event == "RAID_ROSTER_UPDATE" then
+        onRosterChange()
+    elseif event == "PARTY_MEMBERS_CHANGED" then
+        -- Skip party events when in a raid (RAID_ROSTER_UPDATE handles it)
+        if GetNumRaidMembers() == 0 then
+            onRosterChange()
         end
     end
 end)

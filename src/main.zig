@@ -267,6 +267,7 @@ fn registerLuaFunctions() void {
         registerFunction("SetMarkerDef", @intFromPtr(&markers.luaSetMarkerDef));
         registerFunction("ClearMarkerDef", @intFromPtr(&markers.luaClearMarkerDef));
         registerFunction("GetMarkerDef", @intFromPtr(&markers.luaGetMarkerDef));
+        registerFunction("GetCurrentAreaId", @intFromPtr(&markers.luaGetCurrentAreaId));
     }
 }
 
