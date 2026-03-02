@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
+const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
 const wow = @import("../outline/wow.zig");
 const con = @import("../console.zig");
@@ -107,52 +108,35 @@ const DespawningEntity = struct {
 };
 var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 
-// =============================================================================
-// Lua C API (WoW 1.12.1 — all __fastcall, L in ECX)
-// =============================================================================
-
 const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
 const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
 
-const lapi = struct {
-    fn gettop(L: u32) i32 {
-        const f: *const fn (u32) callconv(fc) i32 = @ptrFromInt(0x6F3070);
-        return f(L);
-    }
+// =============================================================================
+// Permission check — leader or raid officer required
+// =============================================================================
 
-    fn isnumber(L: u32, index: i32) bool {
-        const f: *const fn (u32, i32) callconv(fc) u32 = @ptrFromInt(0x6F34D0);
-        return f(L, index) != 0;
-    }
+/// WoW Lua C functions: ECX=L, return count of pushed values.
+const LuaCFn = *const fn (lua.State) callconv(.c) u32;
+const FN_IS_PARTY_LEADER: LuaCFn = @ptrFromInt(0x004e9130);
+const FN_IS_RAID_OFFICER: LuaCFn = @ptrFromInt(0x004bb910);
 
-    fn isstring(L: u32, index: i32) bool {
-        const f: *const fn (u32, i32) callconv(fc) u32 = @ptrFromInt(0x6F3510);
-        return f(L, index) != 0;
-    }
+/// Call a WoW Lua C function that pushes 1 value, check if it pushed
+/// a truthy value (non-nil), then pop the result.
+fn luaBoolCheck(L: lua.State, func: LuaCFn) bool {
+    const before = lua.gettop(L);
+    _ = func(L);
+    const after = lua.gettop(L);
+    if (after <= before) return false;
+    const is_nil = lua.typeOf(L, -1) == 0;
+    lua.settop(L, before);
+    return !is_nil;
+}
 
-    fn tonumber(L: u32, index: i32) f64 {
-        const f: *const fn (u32, i32) callconv(fc) f64 = @ptrFromInt(0x6F3620);
-        return f(L, index);
-    }
-
-    fn tostring(L: u32, index: i32) ?[*:0]const u8 {
-        const f: *const fn (u32, i32) callconv(fc) ?[*:0]const u8 = @ptrFromInt(0x6F3690);
-        return f(L, index);
-    }
-
-    fn pushstring(L: u32, s: [*:0]const u8) void {
-        const f: *const fn (u32, [*:0]const u8) callconv(fc) void = @ptrFromInt(0x6F3890);
-        f(L, s);
-    }
-
-    fn pushnumber(L: u32, n: f64) void {
-        // Ghidra confirms: __thiscall(ECX=L), double on stack as [EBP+8]/[EBP+0xc], ret 8.
-        // Can't use fastcall — our patched inreg would shove the f64's low dword into EDX.
-        const tc = std.builtin.CallingConvention{ .x86_thiscall = .{} };
-        const f: *const fn (u32, f64) callconv(tc) void = @ptrFromInt(0x6F3810);
-        f(L, n);
-    }
-};
+/// Check if the local player has permission to place/clear markers.
+/// Requires: party leader, raid leader, or raid officer (assist).
+fn canSetMarkers(L: lua.State) bool {
+    return luaBoolCheck(L, FN_IS_PARTY_LEADER) or luaBoolCheck(L, FN_IS_RAID_OFFICER);
+}
 
 // =============================================================================
 // Position helpers
@@ -414,30 +398,35 @@ fn clearAllMarkers() void {
 ///   WorldMarker(1, x, y, z)  — place at coordinates
 ///   WorldMarker(1, "target") — place at unit's current position
 ///   WorldMarker(1)           — place at cursor terrain position
-pub fn luaWorldMarker(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
+pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
+    if (!canSetMarkers(L)) {
+        con.print("[markers] WorldMarker: no permission (need leader/assist)\n");
+        return 0;
+    }
 
-    if (nargs < 1 or !lapi.isnumber(L, 1)) {
+    const nargs = lua.gettop(L);
+
+    if (nargs < 1 or !lua.isnumber(L, 1)) {
         con.print("[markers] WorldMarker: expected index (1-5)\n");
         return 0;
     }
 
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) {
         con.print("[markers] WorldMarker: index must be 1-5\n");
         return 0;
     }
     const index: usize = @intCast(raw_index - 1);
 
-    if (nargs >= 4 and lapi.isnumber(L, 2)) {
+    if (nargs >= 4 and lua.isnumber(L, 2)) {
         // WorldMarker(index, x, y, z)
-        const x: f32 = @floatCast(lapi.tonumber(L, 2));
-        const y: f32 = @floatCast(lapi.tonumber(L, 3));
-        const z: f32 = @floatCast(lapi.tonumber(L, 4));
+        const x: f32 = @floatCast(lua.tonumber(L, 2));
+        const y: f32 = @floatCast(lua.tonumber(L, 3));
+        const z: f32 = @floatCast(lua.tonumber(L, 4));
         _ = placeMarker(index, .{ .x = x, .y = y, .z = z });
-    } else if (nargs >= 2 and lapi.isstring(L, 2)) {
+    } else if (nargs >= 2 and lua.isstring(L, 2)) {
         // WorldMarker(index, "unitId")
-        const unit_id = lapi.tostring(L, 2) orelse {
+        const unit_id = lua.tostring(L, 2) orelse {
             con.print("[markers] WorldMarker: invalid unit string\n");
             return 0;
         };
@@ -461,20 +450,25 @@ pub fn luaWorldMarker(L: u32) callconv(.c) u32 {
 /// Lua: ClearWorldMarker([index])
 ///   ClearWorldMarker(1) — remove marker 1
 ///   ClearWorldMarker()  — remove all markers
-pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
+pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
+    if (!canSetMarkers(L)) {
+        con.print("[markers] ClearWorldMarker: no permission (need leader/assist)\n");
+        return 0;
+    }
+
+    const nargs = lua.gettop(L);
 
     if (nargs == 0) {
         clearAllMarkers();
         return 0;
     }
 
-    if (!lapi.isnumber(L, 1)) {
+    if (!lua.isnumber(L, 1)) {
         con.print("[markers] ClearWorldMarker: expected index (1-5) or no args\n");
         return 0;
     }
 
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) {
         con.print("[markers] ClearWorldMarker: index must be 1-5\n");
         return 0;
@@ -557,25 +551,25 @@ fn tickAnimations() void {
 }
 
 /// Lua: local x, y, z = GetPlayerPosition()
-pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
+pub fn luaGetPlayerPosition(L: lua.State) callconv(.c) u32 {
     const player = wow.getLocalPlayer();
     if (player == 0) return 0;
 
     const pos = getUnitPosition(player);
-    lapi.pushnumber(L, @floatCast(pos.x));
-    lapi.pushnumber(L, @floatCast(pos.y));
-    lapi.pushnumber(L, @floatCast(pos.z));
+    lua.pushnumber(L, @floatCast(pos.x));
+    lua.pushnumber(L, @floatCast(pos.y));
+    lua.pushnumber(L, @floatCast(pos.z));
     return 3;
 }
 
 /// Lua: local dist = DistanceToMark(index)
 /// Returns distance in yards from player to the stored marker position,
 /// or nil if the marker doesn't exist or there's no player.
-pub fn luaDistanceToMark(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
-    if (nargs < 1 or !lapi.isnumber(L, 1)) return 0;
+pub fn luaDistanceToMark(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
+    if (nargs < 1 or !lua.isnumber(L, 1)) return 0;
 
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
     const index: usize = @intCast(raw_index - 1);
 
@@ -592,26 +586,26 @@ pub fn luaDistanceToMark(L: u32) callconv(.c) u32 {
     const dz = player_pos.z - mark_pos.z;
     const dist = @sqrt(dx * dx + dy * dy + dz * dz);
 
-    lapi.pushnumber(L, @floatCast(dist));
+    lua.pushnumber(L, @floatCast(dist));
     return 1;
 }
 
 /// Lua: SetMarkerDef(index, x, y, z, areaId)
 /// Store a marker definition without immediately spawning. Used by the addon
 /// when receiving remote marker data — proximity respawn handles entity creation.
-pub fn luaSetMarkerDef(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
+pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
     if (nargs < 5) return 0;
-    if (!lapi.isnumber(L, 1) or !lapi.isnumber(L, 2) or !lapi.isnumber(L, 3) or !lapi.isnumber(L, 4) or !lapi.isnumber(L, 5)) return 0;
+    if (!lua.isnumber(L, 1) or !lua.isnumber(L, 2) or !lua.isnumber(L, 3) or !lua.isnumber(L, 4) or !lua.isnumber(L, 5)) return 0;
 
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
     const index: usize = @intCast(raw_index - 1);
 
-    const x: f32 = @floatCast(lapi.tonumber(L, 2));
-    const y: f32 = @floatCast(lapi.tonumber(L, 3));
-    const z: f32 = @floatCast(lapi.tonumber(L, 4));
-    const area_id: u32 = @intFromFloat(lapi.tonumber(L, 5));
+    const x: f32 = @floatCast(lua.tonumber(L, 2));
+    const y: f32 = @floatCast(lua.tonumber(L, 3));
+    const z: f32 = @floatCast(lua.tonumber(L, 4));
+    const area_id: u32 = @intFromFloat(lua.tonumber(L, 5));
 
     // Clear existing entity if any (will be respawned by proximity check)
     clearEntity(index);
@@ -628,15 +622,15 @@ pub fn luaSetMarkerDef(L: u32) callconv(.c) u32 {
 
 /// Lua: ClearMarkerDef([index])
 /// Clear a definition (and its entity if alive). No args = clear all.
-pub fn luaClearMarkerDef(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
+pub fn luaClearMarkerDef(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
     if (nargs == 0) {
         clearAllMarkers();
         return 0;
     }
 
-    if (!lapi.isnumber(L, 1)) return 0;
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (!lua.isnumber(L, 1)) return 0;
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
 
     clearMarker(@intCast(raw_index - 1));
@@ -645,28 +639,28 @@ pub fn luaClearMarkerDef(L: u32) callconv(.c) u32 {
 
 /// Lua: local x, y, z, areaId = GetMarkerDef(index)
 /// Returns position and area ID for an active marker def, or nil if inactive.
-pub fn luaGetMarkerDef(L: u32) callconv(.c) u32 {
-    const nargs = lapi.gettop(L);
-    if (nargs < 1 or !lapi.isnumber(L, 1)) return 0;
+pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
+    if (nargs < 1 or !lua.isnumber(L, 1)) return 0;
 
-    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
     const index: usize = @intCast(raw_index - 1);
 
     if (!marker_defs[index].active) return 0;
 
-    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.x));
-    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.y));
-    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.z));
-    lapi.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
+    lua.pushnumber(L, @floatCast(marker_defs[index].pos.x));
+    lua.pushnumber(L, @floatCast(marker_defs[index].pos.y));
+    lua.pushnumber(L, @floatCast(marker_defs[index].pos.z));
+    lua.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
     return 4;
 }
 
 /// Lua: local areaId = GetCurrentAreaId()
 /// Returns the current zone area ID from the game global.
-pub fn luaGetCurrentAreaId(L: u32) callconv(.c) u32 {
+pub fn luaGetCurrentAreaId(L: lua.State) callconv(.c) u32 {
     const area_id = hook.readMem(u32, o.ZONE_AREA_ID);
-    lapi.pushnumber(L, @floatCast(@as(f64, @floatFromInt(area_id))));
+    lua.pushnumber(L, @floatCast(@as(f64, @floatFromInt(area_id))));
     return 1;
 }
 
