@@ -60,6 +60,27 @@ pub const FN_CLEANUP_ENTITY: usize = 0x00670d50;
 pub const FN_DECREMENT_REFCOUNT: usize = 0x007103a0;
 
 // =============================================================================
+// Cursor terrain position
+// =============================================================================
+
+/// WorldFrame global pointer — *(u32*)PTR = worldFrame object.
+pub const PTR_WORLD_FRAME: usize = 0x00B4B2BC;
+
+/// UpdateHitTest — __fastcall(ECX=worldFrame), no stack params.
+/// Raycasts from camera through mouse cursor, stores result at worldFrame+0x350:
+///   +0x350: hit type (0=none, 1=terrain, 2=object)
+///   +0x360: terrain intersection X (f32)
+///   +0x364: terrain intersection Y (f32)
+///   +0x368: terrain intersection Z (f32)
+pub const FN_UPDATE_HIT_TEST: usize = 0x00481F00;
+
+/// Offsets from worldFrame base to HitTestResult fields.
+pub const WF_HIT_TYPE: usize = 0x350;
+pub const WF_HIT_TERRAIN_X: usize = 0x360;
+pub const WF_HIT_TERRAIN_Y: usize = 0x364;
+pub const WF_HIT_TERRAIN_Z: usize = 0x368;
+
+// =============================================================================
 // Model creation
 // =============================================================================
 
@@ -69,6 +90,21 @@ pub const FN_DECREMENT_REFCOUNT: usize = 0x007103a0;
 /// SetCallbackFunctions, SetRenderCallbacks, PlayBoneAnimation, CM2Model_Initialize.
 /// Returns 1 on success, 0 on failure. Stores render context at worldObj+0x88.
 pub const FN_CM2_CREATE_FOR_MODEL_OBJECT: usize = 0x00695100;
+
+// =============================================================================
+// Animation
+// =============================================================================
+
+/// CM2Model__PlayBoneAnimation — __thiscall(ECX=modelRenderCtx), RET 0x1c (7 stack params).
+/// (boneIndex, animId, sequenceIndex, animData*, speed, blendMode, queueAnimation)
+///   boneIndex:     0xFFFFFFFF = all bones
+///   animId:        M2 animation ID (0=Stand, 158=Hold, 159=Decay for Raid_UI_FX)
+///   sequenceIndex: -1 = random sub-sequence
+///   animData:      NULL for default timing
+///   speed:         1.0 = normal
+///   blendMode:     0 = hard cut, 1 = smooth blend
+///   queueAnimation: 0 = set immediately, 1 = queue after current
+pub const FN_PLAY_BONE_ANIMATION: usize = 0x007121a0;
 
 // =============================================================================
 // Transform and position

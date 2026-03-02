@@ -22,6 +22,7 @@ extern "kernel32" fn ReleaseMutex(hMutex: *anyopaque) callconv(WINAPI) i32;
 extern "kernel32" fn CloseHandle(hObject: *anyopaque) callconv(WINAPI) i32;
 extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
 extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
+extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 
 var g_mutex: ?*anyopaque = null;
@@ -33,6 +34,12 @@ var g_is_hook_owner: bool = false;
 
 const NUM_MARKERS = 5;
 const MARKER_Z_OFFSET: f32 = 2.0;
+
+// M2 animation IDs for Raid_UI_FX models (not standard Birth/Death)
+const ANIM_STAND: u32 = 0; // 4000ms grow-in (bones scale from 1x to full)
+const ANIM_HOLD: u32 = 158; // sustained idle at full scale (loops)
+const ANIM_DECAY: u32 = 159; // 666ms shrink-out
+const DECAY_DURATION_MS: u32 = 700; // slightly over 666ms to ensure animation completes
 
 const MODEL_PATHS = [NUM_MARKERS][*:0]const u8{
     "Spells\\Raid_UI_FX_Yellow.m2",
@@ -57,6 +64,16 @@ pub const Vec3 = struct {
 // =============================================================================
 
 var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
+
+// Entities playing their Decay animation before destruction.
+// Cleaned up lazily on the next marker operation.
+// TODO: could use actual game timing (e.g. frame delta from WorldFrameUpdate) instead of GetTickCount
+const MAX_DESPAWNING = 8;
+const DespawningEntity = struct {
+    entity: *anyopaque,
+    start_tick: u32,
+};
+var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 
 // =============================================================================
 // Lua C API (WoW 1.12.1 — all __fastcall, L in ECX)
@@ -129,12 +146,31 @@ fn resolveUnitPosition(unit_id: [*:0]const u8) ?Vec3 {
     return pos;
 }
 
-/// Get the terrain position under the mouse cursor.
-/// TODO: find the actual game global/function for this.
+/// Get the terrain position under the mouse cursor by calling UpdateHitTest.
+/// This performs a camera-through-cursor raycast and stores the result at
+/// worldFrame+0x350. Safe to call from Lua callbacks (saves/restores matrices).
 fn getCursorTerrainPosition() ?Vec3 {
-    // TODO: implement — needs Ghidra research to find the cursor terrain
-    // intersection global or CGGameUI member that stores it.
-    return null;
+    const world_frame = hook.readMem(u32, o.PTR_WORLD_FRAME);
+    if (world_frame == 0 or world_frame < 0x10000) return null;
+
+    // Zero the intersection point before raycasting so we can detect "no hit"
+    // (HitTestPoint returns 0 for both "terrain hit" and "no hit" in normal mode —
+    // WorldIntersectionTest returns gameStateFlags & 1, which is 0 outside AoE targeting.
+    // On a real hit the coords are overwritten; on sky/no-hit they stay zeroed.)
+    @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_X)).* = 0;
+    @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_Y)).* = 0;
+    @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_Z)).* = 0;
+
+    // UpdateHitTest — __fastcall(ECX=worldFrame)
+    hook.fastcall(void, o.FN_UPDATE_HIT_TEST, world_frame, 0);
+
+    const x = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_X);
+    const y = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Y);
+    const z = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Z);
+
+    if (x == 0 and y == 0 and z == 0) return null;
+
+    return .{ .x = x, .y = y, .z = z };
 }
 
 // =============================================================================
@@ -179,6 +215,84 @@ fn cleanupEntity(obj: *anyopaque) void {
 }
 
 // =============================================================================
+// Animation
+// =============================================================================
+
+/// Play an animation on an entity's M2 model render context (entity+0x88).
+/// CM2Model__PlayBoneAnimation — __thiscall(ECX=model), RET 0x1c.
+fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
+    const model = hook.readMem(u32, @intFromPtr(entity) + 0x88);
+    if (model == 0 or model < 0x10000) return;
+
+    const speed_bits: u32 = @bitCast(@as(f32, 1.0));
+    const stack_args = [7]u32{
+        0xFFFFFFFF, // boneIndex: all bones
+        anim_id,
+        @bitCast(@as(i32, -1)), // seqIndex: random
+        0, // animData: NULL
+        speed_bits, // speed: 1.0
+        1, // blendMode: blend
+        if (queue) @as(u32, 1) else @as(u32, 0),
+    };
+
+    asm volatile (
+        \\ push 24(%[a])
+        \\ push 20(%[a])
+        \\ push 16(%[a])
+        \\ push 12(%[a])
+        \\ push 8(%[a])
+        \\ push 4(%[a])
+        \\ push (%[a])
+        \\ call *%[func]
+        :
+        : [_] "{ecx}" (model),
+          [a] "r" (&stack_args),
+          [func] "r" (o.FN_PLAY_BONE_ANIMATION),
+        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+}
+
+/// Clean up despawning entities whose Decay animation has finished.
+fn cleanupDespawning() void {
+    const now = GetTickCount();
+    for (&despawning) |*slot| {
+        if (slot.*) |d| {
+            if (now -% d.start_tick >= DECAY_DURATION_MS) {
+                cleanupEntity(d.entity);
+                slot.* = null;
+            }
+        }
+    }
+}
+
+/// Force-cleanup all despawning entities immediately (for shutdown).
+fn forceCleanupDespawning() void {
+    for (&despawning) |*slot| {
+        if (slot.*) |d| {
+            cleanupEntity(d.entity);
+            slot.* = null;
+        }
+    }
+}
+
+/// Start despawn animation and defer entity destruction.
+fn beginDespawn(entity: *anyopaque) void {
+    playAnimation(entity, ANIM_DECAY, false);
+
+    // Find a free despawning slot
+    for (&despawning) |*slot| {
+        if (slot.* == null) {
+            slot.* = .{ .entity = entity, .start_tick = GetTickCount() };
+            return;
+        }
+    }
+    // All slots full — force-cleanup the oldest and reuse slot 0
+    if (despawning[0]) |old| {
+        cleanupEntity(old.entity);
+    }
+    despawning[0] = .{ .entity = entity, .start_tick = GetTickCount() };
+}
+
+// =============================================================================
 // Marker management
 // =============================================================================
 
@@ -197,6 +311,10 @@ fn placeMarker(index: usize, pos: Vec3) bool {
         return false;
     };
 
+    // CM2Model_CreateForModelObject already plays Stand (grow-in).
+    // Queue Hold (sustained idle) to start after Stand completes.
+    playAnimation(obj, ANIM_HOLD, true);
+
     marker_entities[index] = obj;
     con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
     return true;
@@ -205,18 +323,20 @@ fn placeMarker(index: usize, pos: Vec3) bool {
 /// Remove a specific marker. index is 0-based.
 fn clearMarker(index: usize) void {
     if (index >= NUM_MARKERS) return;
+    cleanupDespawning();
     if (marker_entities[index]) |existing| {
-        cleanupEntity(existing);
+        beginDespawn(existing);
         marker_entities[index] = null;
     }
 }
 
 /// Remove all markers.
 fn clearAllMarkers() void {
+    cleanupDespawning();
     var any = false;
     for (0..NUM_MARKERS) |i| {
         if (marker_entities[i]) |existing| {
-            cleanupEntity(existing);
+            beginDespawn(existing);
             marker_entities[i] = null;
             any = true;
         }
@@ -267,16 +387,7 @@ pub fn luaWorldMarker(L: u32) callconv(.c) u32 {
     } else {
         // WorldMarker(index) — cursor terrain position
         const pos = getCursorTerrainPosition() orelse {
-            con.print("[markers] cursor terrain position not yet implemented, using player\n");
-            // Fallback to player position
-            const player = wow.getLocalPlayer();
-            if (player == 0) {
-                con.print("[markers] no local player\n");
-                return 0;
-            }
-            const ppos = getUnitPosition(player);
-            if (ppos.x == 0 and ppos.y == 0 and ppos.z == 0) return 0;
-            _ = placeMarker(index, ppos);
+            con.print("[markers] no terrain under cursor\n");
             return 0;
         };
         _ = placeMarker(index, pos);
@@ -349,7 +460,14 @@ pub fn installHooks() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        clearAllMarkers();
+        // Force-cleanup: no time for animations during shutdown
+        for (&marker_entities) |*slot| {
+            if (slot.*) |existing| {
+                cleanupEntity(existing);
+                slot.* = null;
+            }
+        }
+        forceCleanupDespawning();
     }
 
     if (g_is_hook_owner) {
