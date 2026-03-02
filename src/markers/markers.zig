@@ -67,7 +67,7 @@ var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
 var marker_created_tick: [NUM_MARKERS]u32 = .{0} ** NUM_MARKERS;
 var hold_queued: [NUM_MARKERS]bool = .{false} ** NUM_MARKERS;
 
-const STAND_DURATION_MS: u32 = 4000;
+const STAND_DURATION_MS: u32 = 3900;
 
 // Entities playing their Decay animation before destruction.
 // Cleaned up every frame by luaProcessAnimations (via Lua OnUpdate).
