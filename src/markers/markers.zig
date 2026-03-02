@@ -39,7 +39,7 @@ const MARKER_Z_OFFSET: f32 = 2.0;
 const ANIM_STAND: u32 = 0; // 4000ms grow-in (bones scale from 1x to full)
 const ANIM_HOLD: u32 = 158; // sustained idle at full scale (loops)
 const ANIM_DECAY: u32 = 159; // 666ms shrink-out
-const DECAY_DURATION_MS: u32 = 700; // slightly over 666ms to ensure animation completes
+const DECAY_DURATION_MS: u32 = 650; // slightly over 666ms to ensure animation completes
 
 const MODEL_PATHS = [NUM_MARKERS][*:0]const u8{
     "Spells\\Raid_UI_FX_Yellow.m2",
@@ -64,10 +64,13 @@ pub const Vec3 = struct {
 // =============================================================================
 
 var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
+var marker_created_tick: [NUM_MARKERS]u32 = .{0} ** NUM_MARKERS;
+var hold_queued: [NUM_MARKERS]bool = .{false} ** NUM_MARKERS;
+
+const STAND_DURATION_MS: u32 = 4000;
 
 // Entities playing their Decay animation before destruction.
-// Cleaned up lazily on the next marker operation.
-// TODO: could use actual game timing (e.g. frame delta from WorldFrameUpdate) instead of GetTickCount
+// Cleaned up every frame by luaProcessAnimations (via Lua OnUpdate).
 const MAX_DESPAWNING = 8;
 const DespawningEntity = struct {
     entity: *anyopaque,
@@ -221,7 +224,8 @@ fn cleanupEntity(obj: *anyopaque) void {
 /// Play an animation on an entity's M2 model render context (entity+0x88).
 /// CM2Model__PlayBoneAnimation — __thiscall(ECX=model), RET 0x1c.
 fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
-    const model = hook.readMem(u32, @intFromPtr(entity) + 0x88);
+    const entity_addr = @intFromPtr(entity);
+    const model = hook.readMem(u32, entity_addr + 0x88);
     if (model == 0 or model < 0x10000) return;
 
     const speed_bits: u32 = @bitCast(@as(f32, 1.0));
@@ -232,7 +236,7 @@ fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
         0, // animData: NULL
         speed_bits, // speed: 1.0
         1, // blendMode: blend
-        if (queue) @as(u32, 1) else @as(u32, 0),
+        @intFromBool(queue),
     };
 
     asm volatile (
@@ -276,7 +280,7 @@ fn forceCleanupDespawning() void {
 
 /// Start despawn animation and defer entity destruction.
 fn beginDespawn(entity: *anyopaque) void {
-    playAnimation(entity, ANIM_DECAY, false);
+    playAnimation(entity, ANIM_DECAY, true);
 
     // Find a free despawning slot
     for (&despawning) |*slot| {
@@ -311,11 +315,13 @@ fn placeMarker(index: usize, pos: Vec3) bool {
         return false;
     };
 
-    // CM2Model_CreateForModelObject already plays Stand (grow-in).
-    // Queue Hold (sustained idle) to start after Stand completes.
-    playAnimation(obj, ANIM_HOLD, true);
-
+    // Stand (grow-in) is queued by the engine in CM2Model_CreateForModelObject.
+    // Hold is deferred to the per-frame callback (luaProcessAnimations) once
+    // the model is fully initialised (model+0x10 != 0), so it doesn't clobber
+    // Stand in the command queue.
     marker_entities[index] = obj;
+    hold_queued[index] = false;
+    marker_created_tick[index] = GetTickCount();
     con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
     return true;
 }
@@ -327,6 +333,7 @@ fn clearMarker(index: usize) void {
     if (marker_entities[index]) |existing| {
         beginDespawn(existing);
         marker_entities[index] = null;
+        hold_queued[index] = false;
     }
 }
 
@@ -419,6 +426,26 @@ pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
     }
 
     clearMarker(@intCast(raw_index - 1));
+    return 0;
+}
+
+/// Per-frame callback (driven by Lua OnUpdate).
+/// Queues Hold once after Stand finishes, then cleans up despawning entities.
+pub fn luaProcessAnimations(L: u32) callconv(.c) u32 {
+    _ = L;
+    const now = GetTickCount();
+
+    cleanupDespawning();
+
+    for (0..NUM_MARKERS) |i| {
+        if (hold_queued[i]) continue;
+        const entity = marker_entities[i] orelse continue;
+        if (now -% marker_created_tick[i] < STAND_DURATION_MS) continue;
+
+        playAnimation(entity, ANIM_HOLD, true);
+        hold_queued[i] = true;
+    }
+
     return 0;
 }
 
