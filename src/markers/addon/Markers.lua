@@ -14,6 +14,13 @@ frame:SetScript("OnEvent", function()
     end
 end)
 
+-- Per-frame animation driver: queues Hold after Stand finishes on new
+-- markers and re-queues it periodically so it never falls back to Stand.
+local animFrame = CreateFrame("Frame")
+animFrame:SetScript("OnUpdate", function()
+    ProcessMarkerAnimations()
+end)
+
 SLASH_MARKERS1 = "/markers"
 SLASH_MARKERS2 = "/mark"
 SlashCmdList["MARKERS"] = function(msg)

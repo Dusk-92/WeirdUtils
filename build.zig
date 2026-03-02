@@ -13,11 +13,12 @@ pub fn build(b: *std.Build) void {
     const enable_interact = b.option(bool, "interact", "Enable interact module") orelse true;
     const enable_outline = b.option(bool, "outline", "Enable outline module") orelse true;
     const enable_markers = b.option(bool, "markers", "Enable markers module") orelse true;
-    const enable_framecrash = b.option(bool, "framecrash", "Enable framecrash fix") orelse true;
+    const enable_framecrash = b.option(bool, "framecrash", "Enable framecrash fix") orelse false;
     const enable_combatlog = b.option(bool, "combatlog", "Enable combat log freshness") orelse true;
     const enable_minimapicons = b.option(bool, "minimapicons", "Enable custom minimap icons") orelse true;
     const enable_transmogfix = b.option(bool, "transmogfix", "Enable transmog update coalescing") orelse true;
     const enable_assetfix = b.option(bool, "assetfix", "Enable loose file loading & permissive patch glob") orelse true;
+    const enable_healtextfix = b.option(bool, "healtextfix", "Enable SuperWoW heal text fix") orelse true;
 
     // Create build options module
     const build_options = b.addOptions();
@@ -30,12 +31,14 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_minimapicons", enable_minimapicons);
     build_options.addOption(bool, "enable_transmogfix", enable_transmogfix);
     build_options.addOption(bool, "enable_assetfix", enable_assetfix);
+    build_options.addOption(bool, "enable_healtextfix", enable_healtextfix);
     const build_options_module = build_options.createModule();
 
-    const hook_mod = b.dependency("hook", .{
+    const zhook_dep = b.dependency("zhook", .{
         .target = target,
         .optimize = optimize,
-    }).module("hook");
+    });
+    const zhook_mod = zhook_dep.module("zhook");
 
     const lib = b.addLibrary(.{
         .name = "weirdutils",
@@ -45,7 +48,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "hook", .module = hook_mod },
+                .{ .name = "zhook", .module = zhook_mod },
                 .{ .name = "build_options", .module = build_options_module },
             },
         }),
@@ -57,18 +60,19 @@ pub fn build(b: *std.Build) void {
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
     // Helper to create a single-module build
-    const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, markers: bool, framecrash: bool, combatlog: bool, minimapicons: bool, transmogfix: bool, assetfix: bool };
+    const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, markers: bool, framecrash: bool, combatlog: bool, minimapicons: bool, transmogfix: bool, assetfix: bool, healtextfix: bool };
     inline for (&[_]Variant{
-        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .markers = true, .framecrash = true, .combatlog = true, .minimapicons = true, .transmogfix = true, .assetfix = true },
-        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "markers", .screenshot = false, .interact = false, .outline = false, .markers = true, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = false, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "combatlog", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false },
-        .{ .name = "minimapicons", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = false, .minimapicons = true, .transmogfix = false, .assetfix = false },
-        .{ .name = "transmogfix", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = true, .assetfix = false },
-        .{ .name = "assetfix", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .assetfix = true },
+        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .markers = true, .framecrash = true, .combatlog = true, .minimapicons = true, .transmogfix = true, .assetfix = true, .healtextfix = true },
+        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .markers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "markers", .screenshot = false, .interact = false, .outline = false, .markers = true, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = false, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "combatlog", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = true, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "minimapicons", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = true, .combatlog = false, .minimapicons = true, .transmogfix = false, .assetfix = false, .healtextfix = false },
+        .{ .name = "transmogfix", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = true, .assetfix = false, .healtextfix = false },
+        .{ .name = "assetfix", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .assetfix = true, .healtextfix = false },
+        .{ .name = "healtextfix", .screenshot = false, .interact = false, .outline = false, .markers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .assetfix = false, .healtextfix = true },
     }) |variant| {
         const opts = b.addOptions();
         opts.addOption(bool, "enable_screenshot", variant.screenshot);
@@ -80,6 +84,7 @@ pub fn build(b: *std.Build) void {
         opts.addOption(bool, "enable_minimapicons", variant.minimapicons);
         opts.addOption(bool, "enable_transmogfix", variant.transmogfix);
         opts.addOption(bool, "enable_assetfix", variant.assetfix);
+        opts.addOption(bool, "enable_healtextfix", variant.healtextfix);
 
         const variant_lib = b.addLibrary(.{
             .name = variant.name,
@@ -89,7 +94,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "hook", .module = hook_mod },
+                    .{ .name = "zhook", .module = zhook_mod },
                     .{ .name = "build_options", .module = opts.createModule() },
                 },
             }),

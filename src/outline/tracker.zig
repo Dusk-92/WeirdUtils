@@ -11,7 +11,7 @@
 //! comparison against the object manager's validated set.
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const wow = @import("wow.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");

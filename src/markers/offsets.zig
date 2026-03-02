@@ -34,6 +34,17 @@ pub const MOVEMENT_POS_Z: usize = 0x18;
 pub const FN_CREATE_ENTITY_INSTANCE: usize = 0x006707c0;
 
 // =============================================================================
+// World teardown (map unload / logout / exit)
+// =============================================================================
+
+/// CleanupWorldAndEntities — void(), no params, __stdcall.
+/// Top-level world teardown: calls CleanupEntityList_ProcessAll, then
+/// CleanupWorldAndReleaseResources (which iterates heaps and force-frees).
+/// Called from InitializeWorldScene (map change) and ShutdownClientSystems (exit).
+/// Hook this to destroy custom entities BEFORE the game's teardown begins.
+pub const FN_CLEANUP_WORLD_AND_ENTITIES: usize = 0x0066fc40;
+
+// =============================================================================
 // World object lifecycle
 // =============================================================================
 

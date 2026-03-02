@@ -1,5 +1,5 @@
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const con = @import("../console.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -385,25 +385,16 @@ pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
 // Per-frame hook for processing the loot queue.
 // =============================================================================
 
-var scene_end_hook = hook.Hook{};
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const SceneEndFn = fn (u32) callconv(tc) void;
+var scene_end_hook: hook.Detour(SceneEndFn) = .{};
 
-fn hookSceneEnd(device: u32, _edx: u32) callconv(.c) void {
-    _ = _edx;
-
+fn hookSceneEnd(device: u32) callconv(tc) void {
     if (loot_active) {
         processLootQueue();
     }
 
-    callOriginalSceneEnd(device);
-}
-
-fn callOriginalSceneEnd(device: u32) void {
-    asm volatile (
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (device),
-          [func] "r" (scene_end_hook.trampoline),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+    scene_end_hook.callOriginal(.{device});
 }
 
 // =============================================================================
@@ -431,17 +422,12 @@ pub fn installHooks() void {
     g_is_hook_owner = true;
 
     // SceneEnd — per-frame loot queue processing
-    // Uses thunk: __fastcall(ECX=device, EDX) → cdecl(device, edx)
-    if (scene_end_hook.prepare(Offsets.ADDR_SceneEnd, 9, &.{})) {
-        const thunk = scene_end_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&hookSceneEnd), 0);
-        scene_end_hook.activate(@intFromPtr(thunk));
-    }
+    _ = scene_end_hook.attach(Offsets.ADDR_SceneEnd, &hookSceneEnd);
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        scene_end_hook.remove();
+        scene_end_hook.detach();
     }
 
     if (g_is_hook_owner) {

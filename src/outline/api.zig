@@ -4,7 +4,7 @@
 //! and a Lua C callback for `/wu outline` commands.
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const con = @import("../console.zig");
 const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");

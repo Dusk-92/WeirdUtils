@@ -155,7 +155,7 @@ cd /media/storage/projects/zig/weirdutils
 zig build
 ```
 
-Target: x86-windows-msvc (32-bit DLL), Zig 0.15.
+Target: x86-windows-msvc (32-bit DLL), Zig 0.16 (patched: fastcall inreg fix).
 Host: Linux (Arch), game runs via Wine/DXVK.
 
 ## Hook Installation Order

@@ -573,3 +573,266 @@ The existing GetRelativeTo vtable hook can be kept as defense-in-depth.
 0x76772b: E8 F0 16 00 00       CALL SetAnimationOrigin ; 5 bytes
 ```
 First 5 bytes (53 56 8B F1 57) can be replaced with JMP rel32 for a detour.
+
+---
+
+## Stale UIParent Pointer — The Persistent Unknown Destruction Path
+
+### Discovery
+
+One persistent stale pointer escapes ALL hooked destruction paths. Pattern:
+- Address always ends in `X008` (e.g., `0x17f20008`, `0x17fb4008`, `0x03bc0008`)
+- CFrame base = addr - 0x24 = `XXXXffe4` — crosses page boundary
+- First page (containing CFrame base, vtable) is DECOMMITTED
+- Second page (containing CLayoutFrame inner at +0x24) survives
+- Frame name at CFrame+0x98 reads garbage (`"t%Ç"`) from residual second-page data
+- NOT in destruction history ring buffer — never went through any hooked detour
+
+### Diagnostic Hooks Added
+
+**PauseAnimationGroup (0x767ee0)** — dependency registration tracker:
+- `__thiscall(ECX=relativeTo_frame, owner_frame, bitmask)`, RET 0x8
+- Prologue: `55 8B EC 53 8B D9` (6 bytes)
+- Silently records every registration to a 2048-entry ring buffer
+- Queried by vtable hooks when stale pointer detected
+
+**SetAnimationOrder (0x767c70)** — anchor creation validator:
+- `__thiscall(ECX=frame, point_enum, relativeTo, relPoint, xOfs, yOfs, param_6)`, RET 0x18
+- Prologue: `55 8B EC 8B 45 0C` (6 bytes)
+- Validates relativeTo AND CFrame base (relativeTo - 0x24) with IsBadReadPtr
+- Catches race condition: relativeTo already dead when anchor created
+
+### Key Finding: The Stale Frame is UIParent
+
+**Confirmed by SetAnimationOrder RACE detection.** The following frames all call
+SetAnimOrder with the dead relativeTo address:
+
+| Owner Frame | Point | Context |
+|------------|-------|---------|
+| `ScriptErrors` | 4 | Blizzard UI |
+| `GroupLootDropDown` | 0 | Blizzard UI |
+| `GroupLootFrame1` | 7 | Blizzard UI |
+| `PlayerFrame` | 0 | Blizzard UI |
+| `TargetFrame` | 0 | Blizzard UI |
+| `WorldMapFrame` | 4 | Blizzard UI |
+| `GuildBankFrame` | 0 | Blizzard UI |
+| `TransmogFrame` | 0 | Addon UI |
+| `NewTransmogAlertFrame` | 0 | Addon UI |
+| `TWTMain` | 0 | Addon UI |
+| `TWTMainSettings` | 0 | Addon UI |
+| `TWTMainTankModeWindow` | 0 | Addon UI |
+| `TWTWithAddonList` | 0 | Addon UI |
+
+**Every top-level frame** anchors to this address → it's `UIParent`.
+
+### Race Condition Confirmed
+
+- `DEP REGISTERED` — PauseAnimationGroup WAS called for the address (dependency existed)
+- But name at registration time was `"t%Ç"` (garbage) — the frame was ALREADY DEAD
+  when PauseAnimationGroup ran
+- `SetAnimOrder` RACE check: `IsBadReadPtr(relativeTo - 0x24)` FAILS (first page
+  decommitted), but `IsBadReadPtr(relativeTo)` passes (second page survives)
+- The original game code doesn't validate relativeTo at all — just stores the raw pointer
+
+### Symptom: Black Screen
+
+When vtable hooks NULL all stale relativeTo pointers, every top-level frame loses its
+anchor to UIParent → nothing can lay out → full black screen. The crash is prevented
+but the UI is broken.
+
+### Theory
+
+UIParent is destroyed through an unknown path during a UI reload/transition (character
+select → world, or loading screen). The destruction does NOT go through:
+- `cleanup_linked_list_structures` (0x767720) — hooked, not triggered
+- `destroyUIElement` (0x7645a0) — hooked, not triggered
+- `ProcessUIUpdateEvent` (0x772ec0) — hooked, not triggered
+
+A new UIParent is created at a different address, but addon/Blizzard initialization
+code passes the OLD (now dead) address to SetPoint/SetAnimOrder.
+
+### Next Steps
+
+1. Find UIParent global pointer in WoW binary (Ghidra)
+2. Determine when/how UIParent is destroyed and recreated
+3. Consider: hook SetAnimOrder to substitute live UIParent address when dead one detected
+4. Alternative: find the destruction path that frees UIParent without our hooks firing
+
+---
+
+## Ghidra RE: UIParent Resolution Mechanism
+
+### UIParent String
+
+- Address: `0x00842f14` (DATA, type=string, value="UIParent")
+- **Only 1 xref**: from `InitializeGameInterface` at `0x00490065`
+
+### GetFrameFromLua (0x76c760)
+
+Resolves a named frame from the Lua global table at runtime. Called from
+`InitializeGameInterface` to populate `PTR_00b4b44c`.
+
+**Calling convention**: `__fastcall(ECX=name_string, EDX=typeID)`, returns `CFrame*`.
+Bare `RET` (no stack cleanup -- 0 stack args).
+
+**Prologue**: `53 56 57 8B DA 8B F9` (7 bytes)
+
+**Internal call chain**:
+```
+0x76c767: CALL 0x7040d0   -- lua.getContext()  -> ESI = L
+0x76c772: CALL 0x6f3890   -- lua_pushstring(L, name)
+0x76c77e: CALL 0x6f3a40   -- lua_gettable(L, LUA_GLOBALSINDEX)
+0x76c788: CALL 0x6f3400   -- lua_type(L, -1)
+          CMP EAX, ...    -- type check (userdata? table?)
+          JZ ...          -- branch on type
+0x76c794: MOV EDX, ...    -- extract frame pointer from Lua value
+```
+
+Epilogue: two RET paths at `0x76c7a3` and `0x76c7db` (both bare `RET`).
+
+**Usage in InitializeGameInterface (0x48fbf0)**:
+```c
+g_ParentFrameTypeID = g_NextTypeID + 1;  // if not already set
+PTR_00b4b44c = GetFrameFromLua("UIParent", g_ParentFrameTypeID);
+PTR_00b4b3c4 = GetFrameFromLua("GameTooltip", another_type_id);
+```
+
+**Key insight**: This function does a live Lua global lookup every time it's called.
+We can call it from our hooks to get the CURRENT UIParent, not a cached stale pointer.
+Just need `g_ParentFrameTypeID` from `0x00cf0c10` (runtime .bss value).
+
+### g_ParentFrameTypeID (0xcf0c10)
+
+Runtime type ID for the parent frame type. Set once during initialization, stable
+for the lifetime of the process. Read from `.bss` at runtime.
+
+### Other Relevant Lookup Functions (found but not yet decompiled)
+
+| Address | Name | Notes |
+|---------|------|-------|
+| 0x4b3250 | `FindUIElementByName` | Alternative name-based lookup |
+| 0x4c3c50 | `FrameScript_GetListOffset` | Frame list traversal helper |
+| 0x4c3c80 | `FrameScript_GetListNodeAt` | Frame list node access |
+
+### Lua API Functions (confirmed addresses)
+
+| Address | Function | Ghidra Name | Notes |
+|---------|----------|-------------|-------|
+| 0x6f36e0 | `lua_tolstring` | lua_tolstring | Confirmed |
+| 0x6f3740 | `lua_touserdata` | lua_objlen (WRONG) | See below |
+| 0x6f3770 | `lua_objlen` | lua_get_userdata_size | Actual objlen |
+
+### lua_touserdata (0x6f3740) -- CONFIRMED
+
+Ghidra mislabels this as `lua_objlen`. Disassembly confirms it's `lua_touserdata`:
+```asm
+0x6f374a: MOV ECX, [EAX]          ; type tag
+0x6f374c: SUB ECX, 0x2            ; LUA_TLIGHTUSERDATA = 2
+0x6f374f: JZ 0x6f3760             ; -> return value[2] directly
+0x6f3751: SUB ECX, 0x5            ; LUA_TUSERDATA = 7 (2+5)
+0x6f3754: JZ 0x6f3759             ; -> return value[2] + 0x10 (skip Udata header)
+0x6f3756: XOR EAX, EAX            ; else return NULL
+0x6f3758: RET
+0x6f3759: MOV EAX, [EAX+8]        ; full userdata data ptr
+0x6f375c: ADD EAX, 0x10           ; skip 16-byte Udata header
+0x6f375f: RET
+0x6f3760: MOV EAX, [EAX+8]        ; lightuserdata ptr
+0x6f3763: RET
+```
+
+### GetFrameFromLua Full Flow (CONFIRMED)
+
+From decompilation and byte-level verification:
+
+```c
+CFrame* __fastcall GetFrameFromLua(ECX=name, EDX=typeID) {
+    L = getContext();                        // 0x7040d0
+    lua_pushstring(L, name);                 // push "UIParent"
+    lua_gettable(L, LUA_GLOBALSINDEX);       // EDX=0xffffd8ef (-10001)
+    type = lua_type(L, -1);                  // 0x6f3400
+    if (type != 5) {                         // 5 = LUA_TTABLE
+        lua_settop(L, -2);                   // pop, not a table
+        return NULL;
+    }
+    lua_rawgeti(L, -1, 0);                   // push table[0] (CFrame* as userdata)
+    ptr = lua_touserdata(L, -1);             // extract C pointer (0x6f3740)
+    lua_settop(L, -3);                       // pop table + userdata
+    if (ptr == NULL) return NULL;
+    if (!ptr->vtable[4](typeID)) return NULL; // validate frame type
+    return ptr;                              // CFrame base pointer
+}
+```
+
+Frame Lua representation: named frame globals are Lua **tables** with the CFrame
+pointer stored as userdata at `table[0]`. `GetFrameFromLua` extracts this, validates
+the type via vtable dispatch, and returns the raw CFrame pointer.
+
+### Heal Implementation -- STATUS: CRASHES
+
+Replaced the stale C++ global approach (`0x00B4B44C`) with a live Lua lookup via
+`hook.fastcall(u32, 0x76c760, name_ptr, type_id)`. The heal log message ("HEALED")
+appears in the console, confirming `GetFrameFromLua` returns a valid pointer. But
+the game segfaults shortly after with NO WoW crash log (bypasses the exception handler).
+
+**Current code** (in framecrash.zig):
+```zig
+fn getLiveUIParent() u32 {
+    const type_id = readAligned(G_PARENT_FRAME_TYPE_ID); // 0xcf0c10
+    if (type_id == 0) return 0;
+    const cframe_base = hook.fastcall(u32, GET_FRAME_FROM_LUA,
+        @intFromPtr(@as([*:0]const u8, "UIParent")), type_id);
+    if (cframe_base == 0) return 0;
+    // validate + name check, return CLayoutFrame inner (+ 0x24)
+}
+```
+
+Called from:
+- `setAnimOrderDetour` -- substitutes dead relativeTo BEFORE anchor creation
+- `tryFixStaleRelativeTo` -- heals existing anchors in vtable hooks
+- Vtable hooks (GetWidth/GetHeight/GetRelativeTo) -- defense-in-depth
+
+**Suspected crash causes** (not yet verified):
+
+1. **`hook.fastcall` clobber list incomplete** -- the inline asm for fastcall does
+   NOT declare ECX/EDX as clobbered after `call`. This could cause the Zig compiler
+   to assume those registers are preserved, leading to register corruption in the
+   calling detour function. Fix: rewrite getLiveUIParent to call Lua API functions
+   directly via typed function pointers (same pattern as main.zig's lua struct),
+   avoiding hook.fastcall entirely.
+
+2. **Reentrancy** -- vtable hooks (GetWidth/GetHeight) fire during layout calculation,
+   which can happen many times per frame. Each call to getLiveUIParent does a full
+   Lua stack push/pop cycle. If layout triggers a metamethod or callback that
+   reenters layout, the Lua stack could be corrupted.
+
+3. **Dependency list inconsistency** -- vtable hook HEAL path writes the new UIParent
+   address directly into `anchor+0x0C`, but the PauseAnimationGroup dependency was
+   registered on the OLD (dead) address. The dependency list on the new UIParent
+   doesn't know about these anchors. This could cause issues when the new UIParent
+   is later destroyed.
+
+### Next Steps for Heal Fix
+
+1. **Rewrite getLiveUIParent with direct Lua calls** -- use typed function pointers
+   for each Lua API function instead of hook.fastcall into GetFrameFromLua. This
+   eliminates the clobber list risk and allows per-step error checking. Key addresses:
+   - `getContext` (0x7040d0): `fn() callconv(fc) u32`
+   - `lua_pushstring` (0x6f3890): `fn(u32, [*:0]const u8) callconv(fc) void`
+   - `lua_gettable` (0x6f3a40): `fn(u32, i32) callconv(fc) void`
+   - `lua_type` (0x6f3400): `fn(u32, i32) callconv(fc) i32`
+   - `lua_settop` (0x6f3080): `fn(u32, i32) callconv(fc) void`
+   - `lua_rawgeti` (0x6f3bc0): `fn(u32, i32, i32) callconv(fc) void`
+   - `lua_touserdata` (0x6f3740): `fn(u32, i32) callconv(fc) u32`
+
+2. **Add reentrancy guard** -- static bool to prevent recursive getLiveUIParent calls.
+
+3. **Cache result** -- call GetFrameFromLua once per stale-pointer batch, reuse for
+   all heals in the same layout pass. Invalidate on next frame/event.
+
+4. **Fix dependency list** -- after healing an anchor's relativeTo, call
+   PauseAnimationGroup on the new UIParent to register the dependency. Without
+   this, the new UIParent's destruction won't clean up these anchors.
+
+### Module currently DISABLED by default
+
+Build flag changed to `orelse false` in build.zig. Enable with `-Dframecrash=true`.

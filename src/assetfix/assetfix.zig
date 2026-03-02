@@ -11,7 +11,7 @@
 // =============================================================================
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const con = @import("../console.zig");
 
 // =============================================================================
@@ -182,25 +182,18 @@ fn looseFilesLookup(game_path_ptr: u32) ?[*]const u8 {
 // Hook: CheckFileExistence (0x654DD0)
 // =============================================================================
 // __fastcall(ECX=filename, EDX=flags, stack=outputBuffer) → EAX
-// Prologue: 9 bytes (push ebp; mov ebp, esp; sub esp, 0x104) — no rel32 fixups
 
-const CHECK_FILE_EXISTENCE: usize = 0x654DD0;
+const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
+const CheckFileExistenceFn = fn (u32, u32, u32) callconv(fc) u32;
 
-var cfe_hook = hook.Hook{};
+var cfe_hook: hook.Detour(CheckFileExistenceFn) = .{};
 
-fn hookImpl(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(.c) u32 {
+fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(fc) u32 {
     if (filename_ptr != 0) {
         if (looseFilesLookup(filename_ptr)) |disk_path| {
             const raw: [*]const u8 = @ptrFromInt(filename_ptr);
             con.fmt("[assetfix] loose hit: \"{s}\"\n", .{raw[0..cStrLen(raw)]});
 
-            // Write disk path (e.g. "Data\Character\...") to output buffer.
-            // The caller (File_FindInArchive) uses this to open the file from disk.
-            // Game paths contain '\' which makes CheckFileExistence's bit-0 handler
-            // skip BuildFilePath and use the raw path as-is — failing because the
-            // game-relative path has no "Data\" prefix. By writing the correct
-            // disk-relative path to the output buffer ourselves, we bypass that
-            // bug without transforming the filename argument (preserving chaining).
             if (output_buffer_ptr != 0) {
                 const disk_len = cStrLen(disk_path);
                 const out: [*]u8 = @ptrFromInt(output_buffer_ptr);
@@ -212,31 +205,11 @@ fn hookImpl(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(.c) 
             return 1;
         }
     }
-    return callOriginal(filename_ptr, flags, output_buffer_ptr);
-}
-
-fn callOriginal(filename: u32, flags: u32, output_buffer: u32) u32 {
-    // __fastcall: ECX=filename, EDX=flags, push outputBuffer, callee cleans 4
-    return asm volatile (
-        \\push %[output]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (filename),
-          [_] "{edx}" (flags),
-          [output] "r" (output_buffer),
-          [func] "r" (cfe_hook.trampoline),
-        : .{ .memory = true, .cc = true });
+    return cfe_hook.callOriginal(.{ filename_ptr, flags, output_buffer_ptr });
 }
 
 fn installHook() bool {
-    if (!cfe_hook.prepare(CHECK_FILE_EXISTENCE, 9, &.{})) return false;
-
-    // Build fastcall→cdecl thunk in the hook's alloc block (after trampoline)
-    const thunk_buf = cfe_hook.mem.? + 32;
-    _ = hook.buildFastcallToCdeclThunk(thunk_buf, @intFromPtr(&hookImpl), 1);
-
-    cfe_hook.activate(@intFromPtr(thunk_buf));
-    return true;
+    return cfe_hook.attach(0x654DD0, &checkFileExistenceDetour) == .ok;
 }
 
 // =============================================================================
@@ -307,37 +280,36 @@ var installed: bool = false;
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
-pub fn installHooks() bool {
+pub fn installHooks() void {
     con.print("[assetfix] Module loaded\n");
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\AssetfixHook_{d}", .{GetCurrentProcessId()}) catch return false;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\AssetfixHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return false;
+    if (g_mutex == null) return;
 
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         _ = CloseHandle(g_mutex.?);
         g_mutex = null;
         g_is_hook_owner = false;
         con.print("[assetfix] Another DLL owns hooks (mutex taken), skipping\n");
-        return true;
+        return;
     }
     g_is_hook_owner = true;
 
     applyGlobPatch();
     applyLooseFilePatches();
     looseFilesInit();
-    if (!installHook()) return false;
+    if (!installHook()) return;
     installed = true;
-    return true;
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner and installed) {
-        cfe_hook.remove();
+        cfe_hook.detach();
         revertLooseFilePatches();
         revertGlobPatch();
         looseFilesCleanup();

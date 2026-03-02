@@ -13,6 +13,7 @@ const build_opts = struct {
     const minimapicons = @import("build_options").enable_minimapicons;
     const transmogfix = @import("build_options").enable_transmogfix;
     const assetfix = @import("build_options").enable_assetfix;
+    const healtextfix = @import("build_options").enable_healtextfix;
 };
 
 // Conditional module imports
@@ -25,6 +26,7 @@ const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") e
 const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
 const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix.zig") else struct {};
 const assetfix = if (build_opts.assetfix) @import("assetfix/assetfix.zig") else struct {};
+const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -256,10 +258,11 @@ fn registerLuaFunctions() void {
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
-    if (build_opts.markers) {
+    if (build_opts.markers and markers.isActive()) {
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
         registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
+        registerFunction("ProcessMarkerAnimations", @intFromPtr(&markers.luaProcessAnimations));
     }
 }
 
@@ -852,7 +855,7 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
             error_handler,
         );
     }
-    if (build_opts.markers) {
+    if (build_opts.markers and markers.isActive()) {
         callLoadFileListWithIncludes(
             "Interface\\AddOns\\Markers\\Markers.toc",
             &md5ctx,
@@ -911,6 +914,9 @@ fn engineInitDetour() callconv(sc) void {
     if (build_opts.outline) {
         _ = outline.init();
     }
+    if (build_opts.healtextfix) {
+        healtextfix.lateInit();
+    }
 }
 
 // =============================================================================
@@ -919,11 +925,45 @@ fn engineInitDetour() callconv(sc) void {
 
 var shutdown_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
+// =============================================================================
+// Module lifecycle — single table drives install, shutdown, and uninstall.
+// Adding a module here guarantees all three phases are handled.
+// =============================================================================
+
+const ModuleHooks = struct {
+    install: ?*const fn () void = null,
+    remove: ?*const fn () void = null,
+    /// If true, remove is also called during CGGameUI_Shutdown (before game
+    /// teardown), not just during DLL unload. Use for modules that create
+    /// world objects which must be destroyed while game systems are alive.
+    remove_on_shutdown: bool = false,
+};
+
+/// Order matters: modules are installed top-to-bottom, removed bottom-to-top.
+/// Modules with remove_on_shutdown run their remove during shutdownDetour too.
+const modules = [_]ModuleHooks{
+    if (build_opts.assetfix) .{ .install = assetfix.installHooks, .remove = assetfix.removeHooks } else .{},
+    if (build_opts.framecrash) .{ .install = framecrash.installHooks, .remove = framecrash.removeHooks } else .{},
+    if (build_opts.combatlog) .{ .install = combatlog.installHooks, .remove = combatlog.removeHooks } else .{},
+    if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},
+    if (build_opts.minimapicons) .{ .install = minimapicons.installHooks, .remove = minimapicons.removeHooks } else .{},
+    if (build_opts.healtextfix) .{ .install = healtextfix.installHooks, .remove = healtextfix.removeHooks } else .{},
+    if (build_opts.markers) .{ .install = markers.installHooks, .remove = markers.removeHooks, .remove_on_shutdown = true } else .{},
+    if (build_opts.interact) .{ .install = interact.installHooks, .remove = interact.removeHooks } else .{},
+    if (build_opts.outline) .{ .remove = outline.cleanup } else .{},
+    if (build_opts.screenshot) .{ .remove = screenshot.removeHook } else .{},
+};
+
 fn shutdownDetour() callconv(sc) void {
-    // Clean up world objects BEFORE game shutdown — atexit handlers run before DllMain
-    // so we must destroy markers here, not in uninstall().
-    if (build_opts.markers) {
-        markers.removeHooks();
+    // Clean up world objects BEFORE game shutdown — atexit handlers run before
+    // DllMain so modules with remove_on_shutdown must destroy here.
+    comptime var i = modules.len;
+    inline while (i > 0) {
+        i -= 1;
+        const m = modules[i];
+        if (m.remove_on_shutdown) {
+            if (m.remove) |rm| rm();
+        }
     }
 
     shutdown_hook.callOriginal(.{});
@@ -941,28 +981,11 @@ fn install() void {
     _ = file_hook.attach(0x648620, &loadFileDetour);
     _ = lsf_hook.attach(0x490250, &loadScriptFunctionsDetour);
 
-    if (build_opts.assetfix) {
-        _ = assetfix.installHooks();
-    }
-    if (build_opts.framecrash) {
-        framecrash.installHooks();
-    }
-    if (build_opts.combatlog) {
-        combatlog.installHooks();
-    }
-    if (build_opts.transmogfix) {
-        _ = transmogfix.installHooks();
-    }
-    if (build_opts.minimapicons) {
-        minimapicons.installHooks();
+    inline for (modules) |m| {
+        if (m.install) |inst| inst();
     }
 
     _ = load_addons_hook.attach(0x51F600, &loadAddonsDetour);
-
-    if (build_opts.interact) {
-        interact.installHooks();
-    }
-
     _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
     _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
 }
@@ -971,33 +994,11 @@ fn uninstall() void {
     shutdown_hook.detach();
     engine_init_hook.detach();
 
-    // Markers must be cleaned up first — destroys world objects while game systems are still alive
-    if (build_opts.markers) {
-        markers.removeHooks();
-    }
-    if (build_opts.outline) {
-        outline.cleanup();
-    }
-    if (build_opts.screenshot) {
-        screenshot.removeHook();
-    }
-    if (build_opts.interact) {
-        interact.removeHooks();
-    }
-    if (build_opts.framecrash) {
-        framecrash.removeHooks();
-    }
-    if (build_opts.combatlog) {
-        combatlog.removeHooks();
-    }
-    if (build_opts.minimapicons) {
-        minimapicons.removeHooks();
-    }
-    if (build_opts.transmogfix) {
-        transmogfix.removeHooks();
-    }
-    if (build_opts.assetfix) {
-        assetfix.removeHooks();
+    // Remove in reverse order
+    comptime var i = modules.len;
+    inline while (i > 0) {
+        i -= 1;
+        if (modules[i].remove) |rm| rm();
     }
 
     load_addons_hook.detach();

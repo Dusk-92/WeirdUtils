@@ -1,5 +1,5 @@
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const con = @import("../console.zig");
 const png = @import("png.zig");
 
@@ -55,7 +55,9 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 
 var enabled: bool = true;
 var compression_level: i32 = 6; // user-facing 0–9, kept for Lua interface
-var tga_hook: hook.Hook = .{};
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const TgaWriteFn = fn (u32, u32) callconv(tc) i32;
+var tga_hook: hook.Detour(TgaWriteFn) = .{};
 var screenshot_dir: [260]u8 = undefined;
 var screenshot_dir_len: usize = 0;
 var screenshot_counter: u8 = 0;
@@ -79,7 +81,7 @@ var queue: [MAX_PENDING]PendingScreenshot = undefined;
 var queue_head: usize = 0;
 var queue_tail: usize = 0;
 var queue_count: usize = 0;
-var mutex: std.Thread.Mutex = .{};
+var mutex: std.atomic.Mutex = .unlocked;
 var worker_running: bool = false;
 var g_mutex: ?HANDLE = null;
 var g_is_hook_owner: bool = false;
@@ -122,15 +124,7 @@ fn extractDir(filename_ptr: u32) void {
 // =============================================================================
 
 fn callOriginal(self: u32, filename: u32) i32 {
-    return asm volatile (
-        \\push %[filename]
-        \\call *%[func]
-        : [ret] "={eax}" (-> i32),
-        : [_] "{ecx}" (self),
-          [filename] "r" (filename),
-          [func] "r" (tga_hook.trampoline),
-        : .{ .edx = true, .memory = true, .cc = true }
-    );
+    return tga_hook.callOriginal(.{ self, filename });
 }
 
 // =============================================================================
@@ -138,8 +132,7 @@ fn callOriginal(self: u32, filename: u32) i32 {
 // Thunked from __fastcall(self_ECX, _EDX, filename_stack) → cdecl
 // =============================================================================
 
-fn tgaWriteDetour(self: u32, _edx: u32, filename: u32) callconv(.c) i32 {
-    _ = _edx;
+fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
 
     if (!enabled) return callOriginal(self, filename);
 
@@ -167,7 +160,7 @@ fn tgaWriteDetour(self: u32, _edx: u32, filename: u32) callconv(.c) i32 {
     @memcpy(buffer, src[0..size]);
 
     // Enqueue for async processing
-    mutex.lock();
+    while (!mutex.tryLock()) {}
     defer mutex.unlock();
 
     if (!enqueue(.{ .buffer = buffer.ptr, .width = width, .height = height, .size = size, .level = png.mapLevel(compression_level) })) {
@@ -196,7 +189,7 @@ fn workerThread() void {
     while (true) {
         var shot: PendingScreenshot = undefined;
         {
-            mutex.lock();
+            while (!mutex.tryLock()) {}
             defer mutex.unlock();
             if (dequeue()) |s| {
                 shot = s;
@@ -368,24 +361,19 @@ pub fn installHook() void {
     g_is_hook_owner = true;
 
     // CTgaFile::Write at 0x5a4810
-    // __thiscall(self, filename) — prologue: 55 8B EC 83 EC 08 = 6 bytes, no fixups
-    // Thunk: fastcall(ECX=self, EDX, stack: filename) → cdecl(self, edx, filename)
+    // __thiscall(self, filename) ret 4
     //
     // Another DLL (UnitXP_SP3) hooks this same address during DLL_PROCESS_ATTACH,
     // replacing the prologue with an E9 JMP. Restore the original prologue first
     // so prepare() builds a trampoline to the real function rather than chaining
     // through UnitXP's detour.
     hook.writeProtected(0x5a4810, &.{ 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08 });
-    if (tga_hook.prepare(0x5a4810, 6, &.{})) {
-        const thunk = tga_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&tgaWriteDetour), 1);
-        tga_hook.activate(@intFromPtr(thunk));
-    }
+    _ = tga_hook.attach(0x5a4810, &tgaWriteDetour);
 }
 
 pub fn removeHook() void {
     if (g_is_hook_owner) {
-        tga_hook.remove();
+        tga_hook.detach();
     }
 
     if (g_is_hook_owner) {

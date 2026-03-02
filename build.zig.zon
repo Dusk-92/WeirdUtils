@@ -3,8 +3,8 @@
     .version = "0.1.0",
     .fingerprint = 0x54f0a9542562d318,
     .dependencies = .{
-        .hook = .{
-            .path = "libs/hook",
+        .zhook = .{
+            .path = "../zhook",
         },
     },
     .paths = .{

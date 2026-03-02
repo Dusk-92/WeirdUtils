@@ -14,7 +14,7 @@
 //! occluded by world/WMO/game objects but show through other players.
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const types = @import("types.zig");
 const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");

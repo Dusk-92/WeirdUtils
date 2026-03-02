@@ -15,7 +15,7 @@
 // =============================================================================
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const con = @import("../console.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -165,9 +165,14 @@ var g_mutex: ?*anyopaque = null;
 // Hooks
 // =============================================================================
 
-var set_block_hook = hook.Hook{};
-var refresh_hook = hook.Hook{};
-var scene_end_hook = hook.Hook{};
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const SetBlockFn = fn (u32, u32, u32) callconv(tc) u32;
+const RefreshFn = fn (u32, u32, u32, u32) callconv(tc) void;
+const SceneEndFn = fn (u32) callconv(tc) void;
+
+var set_block_hook: hook.Detour(SetBlockFn) = .{};
+var refresh_hook: hook.Detour(RefreshFn) = .{};
+var scene_end_hook: hook.Detour(SceneEndFn) = .{};
 
 // =============================================================================
 // Object manager helpers
@@ -358,55 +363,15 @@ fn findOtherPendingEntry(guid: u64, slot: i32) i32 {
 // =============================================================================
 
 fn callOriginalSetBlock(obj: u32, index: u32, value: u32) u32 {
-    // Save/restore ECX around the call: the callee overwrites ECX internally
-    // (SetBlock does `mov ecx, [ebp+0xC]`), but we can't list ECX as a clobber
-    // since it's already an input constraint. Without the save/restore, the
-    // compiler may reuse the now-stale ECX for `obj` on a subsequent call.
-    // The trampoline's `ret 8` cleans up the pushed index+value, leaving our
-    // saved ECX on top for the pop.
-    return asm volatile (
-        \\push %%ecx
-        \\push %[value]
-        \\push %[index]
-        \\call *%[func]
-        \\pop %%ecx
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (obj),
-          [index] "r" (index),
-          [value] "r" (value),
-          [func] "r" (set_block_hook.trampoline),
-        : .{ .edx = true, .memory = true, .cc = true }
-    );
+    return set_block_hook.callOriginal(.{ obj, index, value });
 }
 
 fn callOriginalRefresh(unit: u32, event_data: u32, extra_data: u32, force_update: u32) void {
-    // __thiscall: ECX=this, stack args right-to-left. EDX is caller-saved scratch
-    // (confirmed via Ghidra: __thiscall, EDX not part of calling convention).
-    // Pin force_update to EDX to stay within 3 "r" registers (EBX/ESI/EDI)
-    // since EBP is the frame pointer on x86.
-    asm volatile (
-        \\push %[force]
-        \\push %[extra]
-        \\push %[event]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (unit),
-          [force] "{edx}" (force_update),
-          [event] "r" (event_data),
-          [extra] "r" (extra_data),
-          [func] "r" (refresh_hook.trampoline),
-        : .{ .eax = true, .memory = true, .cc = true }
-    );
+    refresh_hook.callOriginal(.{ unit, event_data, extra_data, force_update });
 }
 
 fn callOriginalSceneEnd(device: u32) void {
-    asm volatile (
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (device),
-          [func] "r" (scene_end_hook.trampoline),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
-    );
+    scene_end_hook.callOriginal(.{device});
 }
 
 // =============================================================================
@@ -429,7 +394,7 @@ fn processTimeouts(now: u32) void {
     }
 
     // OTHER PLAYERS: Use timeout since we don't have their INV_SLOT info
-    if (g_other_pending_count > 0 and set_block_hook.trampoline != 0) {
+    if (g_other_pending_count > 0 and set_block_hook.inner.trampoline != 0) {
         const UnitSlots = struct {
             unit: u32 = 0,
             slots: [19]i32 = .{0} ** 19,
@@ -507,7 +472,7 @@ fn processTimeouts(now: u32) void {
 
             // Fallback to RefreshVisualAppearance
             con.fmt("[other] REFRESH fallback unit=0x{X:0>8} table=0x{X:0>8}\n", .{ unit, display_table });
-            if (refresh_hook.trampoline != 0) {
+            if (refresh_hook.inner.trampoline != 0) {
                 callOriginalRefresh(unit, 0, 0, 1);
             }
         }
@@ -518,8 +483,7 @@ fn processTimeouts(now: u32) void {
 // Hook 1: SetBlock (0x6142E0)
 // =============================================================================
 
-fn hookSetBlock(obj: u32, _edx: u32, index: u32, value: u32) callconv(.c) u32 {
-    _ = _edx;
+fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
     const val = value;
 
     // VISIBLE_ITEM writes
@@ -694,11 +658,9 @@ fn hookSetBlock(obj: u32, _edx: u32, index: u32, value: u32) callconv(.c) u32 {
 // Hook 2: RefreshVisualAppearance (0x5fb880)
 // =============================================================================
 
-fn hookRefreshVisualAppearance(unit: u32, _edx: u32, event_data: u32, extra_data: u32, force_update: u32) callconv(.c) void {
-    _ = _edx;
-
-    if (!g_enabled or refresh_hook.trampoline == 0) {
-        if (refresh_hook.trampoline != 0) {
+fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, force_update: u32) callconv(tc) void {
+    if (!g_enabled or refresh_hook.inner.trampoline == 0) {
+        if (refresh_hook.inner.trampoline != 0) {
             callOriginalRefresh(unit, event_data, extra_data, force_update);
         }
         return;
@@ -802,8 +764,7 @@ fn hookRefreshVisualAppearance(unit: u32, _edx: u32, event_data: u32, extra_data
 // Hook 3: SceneEnd (0x5a17a0)
 // =============================================================================
 
-fn hookSceneEnd(device: u32, _edx: u32) callconv(.c) void {
-    _ = _edx;
+fn hookSceneEnd(device: u32) callconv(tc) void {
 
     if (g_enabled and (g_local_pending_count > 0 or g_other_pending_count > 0)) {
         processTimeouts(GetTickCount());
@@ -816,16 +777,16 @@ fn hookSceneEnd(device: u32, _edx: u32) callconv(.c) void {
 // Init / Cleanup
 // =============================================================================
 
-pub fn installHooks() bool {
+pub fn installHooks() void {
     con.print("[transmogfix] Module loaded\n");
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\TransmogCoalesceHook_{d}", .{GetCurrentProcessId()}) catch return false;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\TransmogCoalesceHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return false;
+    if (g_mutex == null) return;
 
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         _ = CloseHandle(g_mutex.?);
@@ -833,7 +794,7 @@ pub fn installHooks() bool {
         g_is_hook_owner = false;
         g_initialized = true;
         con.print("[transmogfix] Another DLL owns hooks (mutex taken), skipping\n");
-        return true; // Success but not owner — no hooks
+        return;
     }
     g_is_hook_owner = true;
 
@@ -846,41 +807,31 @@ pub fn installHooks() bool {
     g_unit_cache = [1]UnitVisualState{.{}} ** UNIT_CACHE_SIZE;
     g_cached_visible_item = .{0} ** 19;
 
-    // Hook 1: SetBlock (6 bytes, no fixups)
-    if (!set_block_hook.prepare(ADDR_SetBlock, 6, &.{})) return false;
-    const sb_thunk = set_block_hook.mem.? + 32;
-    _ = hook.buildFastcallToCdeclThunk(sb_thunk, @intFromPtr(&hookSetBlock), 2);
-    set_block_hook.activate(@intFromPtr(sb_thunk));
+    // Hook 1: SetBlock
+    if (set_block_hook.attach(ADDR_SetBlock, &hookSetBlock) != .ok) return;
 
-    // Hook 2: RefreshVisualAppearance (6 bytes, no fixups)
-    if (!refresh_hook.prepare(ADDR_RefreshVisualAppearance, 6, &.{})) {
-        set_block_hook.remove();
-        return false;
+    // Hook 2: RefreshVisualAppearance
+    if (refresh_hook.attach(ADDR_RefreshVisualAppearance, &hookRefreshVisualAppearance) != .ok) {
+        set_block_hook.detach();
+        return;
     }
-    const rv_thunk = refresh_hook.mem.? + 32;
-    _ = hook.buildFastcallToCdeclThunk(rv_thunk, @intFromPtr(&hookRefreshVisualAppearance), 3);
-    refresh_hook.activate(@intFromPtr(rv_thunk));
 
-    // Hook 3: SceneEnd (9 bytes, no fixups)
-    if (!scene_end_hook.prepare(ADDR_SceneEnd, 9, &.{})) {
-        refresh_hook.remove();
-        set_block_hook.remove();
-        return false;
+    // Hook 3: SceneEnd
+    if (scene_end_hook.attach(ADDR_SceneEnd, &hookSceneEnd) != .ok) {
+        refresh_hook.detach();
+        set_block_hook.detach();
+        return;
     }
-    const se_thunk = scene_end_hook.mem.? + 32;
-    _ = hook.buildFastcallToCdeclThunk(se_thunk, @intFromPtr(&hookSceneEnd), 0);
-    scene_end_hook.activate(@intFromPtr(se_thunk));
 
     g_initialized = true;
     con.print("[transmogfix] All 3 hooks installed\n");
-    return true;
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        scene_end_hook.remove();
-        refresh_hook.remove();
-        set_block_hook.remove();
+        scene_end_hook.detach();
+        refresh_hook.detach();
+        set_block_hook.detach();
     }
 
     if (g_is_hook_owner) {

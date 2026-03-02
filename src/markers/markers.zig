@@ -28,6 +28,11 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
+/// True if this DLL instance owns the markers hooks and Lua API is safe to use.
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -83,6 +88,7 @@ var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 // =============================================================================
 
 const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
+const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
 
 const lapi = struct {
     fn gettop(L: u32) i32 {
@@ -462,6 +468,58 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
 }
 
 // =============================================================================
+// World teardown hook
+// =============================================================================
+
+var world_cleanup_hook: hook.Detour(fn () callconv(sc) void) = .{};
+
+/// Pre-hook on CleanupWorldAndEntities (0x66fc40).
+/// Destroys all our entities via CleanupEntity_ProcessAttachments before the
+/// game's teardown runs — the same pattern every native caller uses (e.g.
+/// processCinematicExit, DestroyPathObjectIfPresent). This unlinks them from
+/// the WDOODADDEF hash table so the atexit handler never touches freed memory.
+fn worldCleanupDetour() callconv(sc) void {
+    con.print("[markers] >>> worldCleanupDetour FIRING <<<\n");
+    destroyAllEntities();
+    world_cleanup_hook.callOriginal(.{});
+}
+
+/// Destroy all tracked entities (active markers + despawning).
+/// Idempotent — safe to call multiple times.
+fn destroyAllEntities() void {
+    var count: u32 = 0;
+    for (&marker_entities, 0..) |*slot, i| {
+        if (slot.*) |existing| {
+            const addr = @intFromPtr(existing);
+            const flags = hook.readMem(u32, addr + 0x8);
+            const refcount = hook.readMem(u16, addr + 0x0E);
+            con.fmt("[markers] destroying marker[{d}] @0x{x} flags=0x{x} refcount={d}\n", .{ i, addr, flags, refcount });
+            cleanupEntity(existing);
+            slot.* = null;
+            count += 1;
+        }
+    }
+    for (&hold_queued) |*h| h.* = false;
+    for (&marker_created_tick) |*t| t.* = 0;
+
+    for (&despawning, 0..) |*slot, i| {
+        if (slot.*) |d| {
+            const addr = @intFromPtr(d.entity);
+            const flags = hook.readMem(u32, addr + 0x8);
+            const refcount = hook.readMem(u16, addr + 0x0E);
+            con.fmt("[markers] destroying despawn[{d}] @0x{x} flags=0x{x} refcount={d}\n", .{ i, addr, flags, refcount });
+            cleanupEntity(d.entity);
+            slot.* = null;
+            count += 1;
+        }
+    }
+
+    if (count > 0) {
+        con.fmt("[markers] world cleanup: destroyed {d} entities\n", .{count});
+    }
+}
+
+// =============================================================================
 // Install hooks
 // =============================================================================
 
@@ -483,18 +541,23 @@ pub fn installHooks() void {
         return;
     }
     g_is_hook_owner = true;
+
+    // Hook CleanupWorldAndEntities to destroy our entities before world teardown.
+    // This fires on map change, logout, AND exit — before heaps are destroyed.
+    const hook_result = world_cleanup_hook.attach(o.FN_CLEANUP_WORLD_AND_ENTITIES, &worldCleanupDetour);
+    if (hook_result != .ok) {
+        con.print("[markers] FAILED to hook CleanupWorldAndEntities!\n");
+    } else {
+        con.print("[markers] hooked CleanupWorldAndEntities OK\n");
+    }
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        // Force-cleanup: no time for animations during shutdown
-        for (&marker_entities) |*slot| {
-            if (slot.*) |existing| {
-                cleanupEntity(existing);
-                slot.* = null;
-            }
-        }
-        forceCleanupDespawning();
+        // destroyAllEntities is idempotent — if worldCleanupDetour already ran,
+        // all slots are null and this is a no-op.
+        destroyAllEntities();
+        world_cleanup_hook.detach();
     }
 
     if (g_is_hook_owner) {
