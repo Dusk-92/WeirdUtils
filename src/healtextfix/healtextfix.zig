@@ -53,7 +53,12 @@ const Patch = struct {
     mask: ?[]const u8 = null,
 };
 
-const patches = [_]Patch{
+const PatchSet = struct {
+    version: []const u8,
+    patches: []const Patch,
+};
+
+const v1_5_patches = [_]Patch{
     // Patch 0: Skip duplicate heal text in the SuperWoW handler
     // The handler at RVA 0x3BF0 creates floating text then calls the original
     // (which also creates text). JMP from 0x3C06 to the call-through at 0x3C82.
@@ -74,6 +79,10 @@ const patches = [_]Patch{
         .old = &.{ 0x9C, 0xD8, 0xC4, 0x00 },
         .new = &.{ 0x06, 0x7C, 0x44, 0x00 },
     },
+};
+
+const patch_sets = [_]PatchSet{
+    .{ .version = "1.5", .patches = &v1_5_patches },
 };
 
 fn printHex(prefix: []const u8, bytes: []const u8) void {
@@ -116,7 +125,21 @@ fn fileOffsetToVA(base: [*]const u8, file_offset: u32) ?[*]u8 {
     return null;
 }
 
-var g_patched: bool = false;
+var g_applied_set: ?*const PatchSet = null;
+
+/// Scan the DLL's mapped memory for SUPERWOW_VERSION="..." and extract the version string.
+fn detectVersion(base: [*]const u8) ?[]const u8 {
+    const scan_len = 0x20000;
+    const needle = "SUPERWOW_VERSION=\"";
+    const mem = base[0..scan_len];
+
+    const pos = std.mem.indexOf(u8, mem, needle) orelse return null;
+    const ver_start = pos + needle.len;
+    // Find closing quote
+    const remaining = mem[ver_start..];
+    const end = std.mem.indexOfScalar(u8, remaining, '"') orelse return null;
+    return remaining[0..end];
+}
 
 pub fn installHooks() void {
     con.print("[healtextfix] Module loaded (stub)\n");
@@ -134,8 +157,24 @@ pub fn lateInit() void {
     const base: [*]const u8 = @ptrCast(superwow_base.?);
     con.fmt("[healtextfix] SuperWoWhook.dll at 0x{x}\n", .{@intFromPtr(base)});
 
+    // Detect SuperWoW version
+    const version = detectVersion(base) orelse {
+        con.print("[healtextfix] Could not detect SuperWoW version, skipping\n");
+        return;
+    };
+    con.fmt("[healtextfix] Detected SuperWoW version: {s}\n", .{version});
+
+    // Find matching patch set
+    const set: *const PatchSet = blk: {
+        for (&patch_sets) |*ps| {
+            if (std.mem.eql(u8, ps.version, version)) break :blk ps;
+        }
+        con.fmt("[healtextfix] No patches for version \"{s}\", skipping\n", .{version});
+        return;
+    };
+
     var applied: u32 = 0;
-    for (patches, 0..) |patch, idx| {
+    for (set.patches, 0..) |patch, idx| {
         const va = fileOffsetToVA(base, patch.file_offset) orelse {
             con.fmt("[healtextfix] Patch {d}: failed to resolve file offset 0x{x}\n", .{ idx, patch.file_offset });
             continue;
@@ -179,19 +218,19 @@ pub fn lateInit() void {
         con.fmt("[healtextfix] Patch {d}: applied at VA 0x{x}\n", .{ idx, @intFromPtr(target) });
     }
 
-    g_patched = applied > 0;
-    con.fmt("[healtextfix] {d}/{d} patches applied\n", .{ applied, patches.len });
+    if (applied > 0) g_applied_set = set;
+    con.fmt("[healtextfix] {d}/{d} patches applied\n", .{ applied, set.patches.len });
 }
 
 pub fn removeHooks() void {
-    if (!g_patched) return;
+    const set = g_applied_set orelse return;
 
     const superwow_base = GetModuleHandleA("SuperWoWhook.dll");
     if (superwow_base == null) return;
 
     const base: [*]const u8 = @ptrCast(superwow_base.?);
 
-    for (patches, 0..) |patch, idx| {
+    for (set.patches, 0..) |patch, idx| {
         const va = fileOffsetToVA(base, patch.file_offset) orelse continue;
         const target: [*]u8 = va;
 
@@ -211,6 +250,6 @@ pub fn removeHooks() void {
         }
     }
 
-    g_patched = false;
+    g_applied_set = null;
     con.print("[healtextfix] All patches restored\n");
 }
