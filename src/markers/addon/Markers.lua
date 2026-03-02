@@ -126,6 +126,12 @@ end
 local RawWorldMarker = WorldMarker
 function WorldMarker(index, ...)
     log("WorldMarker(" .. tostring(index) .. ")")
+    -- Cancel pending sync request — we're actively placing marks
+    if syncTimer.pending then
+        syncTimer:Hide()
+        syncTimer.pending = false
+        log("sync timer cancelled (local mark placed)")
+    end
     RawWorldMarker(index, unpack(arg))
     local ch = getChannel()
     if ch then
@@ -172,11 +178,6 @@ local function onAddonMessage(prefix, message, channel, sender)
         return
     end
 
-    if not senderHasPermission(sender) then
-        log("  no perm, skip")
-        return
-    end
-
     -- Parse colon-delimited message
     local parts = {}
     for part in string.gfind(message, "[^:]+") do
@@ -186,8 +187,43 @@ local function onAddonMessage(prefix, message, channel, sender)
     local cmd = parts[1]
     log("  cmd=" .. tostring(cmd) .. " n=" .. table.getn(parts))
 
-    if cmd == "P" or cmd == "SF" then
-        -- Place / Sync Full: P:index:x:y:z:areaId
+    -- SR/LSR/SF don't mutate state — handled before permission check.
+    -- P, C, CA mutate state and require sender to have leader/assist permission.
+    if cmd == "SR" then
+        -- Normal sync request: only leader/assist responds
+        log("  sync request from " .. tostring(sender))
+        if canSetMarkers() then
+            broadcastAllDefs()
+        end
+        return
+    elseif cmd == "LSR" then
+        -- Leader sync request: anyone with defs responds (leader relogged)
+        log("  leader sync request from " .. tostring(sender))
+        broadcastAllDefs()
+        return
+    elseif cmd == "SF" then
+        -- Sync response: accept from anyone (they already checked canSetMarkers on their end)
+        local idx = tonumber(parts[2])
+        local x = tonumber(parts[3])
+        local y = tonumber(parts[4])
+        local z = tonumber(parts[5])
+        local areaId = tonumber(parts[6])
+        if idx and x and y and z and areaId then
+            log("  SetMarkerDef(" .. idx .. "," .. x .. "," .. y .. "," .. z .. "," .. areaId .. ")")
+            SetMarkerDef(idx, x, y, z, areaId)
+        else
+            log("  PARSE FAIL")
+        end
+        return
+    end
+
+    -- Mutation commands require permission
+    if not senderHasPermission(sender) then
+        log("  no perm, skip")
+        return
+    end
+
+    if cmd == "P" then
         local idx = tonumber(parts[2])
         local x = tonumber(parts[3])
         local y = tonumber(parts[4])
@@ -208,11 +244,6 @@ local function onAddonMessage(prefix, message, channel, sender)
     elseif cmd == "CA" then
         log("  ClearAll")
         ClearMarkerDef()
-    elseif cmd == "SR" then
-        log("  sync request")
-        if canSetMarkers() then
-            broadcastAllDefs()
-        end
     else
         log("  unknown: " .. tostring(cmd))
     end
@@ -221,6 +252,40 @@ end
 -- =============================================================================
 -- Event frame
 -- =============================================================================
+
+local function broadcastSyncRequest()
+    local ch = getChannel()
+    if not ch then
+        log("syncReq: no channel (not in group)")
+        return
+    end
+    local cmd = canSetMarkers() and "LSR" or "SR"
+    log("SEND [" .. ch .. "] " .. cmd)
+    SendAddonMessage(MSG_PREFIX, cmd, ch)
+end
+
+-- Delayed sync request: roster isn't populated at PLAYER_LOGIN/ENTERING_WORLD,
+-- so we fire a one-shot 5s timer to request markers after joining the group.
+local syncTimer = CreateFrame("Frame")
+syncTimer.elapsed = 0
+syncTimer.pending = false
+syncTimer:Hide()
+syncTimer:SetScript("OnUpdate", function()
+    syncTimer.elapsed = syncTimer.elapsed + arg1
+    if syncTimer.elapsed >= 5 then
+        syncTimer:Hide()
+        syncTimer.pending = false
+        log("login sync timer fired")
+        broadcastSyncRequest()
+    end
+end)
+
+local function scheduleSyncRequest()
+    syncTimer.elapsed = 0
+    syncTimer.pending = true
+    syncTimer:Show()
+    log("sync request scheduled (5s)")
+end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
@@ -231,6 +296,7 @@ frame:RegisterEvent("RAID_ROSTER_UPDATE")
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00Markers|r v" .. MARKERS_VERSION .. " loaded")
+        scheduleSyncRequest()
     elseif event == "CHAT_MSG_ADDON" then
         onAddonMessage(arg1, arg2, arg3, arg4)
     elseif event == "PARTY_MEMBERS_CHANGED" or event == "RAID_ROSTER_UPDATE" then
