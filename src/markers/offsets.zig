@@ -92,6 +92,14 @@ pub const WF_HIT_TERRAIN_Y: usize = 0x364;
 pub const WF_HIT_TERRAIN_Z: usize = 0x368;
 
 // =============================================================================
+// Zone / area identification
+// =============================================================================
+
+/// Current zone area ID — numeric, locale-safe zone identifier.
+/// Updated by the game as the player moves between areas.
+pub const ZONE_AREA_ID: usize = 0x00B4E314;
+
+// =============================================================================
 // Per-frame world update
 // =============================================================================
 

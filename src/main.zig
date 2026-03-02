@@ -107,7 +107,8 @@ pub const lua = struct {
     }
 
     pub fn pushnumber(L: State, n: f64) void {
-        const f: *const fn (State, f64) callconv(fc) void = @ptrFromInt(0x6F3810);
+        // __thiscall: ECX=L, f64 on stack [EBP+8]/[EBP+0xc], ret 8.
+        const f: *const fn (State, f64) callconv(.{ .x86_thiscall = .{} }) void = @ptrFromInt(0x6F3810);
         f(L, n);
     }
 
@@ -263,6 +264,9 @@ fn registerLuaFunctions() void {
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
         registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
         registerFunction("DistanceToMark", @intFromPtr(&markers.luaDistanceToMark));
+        registerFunction("SetMarkerDef", @intFromPtr(&markers.luaSetMarkerDef));
+        registerFunction("ClearMarkerDef", @intFromPtr(&markers.luaClearMarkerDef));
+        registerFunction("GetMarkerDef", @intFromPtr(&markers.luaGetMarkerDef));
     }
 }
 

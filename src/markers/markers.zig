@@ -2,13 +2,18 @@
 //!
 //! Manages up to 5 colored markers placed at world positions.
 //! Uses CreateEntityInstance_WithAttachment (0x6707c0) for entity lifecycle.
+//! Markers persist across zone transitions via MarkerDef definitions.
+//! Entities are respawned automatically when the player approaches within 200y.
 //!
 //! Lua API:
-//!   WorldMarker(index, x, y, z)  — place marker at coordinates
-//!   WorldMarker(index, "unit")   — place marker at unit's position
-//!   WorldMarker(index)           — place marker at cursor terrain position
-//!   ClearWorldMarker(index)      — remove specific marker (1-5)
-//!   ClearWorldMarker()           — remove all markers
+//!   WorldMarker(index, x, y, z)     — place marker at coordinates
+//!   WorldMarker(index, "unit")      — place marker at unit's position
+//!   WorldMarker(index)              — place marker at cursor terrain position
+//!   ClearWorldMarker(index)         — remove specific marker (1-5)
+//!   ClearWorldMarker()              — remove all markers
+//!   SetMarkerDef(i, x, y, z, area) — store definition (no immediate spawn)
+//!   ClearMarkerDef([index])         — clear definition (and entity)
+//!   GetMarkerDef(index)             — returns x, y, z, areaId or nil
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -68,12 +73,30 @@ pub const Vec3 = struct {
 // State
 // =============================================================================
 
+/// Persistent marker definition — survives zone transitions.
+const MarkerDef = struct {
+    pos: Vec3,
+    area_id: u32,
+    active: bool,
+};
+const EMPTY_DEF: MarkerDef = .{ .pos = .{ .x = 0, .y = 0, .z = 0 }, .area_id = 0, .active = false };
+
+/// Marker definitions persist across zone transitions (NOT cleared in worldCleanupDetour).
+var marker_defs: [NUM_MARKERS]MarkerDef = .{EMPTY_DEF} ** NUM_MARKERS;
+
+/// Transient entity state — cleared on zone transition / teardown.
 var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
-var marker_positions: [NUM_MARKERS]?Vec3 = .{null} ** NUM_MARKERS;
 var marker_created_tick: [NUM_MARKERS]u32 = .{0} ** NUM_MARKERS;
 var hold_queued: [NUM_MARKERS]bool = .{false} ** NUM_MARKERS;
 
+// Proximity respawn constants
+const RESPAWN_DISTANCE_SQ: f32 = 200.0 * 200.0;
 
+// Throttle timers for respawn checks
+var last_respawn_tick: u32 = 0;
+const RESPAWN_CHECK_INTERVAL_MS: u32 = 1000;
+var last_zombie_tick: u32 = 0;
+const ZOMBIE_CHECK_INTERVAL_MS: u32 = 3000;
 
 // Entities playing their Decay animation before destruction.
 // Cleaned up every frame by tickAnimations (via OnWorldUpdate hook).
@@ -123,7 +146,10 @@ const lapi = struct {
     }
 
     fn pushnumber(L: u32, n: f64) void {
-        const f: *const fn (u32, f64) callconv(fc) void = @ptrFromInt(0x6F3810);
+        // Ghidra confirms: __thiscall(ECX=L), double on stack as [EBP+8]/[EBP+0xc], ret 8.
+        // Can't use fastcall — our patched inreg would shove the f64's low dword into EDX.
+        const tc = std.builtin.CallingConvention{ .x86_thiscall = .{} };
+        const f: *const fn (u32, f64) callconv(tc) void = @ptrFromInt(0x6F3810);
         f(L, n);
     }
 };
@@ -308,13 +334,27 @@ fn beginDespawn(entity: *anyopaque) void {
 // =============================================================================
 
 /// Place a marker at the given world position. Replaces any existing marker in that slot.
+/// Also stores the definition so the marker survives zone transitions.
 /// index is 0-based (0..4).
 fn placeMarker(index: usize, pos: Vec3) bool {
     if (index >= NUM_MARKERS) return false;
 
-    // Clear existing marker in this slot
-    clearMarker(index);
+    // Clear existing entity in this slot (but not the def — we're about to overwrite it)
+    clearEntity(index);
 
+    // Store persistent definition
+    marker_defs[index] = .{
+        .pos = pos,
+        .area_id = hook.readMem(u32, o.ZONE_AREA_ID),
+        .active = true,
+    };
+
+    return spawnEntity(index, pos);
+}
+
+/// Spawn a marker entity without touching marker_defs. Used by both
+/// placeMarker (initial placement) and the proximity respawn system.
+fn spawnEntity(index: usize, pos: Vec3) bool {
     var position = [3]f32{ pos.x, pos.y, pos.z + MARKER_Z_OFFSET };
 
     const obj = createEntityInstance(MODEL_PATHS[index], &position, 0.0, 0, 1) orelse {
@@ -323,28 +363,35 @@ fn placeMarker(index: usize, pos: Vec3) bool {
     };
 
     marker_entities[index] = obj;
-    marker_positions[index] = pos;
     marker_created_tick[index] = GetTickCount();
-
     hold_queued[index] = false;
 
-    con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
+    con.fmt("[markers] marker {d} spawned at {d:.1}, {d:.1}, {d:.1} @0x{x}\n", .{
+        index + 1, pos.x, pos.y, pos.z, @intFromPtr(obj),
+    });
     return true;
 }
 
-/// Remove a specific marker. index is 0-based.
-fn clearMarker(index: usize) void {
+/// Remove only the live entity for a marker slot (def untouched).
+/// Used internally before respawn/replacement.
+fn clearEntity(index: usize) void {
     if (index >= NUM_MARKERS) return;
     cleanupDespawning();
     if (marker_entities[index]) |existing| {
         beginDespawn(existing);
         marker_entities[index] = null;
-        marker_positions[index] = null;
         hold_queued[index] = false;
     }
 }
 
-/// Remove all markers.
+/// Remove a specific marker (entity + definition). index is 0-based.
+fn clearMarker(index: usize) void {
+    if (index >= NUM_MARKERS) return;
+    clearEntity(index);
+    marker_defs[index] = EMPTY_DEF;
+}
+
+/// Remove all markers (entities + definitions).
 fn clearAllMarkers() void {
     cleanupDespawning();
     var any = false;
@@ -352,9 +399,9 @@ fn clearAllMarkers() void {
         if (marker_entities[i]) |existing| {
             beginDespawn(existing);
             marker_entities[i] = null;
-            marker_positions[i] = null;
             any = true;
         }
+        marker_defs[i] = EMPTY_DEF;
     }
     if (any) con.print("[markers] all markers cleared\n");
 }
@@ -443,14 +490,17 @@ pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
 // Stand's full-speed grow-in animation across all 5 marker colors.
 const HOLD_QUEUE_DELAY_MS: u32 = 2000;
 
-/// Per-frame animation tick (driven by OnWorldUpdate hook).
-/// Queues Hold once after Stand has been playing long enough, then cleans up
-/// despawning entities.
+/// Per-frame tick (driven by OnWorldUpdate hook).
+/// 1. Queue Hold animation after Stand grow-in completes
+/// 2. Clean up despawning entities
+/// 3. Detect zombie entities (culled by the game) and destroy them
+/// 4. Respawn markers near the player from persistent definitions
 fn tickAnimations() void {
     const now = GetTickCount();
 
     cleanupDespawning();
 
+    // Queue Hold animation for freshly-created markers
     for (0..NUM_MARKERS) |i| {
         if (hold_queued[i]) continue;
         const entity = marker_entities[i] orelse continue;
@@ -458,6 +508,49 @@ fn tickAnimations() void {
 
         playAnimation(entity, ANIM_HOLD, true);
         hold_queued[i] = true;
+    }
+
+    // Zombie detection — entity exists but refcount dropped to 1 (culled by game).
+    // Check every 3 seconds to avoid per-frame overhead.
+    if (now -% last_zombie_tick >= ZOMBIE_CHECK_INTERVAL_MS) {
+        last_zombie_tick = now;
+        for (0..NUM_MARKERS) |i| {
+            const entity = marker_entities[i] orelse continue;
+            const addr = @intFromPtr(entity);
+            const refcount = hook.readMem(u16, addr + 0x0E);
+            if (refcount <= 1) {
+                con.fmt("[markers] zombie detected [{d}] @0x{x} rc={d}, destroying\n", .{ i + 1, addr, refcount });
+                cleanupEntity(entity);
+                marker_entities[i] = null;
+                hold_queued[i] = false;
+            }
+        }
+    }
+
+    // Proximity respawn — check every ~1 second
+    if (now -% last_respawn_tick >= RESPAWN_CHECK_INTERVAL_MS) {
+        last_respawn_tick = now;
+
+        const player = wow.getLocalPlayer();
+        if (player != 0) {
+            const player_pos = getUnitPosition(player);
+            if (player_pos.x != 0 or player_pos.y != 0 or player_pos.z != 0) {
+                for (0..NUM_MARKERS) |i| {
+                    if (!marker_defs[i].active) continue;
+                    if (marker_entities[i] != null) continue; // entity alive, skip
+
+                    const dx = player_pos.x - marker_defs[i].pos.x;
+                    const dy = player_pos.y - marker_defs[i].pos.y;
+                    const dz = player_pos.z - marker_defs[i].pos.z;
+                    const dist_sq = dx * dx + dy * dy + dz * dz;
+
+                    if (dist_sq < RESPAWN_DISTANCE_SQ) {
+                        con.fmt("[markers] respawning [{d}] dist={d:.0}\n", .{ i + 1, @sqrt(dist_sq) });
+                        _ = spawnEntity(i, marker_defs[i].pos);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -484,7 +577,8 @@ pub fn luaDistanceToMark(L: u32) callconv(.c) u32 {
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
     const index: usize = @intCast(raw_index - 1);
 
-    const mark_pos = marker_positions[index] orelse return 0;
+    if (!marker_defs[index].active) return 0;
+    const mark_pos = marker_defs[index].pos;
 
     const player = wow.getLocalPlayer();
     if (player == 0) return 0;
@@ -498,6 +592,72 @@ pub fn luaDistanceToMark(L: u32) callconv(.c) u32 {
 
     lapi.pushnumber(L, @floatCast(dist));
     return 1;
+}
+
+/// Lua: SetMarkerDef(index, x, y, z, areaId)
+/// Store a marker definition without immediately spawning. Used by the addon
+/// when receiving remote marker data — proximity respawn handles entity creation.
+pub fn luaSetMarkerDef(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
+    if (nargs < 5) return 0;
+    if (!lapi.isnumber(L, 1) or !lapi.isnumber(L, 2) or !lapi.isnumber(L, 3) or !lapi.isnumber(L, 4) or !lapi.isnumber(L, 5)) return 0;
+
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+    const index: usize = @intCast(raw_index - 1);
+
+    const x: f32 = @floatCast(lapi.tonumber(L, 2));
+    const y: f32 = @floatCast(lapi.tonumber(L, 3));
+    const z: f32 = @floatCast(lapi.tonumber(L, 4));
+    const area_id: u32 = @intFromFloat(lapi.tonumber(L, 5));
+
+    // Clear existing entity if any (will be respawned by proximity check)
+    clearEntity(index);
+
+    marker_defs[index] = .{
+        .pos = .{ .x = x, .y = y, .z = z },
+        .area_id = area_id,
+        .active = true,
+    };
+
+    con.fmt("[markers] SetMarkerDef [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
+    return 0;
+}
+
+/// Lua: ClearMarkerDef([index])
+/// Clear a definition (and its entity if alive). No args = clear all.
+pub fn luaClearMarkerDef(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
+    if (nargs == 0) {
+        clearAllMarkers();
+        return 0;
+    }
+
+    if (!lapi.isnumber(L, 1)) return 0;
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+
+    clearMarker(@intCast(raw_index - 1));
+    return 0;
+}
+
+/// Lua: local x, y, z, areaId = GetMarkerDef(index)
+/// Returns position and area ID for an active marker def, or nil if inactive.
+pub fn luaGetMarkerDef(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
+    if (nargs < 1 or !lapi.isnumber(L, 1)) return 0;
+
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+    const index: usize = @intCast(raw_index - 1);
+
+    if (!marker_defs[index].active) return 0;
+
+    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.x));
+    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.y));
+    lapi.pushnumber(L, @floatCast(marker_defs[index].pos.z));
+    lapi.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
+    return 4;
 }
 
 // =============================================================================
@@ -526,15 +686,14 @@ fn worldCleanupDetour() callconv(sc) void {
 }
 
 /// Destroy all tracked entities (active markers + despawning).
+/// Does NOT clear marker_defs — definitions persist for respawn.
 /// Idempotent — safe to call multiple times.
 fn destroyAllEntities() void {
     var count: u32 = 0;
     for (&marker_entities, 0..) |*slot, i| {
         if (slot.*) |existing| {
             const addr = @intFromPtr(existing);
-            const flags = hook.readMem(u32, addr + 0x8);
-            const refcount = hook.readMem(u16, addr + 0x0E);
-            con.fmt("[markers] destroying marker[{d}] @0x{x} flags=0x{x} refcount={d}\n", .{ i, addr, flags, refcount });
+            con.fmt("[markers] destroying marker[{d}] @0x{x}\n", .{ i, addr });
             cleanupEntity(existing);
             slot.* = null;
             count += 1;
@@ -542,14 +701,11 @@ fn destroyAllEntities() void {
     }
     for (&hold_queued) |*h| h.* = false;
     for (&marker_created_tick) |*t| t.* = 0;
-    for (&marker_positions) |*p| p.* = null;
 
     for (&despawning, 0..) |*slot, i| {
         if (slot.*) |d| {
             const addr = @intFromPtr(d.entity);
-            const flags = hook.readMem(u32, addr + 0x8);
-            const refcount = hook.readMem(u16, addr + 0x0E);
-            con.fmt("[markers] destroying despawn[{d}] @0x{x} flags=0x{x} refcount={d}\n", .{ i, addr, flags, refcount });
+            con.fmt("[markers] destroying despawn[{d}] @0x{x}\n", .{ i, addr });
             cleanupEntity(d.entity);
             slot.* = null;
             count += 1;
