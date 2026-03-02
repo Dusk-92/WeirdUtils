@@ -1,15 +1,17 @@
-//! Client-side marker system
+//! Client-side world marker system
 //!
-//! Creates world objects at arbitrary positions for raid markers,
-//! player indicators, etc.
+//! Manages up to 5 colored markers placed at world positions.
+//! Uses CreateEntityInstance_WithAttachment (0x6707c0) for entity lifecycle.
 //!
-//! Uses CreateEntityInstance_WithAttachment (0x6707c0) — the game's
-//! native high-level entity creation API. For M2 models, this routes
-//! through CreateWorldUnit which handles all spatial registration,
-//! render setup, and lifecycle management.
+//! Lua API:
+//!   WorldMarker(index, x, y, z)  — place marker at coordinates
+//!   WorldMarker(index, "unit")   — place marker at unit's position
+//!   WorldMarker(index)           — place marker at cursor terrain position
+//!   ClearWorldMarker(index)      — remove specific marker (1-5)
+//!   ClearWorldMarker()           — remove all markers
 
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 const o = @import("offsets.zig");
 const wow = @import("../outline/wow.zig");
 const con = @import("../console.zig");
@@ -26,7 +28,22 @@ var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
 // =============================================================================
-// Position helpers
+// Constants
+// =============================================================================
+
+const NUM_MARKERS = 5;
+const MARKER_Z_OFFSET: f32 = 2.0;
+
+const MODEL_PATHS = [NUM_MARKERS][*:0]const u8{
+    "Spells\\Raid_UI_FX_Yellow.m2",
+    "Spells\\Raid_UI_FX_Cyan.m2",
+    "Spells\\Raid_UI_FX_Green.m2",
+    "Spells\\Raid_UI_FX_Purple.m2",
+    "Spells\\Raid_UI_FX_Red.m2",
+};
+
+// =============================================================================
+// Types
 // =============================================================================
 
 pub const Vec3 = struct {
@@ -35,7 +52,59 @@ pub const Vec3 = struct {
     z: f32,
 };
 
-/// Get unit position from movement struct
+// =============================================================================
+// State
+// =============================================================================
+
+var marker_entities: [NUM_MARKERS]?*anyopaque = .{null} ** NUM_MARKERS;
+
+// =============================================================================
+// Lua C API (WoW 1.12.1 — all __fastcall, L in ECX)
+// =============================================================================
+
+const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
+
+const lapi = struct {
+    fn gettop(L: u32) i32 {
+        const f: *const fn (u32) callconv(fc) i32 = @ptrFromInt(0x6F3070);
+        return f(L);
+    }
+
+    fn isnumber(L: u32, index: i32) bool {
+        const f: *const fn (u32, i32) callconv(fc) u32 = @ptrFromInt(0x6F34D0);
+        return f(L, index) != 0;
+    }
+
+    fn isstring(L: u32, index: i32) bool {
+        const f: *const fn (u32, i32) callconv(fc) u32 = @ptrFromInt(0x6F3510);
+        return f(L, index) != 0;
+    }
+
+    fn tonumber(L: u32, index: i32) f64 {
+        const f: *const fn (u32, i32) callconv(fc) f64 = @ptrFromInt(0x6F3620);
+        return f(L, index);
+    }
+
+    fn tostring(L: u32, index: i32) ?[*:0]const u8 {
+        const f: *const fn (u32, i32) callconv(fc) ?[*:0]const u8 = @ptrFromInt(0x6F3690);
+        return f(L, index);
+    }
+
+    fn pushstring(L: u32, s: [*:0]const u8) void {
+        const f: *const fn (u32, [*:0]const u8) callconv(fc) void = @ptrFromInt(0x6F3890);
+        f(L, s);
+    }
+
+    fn pushnumber(L: u32, n: f64) void {
+        const f: *const fn (u32, f64) callconv(fc) void = @ptrFromInt(0x6F3810);
+        f(L, n);
+    }
+};
+
+// =============================================================================
+// Position helpers
+// =============================================================================
+
 pub fn getUnitPosition(unit: u32) Vec3 {
     if (unit == 0) return .{ .x = 0, .y = 0, .z = 0 };
 
@@ -49,28 +118,38 @@ pub fn getUnitPosition(unit: u32) Vec3 {
     };
 }
 
+/// Resolve a unit ID string ("player", "target", etc.) to a world position.
+fn resolveUnitPosition(unit_id: [*:0]const u8) ?Vec3 {
+    const guid = wow.unitGUID(unit_id);
+    if (guid == 0) return null;
+    const obj = wow.getObjectByGUID(guid);
+    if (obj == 0) return null;
+    const pos = getUnitPosition(obj);
+    if (pos.x == 0 and pos.y == 0 and pos.z == 0) return null;
+    return pos;
+}
+
+/// Get the terrain position under the mouse cursor.
+/// TODO: find the actual game global/function for this.
+fn getCursorTerrainPosition() ?Vec3 {
+    // TODO: implement — needs Ghidra research to find the cursor terrain
+    // intersection global or CGGameUI member that stores it.
+    return null;
+}
+
 // =============================================================================
 // Game function wrappers
 // =============================================================================
 
 /// CreateEntityInstance_WithAttachment — __fastcall, RET 0x14.
-/// ECX=modelPath, EDX=positionVec3ptr, stack: facing, flags, updateNow, param6, param7.
-/// Routes M2 models through CreateWorldUnit, WMO models through CreateGameObject.
-/// Returns a fully-registered game entity pointer.
-///
-/// NOTE: When updateNow=1, UpdateWorldPosition (0x698110) modifies the position
-/// vector in-place, snapping the entity's bounding sphere to the terrain chunk
-/// grid. This means the entity may render a few units away from the requested
-/// position. The offset varies depending on proximity to grid boundaries.
-/// Pass updateNow=0 to skip this, at the cost of no spatial grid registration.
 fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u32, update_now: u32) ?*anyopaque {
     const facing_bits: u32 = @bitCast(facing);
     const stack_args = [5]u32{
-        facing_bits, // param_3: facing angle
-        flags, // param_4: flags/type
-        update_now, // param_5: update position immediately (1=yes)
-        0, // param_6
-        0, // param_7
+        facing_bits,
+        flags,
+        update_now,
+        0,
+        0,
     };
 
     const result: u32 = asm volatile (
@@ -91,8 +170,6 @@ fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u
 }
 
 /// CleanupEntity_ProcessAttachments — __fastcall(ECX=entity), no stack params.
-/// High-level destructor: frees attachments, decrements refcount, dispatches
-/// to type-specific cleanup (render detach + scene graph removal + heap free).
 fn cleanupEntity(obj: *anyopaque) void {
     asm volatile ("call *%[func]"
         :
@@ -105,112 +182,133 @@ fn cleanupEntity(obj: *anyopaque) void {
 // Marker management
 // =============================================================================
 
-var test_marker: ?*anyopaque = null;
+/// Place a marker at the given world position. Replaces any existing marker in that slot.
+/// index is 0-based (0..4).
+fn placeMarker(index: usize, pos: Vec3) bool {
+    if (index >= NUM_MARKERS) return false;
 
-const MODEL_PATH: [*:0]const u8 = "Spells\\Raid_UI_FX_Yellow.m2";
+    // Clear existing marker in this slot
+    clearMarker(index);
 
-/// Create a test marker at player position using the native entity creation API.
-pub fn createTestMarker() ?*anyopaque {
-    if (test_marker != null) {
-        con.print("[markers] marker already exists, destroy first\n");
-        return test_marker;
-    }
+    var position = [3]f32{ pos.x, pos.y, pos.z + MARKER_Z_OFFSET };
 
-    const player = wow.getLocalPlayer();
-    if (player == 0) {
-        con.print("[markers] no local player\n");
-        return null;
-    }
-
-    const pos = getUnitPosition(player);
-    con.fmt("[markers] player pos = {d:.1}, {d:.1}, {d:.1}\n", .{ pos.x, pos.y, pos.z });
-    if (pos.x == 0 and pos.y == 0 and pos.z == 0) return null;
-
-    var position = [3]f32{ pos.x, pos.y, pos.z + 2.0 };
-
-    con.print("[markers] calling CreateEntityInstance_WithAttachment...\n");
-    const obj = createEntityInstance(MODEL_PATH, &position, 0.0, 0, 1) orelse {
-        con.print("[markers] CreateEntityInstance_WithAttachment FAILED\n");
-        return null;
+    const obj = createEntityInstance(MODEL_PATHS[index], &position, 0.0, 0, 1) orelse {
+        con.fmt("[markers] failed to create marker {d}\n", .{index + 1});
+        return false;
     };
 
-    const obj_ptr: u32 = @intCast(@intFromPtr(obj));
-    con.fmt("[markers] entity created at 0x{X:0>8}\n", .{obj_ptr});
-
-    // Debug dump key fields
-    const refcount = hook.readMem(u16, obj_ptr + 0xE);
-    const flags_90 = hook.readMem(u32, obj_ptr + 0x90);
-    const model_88 = hook.readMem(u32, obj_ptr + 0x88);
-    const pos_x = hook.readMem(f32, obj_ptr + 0x5C);
-    const pos_y = hook.readMem(f32, obj_ptr + 0x60);
-    const pos_z = hook.readMem(f32, obj_ptr + 0x64);
-    con.fmt("[markers] refcount={d} flags90=0x{X:0>8} model88=0x{X:0>8}\n", .{ refcount, flags_90, model_88 });
-    con.fmt("[markers] bsph(+5C)={d:.1},{d:.1},{d:.1}\n", .{ pos_x, pos_y, pos_z });
-
-    test_marker = obj;
-    return obj;
+    marker_entities[index] = obj;
+    con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
+    return true;
 }
 
-/// Destroy the test marker. Safe to call multiple times.
-pub fn destroyTestMarker() void {
-    const marker = test_marker orelse return;
-    test_marker = null;
-
-    con.print("[markers] destroying marker...\n");
-    cleanupEntity(marker);
-    con.print("[markers] marker destroyed\n");
+/// Remove a specific marker. index is 0-based.
+fn clearMarker(index: usize) void {
+    if (index >= NUM_MARKERS) return;
+    if (marker_entities[index]) |existing| {
+        cleanupEntity(existing);
+        marker_entities[index] = null;
+    }
 }
 
-// =============================================================================
-// Lua helpers
-// =============================================================================
-
-/// lua_pushnumber at 0x6F3810: __fastcall(L_ECX, double_on_stack). Callee cleans (RET 8).
-fn luaPushNumber(L: u32, n: f64) void {
-    const raw: [2]u32 = @bitCast(n);
-    asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (L),
-          [lo] "r" (raw[0]),
-          [hi] "r" (raw[1]),
-          [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+/// Remove all markers.
+fn clearAllMarkers() void {
+    var any = false;
+    for (0..NUM_MARKERS) |i| {
+        if (marker_entities[i]) |existing| {
+            cleanupEntity(existing);
+            marker_entities[i] = null;
+            any = true;
+        }
+    }
+    if (any) con.print("[markers] all markers cleared\n");
 }
 
 // =============================================================================
 // Lua API
 // =============================================================================
 
-/// Lua: TestMarkerCreate() - create marker at player position
-pub fn luaTestMarkerCreate(L: u32) callconv(.c) u32 {
-    if (createTestMarker()) |_| {
-        hook.fastcall(void, 0x6F3890, L, @intFromPtr(@as([*:0]const u8, "Marker created")));
-    } else {
-        hook.fastcall(void, 0x6F3890, L, @intFromPtr(@as([*:0]const u8, "Failed to create marker")));
+/// Lua: WorldMarker(index [, x, y, z | "unitId"])
+///   WorldMarker(1, x, y, z)  — place at coordinates
+///   WorldMarker(1, "target") — place at unit's current position
+///   WorldMarker(1)           — place at cursor terrain position
+pub fn luaWorldMarker(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
+
+    if (nargs < 1 or !lapi.isnumber(L, 1)) {
+        con.print("[markers] WorldMarker: expected index (1-5)\n");
+        return 0;
     }
-    return 1;
+
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) {
+        con.print("[markers] WorldMarker: index must be 1-5\n");
+        return 0;
+    }
+    const index: usize = @intCast(raw_index - 1);
+
+    if (nargs >= 4 and lapi.isnumber(L, 2)) {
+        // WorldMarker(index, x, y, z)
+        const x: f32 = @floatCast(lapi.tonumber(L, 2));
+        const y: f32 = @floatCast(lapi.tonumber(L, 3));
+        const z: f32 = @floatCast(lapi.tonumber(L, 4));
+        _ = placeMarker(index, .{ .x = x, .y = y, .z = z });
+    } else if (nargs >= 2 and lapi.isstring(L, 2)) {
+        // WorldMarker(index, "unitId")
+        const unit_id = lapi.tostring(L, 2) orelse {
+            con.print("[markers] WorldMarker: invalid unit string\n");
+            return 0;
+        };
+        const pos = resolveUnitPosition(unit_id) orelse {
+            con.fmt("[markers] WorldMarker: unit '{s}' not found\n", .{std.mem.span(unit_id)});
+            return 0;
+        };
+        _ = placeMarker(index, pos);
+    } else {
+        // WorldMarker(index) — cursor terrain position
+        const pos = getCursorTerrainPosition() orelse {
+            con.print("[markers] cursor terrain position not yet implemented, using player\n");
+            // Fallback to player position
+            const player = wow.getLocalPlayer();
+            if (player == 0) {
+                con.print("[markers] no local player\n");
+                return 0;
+            }
+            const ppos = getUnitPosition(player);
+            if (ppos.x == 0 and ppos.y == 0 and ppos.z == 0) return 0;
+            _ = placeMarker(index, ppos);
+            return 0;
+        };
+        _ = placeMarker(index, pos);
+    }
+
+    return 0;
 }
 
-/// Lua: TestMarkerDestroy() - destroy test marker
-pub fn luaTestMarkerDestroy(L: u32) callconv(.c) u32 {
-    destroyTestMarker();
-    hook.fastcall(void, 0x6F3890, L, @intFromPtr(@as([*:0]const u8, "Marker destroyed")));
-    return 1;
-}
+/// Lua: ClearWorldMarker([index])
+///   ClearWorldMarker(1) — remove marker 1
+///   ClearWorldMarker()  — remove all markers
+pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
+    const nargs = lapi.gettop(L);
 
-/// Lua: TestMarkerToggle() - toggle marker on/off
-pub fn luaTestMarkerToggle(L: u32) callconv(.c) u32 {
-    if (test_marker != null) {
-        destroyTestMarker();
-        hook.fastcall(void, 0x6F3890, L, @intFromPtr(@as([*:0]const u8, "Marker off")));
-    } else {
-        _ = createTestMarker();
-        hook.fastcall(void, 0x6F3890, L, @intFromPtr(@as([*:0]const u8, "Marker on")));
+    if (nargs == 0) {
+        clearAllMarkers();
+        return 0;
     }
-    return 1;
+
+    if (!lapi.isnumber(L, 1)) {
+        con.print("[markers] ClearWorldMarker: expected index (1-5) or no args\n");
+        return 0;
+    }
+
+    const raw_index = @as(i32, @intFromFloat(lapi.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) {
+        con.print("[markers] ClearWorldMarker: index must be 1-5\n");
+        return 0;
+    }
+
+    clearMarker(@intCast(raw_index - 1));
+    return 0;
 }
 
 /// Lua: local x, y, z = GetPlayerPosition()
@@ -219,9 +317,9 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
     if (player == 0) return 0;
 
     const pos = getUnitPosition(player);
-    luaPushNumber(L, @floatCast(pos.x));
-    luaPushNumber(L, @floatCast(pos.y));
-    luaPushNumber(L, @floatCast(pos.z));
+    lapi.pushnumber(L, @floatCast(pos.x));
+    lapi.pushnumber(L, @floatCast(pos.y));
+    lapi.pushnumber(L, @floatCast(pos.z));
     return 3;
 }
 
@@ -232,7 +330,6 @@ pub fn luaGetPlayerPosition(L: u32) callconv(.c) u32 {
 pub fn installHooks() void {
     con.print("[markers] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should own markers
     var mutex_name_buf: [64]u8 = undefined;
     const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\MarkersHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
@@ -248,13 +345,11 @@ pub fn installHooks() void {
         return;
     }
     g_is_hook_owner = true;
-
-    // Nothing to hook - markers are created via Lua commands
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        destroyTestMarker();
+        clearAllMarkers();
     }
 
     if (g_is_hook_owner) {

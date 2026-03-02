@@ -1,5 +1,20 @@
 <Bindings>
-    <Binding name="Toggle Test Marker" header="MARKERS">
-        TestMarkerToggle()
+    <Binding name="Place Marker 1" header="MARKERS">
+        WorldMarker(1)
+    </Binding>
+    <Binding name="Place Marker 2" header="MARKERS">
+        WorldMarker(2)
+    </Binding>
+    <Binding name="Place Marker 3" header="MARKERS">
+        WorldMarker(3)
+    </Binding>
+    <Binding name="Place Marker 4" header="MARKERS">
+        WorldMarker(4)
+    </Binding>
+    <Binding name="Place Marker 5" header="MARKERS">
+        WorldMarker(5)
+    </Binding>
+    <Binding name="Clear All Markers" header="MARKERS">
+        ClearWorldMarker()
     </Binding>
 </Bindings>

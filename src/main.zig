@@ -1,5 +1,5 @@
 const std = @import("std");
-const hook = @import("hook");
+const hook = @import("zhook");
 pub const con = @import("console.zig");
 
 // Build options for conditional module compilation
@@ -34,9 +34,9 @@ const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 // Lua Protection Bypass
 // =============================================================================
 
-var protection_hook: hook.Hook = .{};
+var protection_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
-fn luaProtectionDetour() callconv(.c) void {}
+fn luaProtectionDetour() callconv(sc) void {}
 
 // =============================================================================
 // Lua C API wrappers (WoW 1.12.1 — all __fastcall, L in ECX)
@@ -257,9 +257,8 @@ fn registerLuaFunctions() void {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
     if (build_opts.markers) {
-        registerFunction("TestMarkerCreate", @intFromPtr(&markers.luaTestMarkerCreate));
-        registerFunction("TestMarkerDestroy", @intFromPtr(&markers.luaTestMarkerDestroy));
-        registerFunction("TestMarkerToggle", @intFromPtr(&markers.luaTestMarkerToggle));
+        registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
+        registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
         registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
     }
 }
@@ -400,7 +399,8 @@ fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
 // Hook: LoadFileWithTextureResourceFallback (0x648620)
 // =============================================================================
 
-var file_hook: hook.Hook = .{};
+const LoadFileFn = fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(sc) u32;
+var file_hook: hook.Detour(LoadFileFn) = .{};
 
 fn loadFileDetour(
     unk: u32,
@@ -428,10 +428,7 @@ fn loadFileDetour(
         return 1;
     }
 
-    const orig = file_hook.getTrampoline(
-        *const fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(sc) u32,
-    );
-    return orig(unk, path, buf_out, size_out, extra_alloc, flags, async_ptr);
+    return file_hook.callOriginal(.{ unk, path, buf_out, size_out, extra_alloc, flags, async_ptr });
 }
 
 // =============================================================================
@@ -445,12 +442,24 @@ fn loadFileDetour(
 //
 // Fake context detection: type==0, handle(+0x04)==NULL, embedded_ptr(+0x30)!=0
 
-var open_file_hook: hook.Hook = .{};
-var get_file_size_hook: hook.Hook = .{};
-var read_file_hook: hook.Hook = .{};
-var cleanup_file_handle_hook: hook.Hook = .{};
-var process_async_hook: hook.Hook = .{};
-var model_load_hook: hook.Hook = .{};
+const OpenFileFn = fn (u32, [*:0]const u8, u32, *u32) callconv(sc) u32;
+var open_file_hook: hook.Detour(OpenFileFn) = .{};
+
+const GetFileSizeFn = fn (u32, ?*u32) callconv(sc) u32;
+var get_file_size_hook: hook.Detour(GetFileSizeFn) = .{};
+
+const ReadFileFn = fn (u32, [*]u8, u32, ?*u32, u32, u32) callconv(sc) u32;
+var read_file_hook: hook.Detour(ReadFileFn) = .{};
+
+const CleanupFileFn = fn (u32) callconv(sc) void;
+var cleanup_file_handle_hook: hook.Detour(CleanupFileFn) = .{};
+
+const ProcessAsyncFn = fn (u32) callconv(fc) void;
+var process_async_hook: hook.Detour(ProcessAsyncFn) = .{};
+
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const LoadModelFn = fn (u32, u32, u32) callconv(tc) u32;
+var model_load_hook: hook.Detour(LoadModelFn) = .{};
 
 // Windows API imports for async handling
 extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
@@ -541,10 +550,7 @@ fn openFileDetour(
         return 2; // success (non-zero type code)
     }
 
-    const orig = open_file_hook.getTrampoline(
-        *const fn (u32, [*:0]const u8, u32, *u32) callconv(sc) u32,
-    );
-    return orig(archive_ptr, path, flags, handle_out);
+    return open_file_hook.callOriginal(.{ archive_ptr, path, flags, handle_out });
 }
 
 // --- Hook 2: GetFileSizeFromHandle (0x6487f0) ---
@@ -560,10 +566,7 @@ fn getFileSizeDetour(
         return size;
     }
 
-    const orig = get_file_size_hook.getTrampoline(
-        *const fn (u32, ?*u32) callconv(sc) u32,
-    );
-    return orig(file_ctx, high_size_out);
+    return get_file_size_hook.callOriginal(.{ file_ctx, high_size_out });
 }
 
 // --- Hook 3: ReadFileFromMultipleSources (0x648460) ---
@@ -599,16 +602,12 @@ fn readFileDetour(
         return 1; // success
     }
 
-    const orig = read_file_hook.getTrampoline(
-        *const fn (u32, [*]u8, u32, ?*u32, u32, u32) callconv(sc) u32,
-    );
-    return orig(ctx, buffer, size, bytes_read_out, async_ptr, param6);
+    return read_file_hook.callOriginal(.{ ctx, buffer, size, bytes_read_out, async_ptr, param6 });
 }
 
 // --- Hook 4: processAsyncFileOperation (0x647350) ---
 
-fn processAsyncDetour(param1: u32, _edx: u32) callconv(.c) void {
-    _ = _edx;
+fn processAsyncDetour(param1: u32) callconv(fc) void {
     const ctx_addr = hook.readMem(u32, param1 + 0x08);
 
     if (isFakeFileContext(ctx_addr)) {
@@ -654,8 +653,8 @@ fn processAsyncDetour(param1: u32, _edx: u32) callconv(.c) void {
         return;
     }
 
-    // Not our fake — call original via trampoline (__fastcall ECX=param1)
-    hook.fastcall(void, process_async_hook.trampoline, param1, 0);
+    // Not our fake — call original
+    process_async_hook.callOriginal(.{param1});
 }
 
 // --- Hook 6: CleanupFileHandleResources (0x648730) ---
@@ -674,18 +673,14 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
 
     // Always use original CleanupFileHandleResources — it handles fake contexts correctly
     // (NULL-safe checks on +0x04/+0x3C/+0x40/+0x08, then cleanupFileContext + FreeMemory).
-    const orig = cleanup_file_handle_hook.getTrampoline(
-        *const fn (u32) callconv(sc) void,
-    );
-    orig(file_ctx);
+    cleanup_file_handle_hook.callOriginal(.{file_ctx});
 
     if (fake) con.fmt("[file] cleanup FAKE @0x{x} done\n", .{file_ctx});
 }
 
 // --- Hook 5: loadModelFromFileAsync (0x71d4e0) ---
 
-fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_callback: u32) callconv(.c) u32 {
-    _ = _edx;
+fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) callconv(tc) u32 {
 
     // file_handle IS the file context address directly (Ghidra shows pointer* but
     // the assembly pushes it directly to GetFileSizeFromHandle — no dereference)
@@ -734,16 +729,9 @@ fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_call
         // processLoadedModelData runs, because initializeModelResources creates texture
         // async tasks that interact with the file I/O system.
         // Call original CleanupFileHandleResources through the trampoline (bypasses our
-        // detour, avoids the callconv crash from Issue 1). Original is __stdcall(1).
+        // detour). Must clean up file context before processLoadedModelData runs.
         con.fmt("[file]   cleanup via trampoline fh=0x{x}\n", .{file_handle});
-        asm volatile (
-            \\push %[fh]
-            \\call *%[func]
-            :
-            : [fh] "r" (file_handle),
-              [func] "r" (cleanup_file_handle_hook.trampoline),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-        );
+        cleanup_file_handle_hook.original()(file_handle);
         con.print("[file]   cleanup done\n");
 
         // Dump model fields before processLoadedModelData
@@ -774,56 +762,38 @@ fn loadModelAsyncDetour(model: u32, _edx: u32, file_handle: u32, should_use_call
         return 1;
     }
 
-    // Not our fake — call original trampoline (__thiscall: ECX=model, stack: fileHandle, shouldUseCallback)
-    return asm volatile (
-        \\push %[cb]
-        \\push %[fh]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (model),
-          [fh] "r" (file_handle),
-          [cb] "r" (should_use_callback),
-          [func] "r" (model_load_hook.trampoline),
-        : .{ .edx = true, .memory = true, .cc = true }
-    );
+    // Not our fake — call original
+    return model_load_hook.callOriginal(.{ model, file_handle, should_use_callback });
 }
 
 // --- Install/remove in-memory file hooks ---
 
 fn installFileHooks() void {
-    _ = open_file_hook.install(0x6477c0, 9, @intFromPtr(&openFileDetour), &.{});
-    _ = get_file_size_hook.install(0x6487f0, 6, @intFromPtr(&getFileSizeDetour), &.{});
-    _ = read_file_hook.install(0x648460, 6, @intFromPtr(&readFileDetour), &.{});
-    _ = cleanup_file_handle_hook.install(0x648730, 7, @intFromPtr(&cleanupFileHandleDetour), &.{});
-
-    // loadModelFromFileAsync is __thiscall(ECX=model, fileHandle, shouldUseCallback) — needs thunk bridge
-    if (model_load_hook.prepare(0x71d4e0, 6, &.{})) {
-        const thunk = model_load_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&loadModelAsyncDetour), 2);
-        model_load_hook.activate(@intFromPtr(thunk));
-    }
-
+    _ = open_file_hook.attach(0x6477c0, &openFileDetour);
+    _ = get_file_size_hook.attach(0x6487f0, &getFileSizeDetour);
+    _ = read_file_hook.attach(0x648460, &readFileDetour);
+    _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
+    _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     con.print("[file] in-memory file hooks installed\n");
 }
 
 fn removeFileHooks() void {
-    model_load_hook.remove();
-    process_async_hook.remove();
-    cleanup_file_handle_hook.remove();
-    read_file_hook.remove();
-    get_file_size_hook.remove();
-    open_file_hook.remove();
+    model_load_hook.detach();
+    process_async_hook.detach();
+    cleanup_file_handle_hook.detach();
+    read_file_hook.detach();
+    get_file_size_hook.detach();
+    open_file_hook.detach();
 }
 
 // =============================================================================
 // Hook: LoadScriptFunctions (0x490250)
 // =============================================================================
 
-var lsf_hook: hook.Hook = .{};
+var lsf_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
 fn loadScriptFunctionsDetour() callconv(sc) void {
-    const orig = lsf_hook.getTrampoline(*const fn () callconv(sc) void);
-    orig();
+    lsf_hook.callOriginal(.{});
     registerLuaFunctions();
 }
 
@@ -831,12 +801,10 @@ fn loadScriptFunctionsDetour() callconv(sc) void {
 // Hook: LoadAddonsRecursively (0x51F600)
 // =============================================================================
 
-var load_addons_hook: hook.Hook = .{};
+var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
 
-fn loadAddonsDetour(error_handler: u32, _edx: u32) callconv(.c) void {
-    _ = _edx;
-
-    callOrigLoadAddons(error_handler);
+fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
+    load_addons_hook.callOriginal(.{error_handler});
 
     var md5ctx = std.mem.zeroes([88]u8);
 
@@ -898,16 +866,6 @@ fn loadAddonsDetour(error_handler: u32, _edx: u32) callconv(.c) void {
     }
 }
 
-fn callOrigLoadAddons(error_handler: u32) void {
-    asm volatile (
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (error_handler),
-          [func] "r" (load_addons_hook.trampoline),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
-    );
-}
-
 fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_handler: u32) void {
     asm volatile (
         \\push %[eh]
@@ -942,11 +900,10 @@ fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u3
 // Hook: GameEngine_MainInitialize (0x46a400)
 // =============================================================================
 
-var engine_init_hook: hook.Hook = .{};
+var engine_init_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
 fn engineInitDetour() callconv(sc) void {
-    const orig = engine_init_hook.getTrampoline(*const fn () callconv(sc) void);
-    orig();
+    engine_init_hook.callOriginal(.{});
 
     if (build_opts.screenshot) {
         screenshot.installHook();
@@ -960,7 +917,7 @@ fn engineInitDetour() callconv(sc) void {
 // Hook: CGGameUI_Shutdown (0x490BD0)
 // =============================================================================
 
-var shutdown_hook: hook.Hook = .{};
+var shutdown_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
 fn shutdownDetour() callconv(sc) void {
     // Clean up world objects BEFORE game shutdown — atexit handlers run before DllMain
@@ -969,8 +926,7 @@ fn shutdownDetour() callconv(sc) void {
         markers.removeHooks();
     }
 
-    const orig = shutdown_hook.getTrampoline(*const fn () callconv(sc) void);
-    orig();
+    shutdown_hook.callOriginal(.{});
 }
 
 // =============================================================================
@@ -980,10 +936,10 @@ fn shutdownDetour() callconv(sc) void {
 fn install() void {
     con.init();
     con.print("[weirdutils] Installing hooks\n");
-    _ = protection_hook.install(0x42a320, 6, @intFromPtr(&luaProtectionDetour), &.{});
+    _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
     installFileHooks();
-    _ = file_hook.install(0x648620, 6, @intFromPtr(&loadFileDetour), &.{});
-    _ = lsf_hook.install(0x490250, 6, @intFromPtr(&loadScriptFunctionsDetour), &.{1});
+    _ = file_hook.attach(0x648620, &loadFileDetour);
+    _ = lsf_hook.attach(0x490250, &loadScriptFunctionsDetour);
 
     if (build_opts.assetfix) {
         _ = assetfix.installHooks();
@@ -1001,23 +957,19 @@ fn install() void {
         minimapicons.installHooks();
     }
 
-    if (load_addons_hook.prepare(0x51F600, 7, &.{})) {
-        const thunk = load_addons_hook.mem.? + 32;
-        _ = hook.buildFastcallToCdeclThunk(thunk, @intFromPtr(&loadAddonsDetour), 0);
-        load_addons_hook.activate(@intFromPtr(thunk));
-    }
+    _ = load_addons_hook.attach(0x51F600, &loadAddonsDetour);
 
     if (build_opts.interact) {
         interact.installHooks();
     }
 
-    _ = engine_init_hook.install(0x46a400, 6, @intFromPtr(&engineInitDetour), &.{});
-    _ = shutdown_hook.install(0x490BD0, 6, @intFromPtr(&shutdownDetour), &.{1});
+    _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
+    _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
 }
 
 fn uninstall() void {
-    shutdown_hook.remove();
-    engine_init_hook.remove();
+    shutdown_hook.detach();
+    engine_init_hook.detach();
 
     // Markers must be cleaned up first — destroys world objects while game systems are still alive
     if (build_opts.markers) {
@@ -1048,11 +1000,11 @@ fn uninstall() void {
         assetfix.removeHooks();
     }
 
-    load_addons_hook.remove();
-    lsf_hook.remove();
-    file_hook.remove();
+    load_addons_hook.detach();
+    lsf_hook.detach();
+    file_hook.detach();
     removeFileHooks();
-    protection_hook.remove();
+    protection_hook.detach();
     con.deinit();
 }
 
