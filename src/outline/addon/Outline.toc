@@ -5,4 +5,3 @@
 ## Dependencies: WeirdUtils
 
 Outline.lua
-Bindings.xml

@@ -953,13 +953,16 @@ const modules = [_]ModuleHooks{
     if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},
     if (build_opts.minimapicons) .{ .install = minimapicons.installHooks, .remove = minimapicons.removeHooks } else .{},
     if (build_opts.healtextfix) .{ .install = healtextfix.installHooks, .remove = healtextfix.removeHooks } else .{},
-    if (build_opts.markers) .{ .install = markers.installHooks, .remove = markers.removeHooks, .remove_on_shutdown = true } else .{},
+    if (build_opts.markers) .{ .install = markers.installHooks, .remove = markers.removeHooks } else .{},
     if (build_opts.interact) .{ .install = interact.installHooks, .remove = interact.removeHooks } else .{},
     if (build_opts.outline) .{ .remove = outline.cleanup } else .{},
     if (build_opts.screenshot) .{ .remove = screenshot.removeHook } else .{},
 };
 
 fn shutdownDetour() callconv(sc) void {
+    // Clear marker definitions on logout/exit (not on map change).
+    if (build_opts.markers) markers.onShutdown();
+
     // Clean up world objects BEFORE game shutdown — atexit handlers run before
     // DllMain so modules with remove_on_shutdown must destroy here.
     comptime var i = modules.len;

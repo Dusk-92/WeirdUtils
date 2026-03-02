@@ -46,13 +46,15 @@ A keybinding is available in the Key Bindings menu.
 
 ### Interact
 
-Smart interaction for faster farming and dungeon runs:
+Smart interaction helpers for faster farming and dungeon runs:
 
 - **Interact Nearest** -- right-clicks the closest interactable NPC or object within 5 yards
+- **Loot All Corpses** -- bulk loots all nearby corpses in sequence
 
 Best used via keybindings (available in the Key Bindings menu) or macros:
 ```
 /run InteractNearest(1)
+/run LootAllCorpses()
 ```
 
 **DLL:** `interact.dll`

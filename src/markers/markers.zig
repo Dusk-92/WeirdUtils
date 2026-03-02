@@ -766,6 +766,14 @@ pub fn installHooks() void {
     }
 }
 
+/// Called from CGGameUI_Shutdown (logout/exit) — wipes marker definitions.
+/// Does NOT touch hooks or mutex. Entities are destroyed separately by
+/// worldCleanupDetour which fires after shutdown.
+pub fn onShutdown() void {
+    for (&marker_defs) |*d| d.* = EMPTY_DEF;
+    con.print("[markers] defs cleared (shutdown)\n");
+}
+
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         // destroyAllEntities is idempotent — if worldCleanupDetour already ran,

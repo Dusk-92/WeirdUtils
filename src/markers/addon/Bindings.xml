@@ -1,17 +1,17 @@
 <Bindings>
-    <Binding name="Place Marker 1" header="MARKERS">
+    <Binding name="Place Blue Square" header="MARKERS">
         WorldMarker(1)
     </Binding>
-    <Binding name="Place Marker 2" header="MARKERS">
+    <Binding name="Place Green Triangle" header="MARKERS">
         WorldMarker(2)
     </Binding>
-    <Binding name="Place Marker 3" header="MARKERS">
+    <Binding name="Place Purple Diamond" header="MARKERS">
         WorldMarker(3)
     </Binding>
-    <Binding name="Place Marker 4" header="MARKERS">
+    <Binding name="Place Red Cross" header="MARKERS">
         WorldMarker(4)
     </Binding>
-    <Binding name="Place Marker 5" header="MARKERS">
+    <Binding name="Place Yellow Star" header="MARKERS">
         WorldMarker(5)
     </Binding>
     <Binding name="Clear All Markers" header="MARKERS">
