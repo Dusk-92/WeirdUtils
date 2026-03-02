@@ -73,7 +73,7 @@ var marker_positions: [NUM_MARKERS]?Vec3 = .{null} ** NUM_MARKERS;
 var marker_created_tick: [NUM_MARKERS]u32 = .{0} ** NUM_MARKERS;
 var hold_queued: [NUM_MARKERS]bool = .{false} ** NUM_MARKERS;
 
-const STAND_DURATION_MS: u32 = 3900;
+
 
 // Entities playing their Decay animation before destruction.
 // Cleaned up every frame by tickAnimations (via OnWorldUpdate hook).
@@ -242,7 +242,7 @@ fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
         @bitCast(@as(i32, -1)), // seqIndex: random
         0, // animData: NULL
         speed_bits, // speed: 1.0
-        1, // blendMode: blend
+        1, // blendMode: smooth blend
         @intFromBool(queue),
     };
 
@@ -322,14 +322,12 @@ fn placeMarker(index: usize, pos: Vec3) bool {
         return false;
     };
 
-    // Stand (grow-in) is queued by the engine in CM2Model_CreateForModelObject.
-    // Hold is deferred to the per-frame callback (tickAnimations) once
-    // the model is fully initialised (model+0x10 != 0), so it doesn't clobber
-    // Stand in the command queue.
     marker_entities[index] = obj;
     marker_positions[index] = pos;
-    hold_queued[index] = false;
     marker_created_tick[index] = GetTickCount();
+
+    hold_queued[index] = false;
+
     con.fmt("[markers] marker {d} placed at {d:.1}, {d:.1}, {d:.1}\n", .{ index + 1, pos.x, pos.y, pos.z });
     return true;
 }
@@ -439,8 +437,15 @@ pub fn luaClearWorldMarker(L: u32) callconv(.c) u32 {
     return 0;
 }
 
+// Delay before queuing Hold after Stand starts. Too short (<1s) causes the
+// engine's blend logic to accelerate Stand; too long and there's a visible gap.
+// 2000ms was empirically determined as the shortest delay that preserves
+// Stand's full-speed grow-in animation across all 5 marker colors.
+const HOLD_QUEUE_DELAY_MS: u32 = 2000;
+
 /// Per-frame animation tick (driven by OnWorldUpdate hook).
-/// Queues Hold once after Stand finishes, then cleans up despawning entities.
+/// Queues Hold once after Stand has been playing long enough, then cleans up
+/// despawning entities.
 fn tickAnimations() void {
     const now = GetTickCount();
 
@@ -449,7 +454,7 @@ fn tickAnimations() void {
     for (0..NUM_MARKERS) |i| {
         if (hold_queued[i]) continue;
         const entity = marker_entities[i] orelse continue;
-        if (now -% marker_created_tick[i] < STAND_DURATION_MS) continue;
+        if (now -% marker_created_tick[i] < HOLD_QUEUE_DELAY_MS) continue;
 
         playAnimation(entity, ANIM_HOLD, true);
         hold_queued[i] = true;
