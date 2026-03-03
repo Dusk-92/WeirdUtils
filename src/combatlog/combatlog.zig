@@ -53,7 +53,7 @@ fn setupPathRedirect() void {
     const pid = GetCurrentProcessId();
 
     const path = std.fmt.bufPrint(&g_path_buf, "Logs\\WoWCombatLog_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{d}.txt", .{
-        st.wYear, st.wMonth, st.wDay,
+        st.wYear, st.wMonth,  st.wDay,
         st.wHour, st.wMinute, st.wSecond,
         pid,
     }) catch {
@@ -162,18 +162,21 @@ fn maybeWriteSessionMarker() void {
         name_local[0..len], @intFromPtr(name), len,
     });
 
-    const args = [3]u32{ combat_handle, @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION,%s")), @intFromPtr(&name_local) };
+    // WriteFormattedLogMessage — __stdcall(handle, fmt, va_list).
+    // RET 0xC: callee cleans 12 bytes (3 args), no caller cleanup needed.
+    // arg3 (va_list) is a pointer to the variadic args on the stack.
+    // For %s, vsprintf reads *(char**)va_list, so va_list must point to a char*.
+    const name_ptr: u32 = @intFromPtr(&name_local);
+    const args = [3]u32{ combat_handle, @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION: %s")), @intFromPtr(&name_ptr) };
     asm volatile (
         \\ push 8(%[a])
         \\ push 4(%[a])
         \\ push (%[a])
         \\ call *%[func]
-        \\ add $12, %%esp
         :
         : [a] "r" (&args),
           [func] "r" (@as(u32, o.FN_WRITE_FMT_LOG_MSG)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 
     g_session_marker_written = true;
     con.fmt("[combatlog] session: {s}\n", .{name_local[0..len]});
@@ -196,7 +199,7 @@ fn enableChatLoggingDetour(lua_state: u32, index: u32) callconv(fc) u32 {
     // compiler knowing. This barrier forces Zig to push/pop ESI/EDI/EBX in the
     // prologue/epilogue and avoid using them for intermediates — guaranteeing
     // they're correctly restored on return to the Lua VM.
-    asm volatile ("" : : : .{ .esi = true, .edi = true, .ebx = true });
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     const result = enable_logging_hook.callOriginal(.{ lua_state, index });
     // index 1 = combat log

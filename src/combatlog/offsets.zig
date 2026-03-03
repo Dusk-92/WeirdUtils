@@ -17,7 +17,8 @@ pub const COMBAT_LOG_HANDLE: usize = 0x00b50544;
 // Log writing
 // =============================================================================
 
-/// WriteFormattedLogMessage — __cdecl(handle: u32, fmt: [*:0]const u8, ...).
+/// WriteFormattedLogMessage — __stdcall(handle: u32, fmt: [*:0]const u8, va_list: *anyopaque).
+/// Three fixed params, callee cleans stack (RET 0xC). Third arg is va_list pointer.
 /// Writes a timestamped, formatted line to the log buffer. Auto-flushes at 48KB.
 pub const FN_WRITE_FMT_LOG_MSG: usize = 0x0065ac20;
 
