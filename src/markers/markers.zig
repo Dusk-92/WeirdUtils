@@ -115,8 +115,8 @@ const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
 // Permission check — leader or raid officer required
 // =============================================================================
 
-/// WoW Lua C functions: ECX=L, return count of pushed values.
-const LuaCFn = *const fn (lua.State) callconv(.c) u32;
+/// WoW Lua C functions: ECX=L, plain ret, return count of pushed values.
+const LuaCFn = *const fn (lua.State) callconv(fc) u32;
 const FN_IS_PARTY_LEADER: LuaCFn = @ptrFromInt(0x004e9130);
 const FN_IS_RAID_OFFICER: LuaCFn = @ptrFromInt(0x004bb910);
 
@@ -394,14 +394,12 @@ fn clearAllMarkers() void {
 // Lua API
 // =============================================================================
 
-/// Lua: WorldMarker(index [, x, y, z | "unitId"])
-///   WorldMarker(1, x, y, z)  — place at coordinates
-///   WorldMarker(1, "target") — place at unit's current position
-///   WorldMarker(1)           — place at cursor terrain position
+/// Lua: local ok = WorldMarker(index [, x, y, z | "unitId"])
+///   Returns 1 on success, nil on permission denied.
 pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
     if (!canSetMarkers(L)) {
-        con.print("[markers] WorldMarker: no permission (need leader/assist)\n");
-        return 0;
+        con.print("[markers] WorldMarker: no permission\n");
+        return 0; // nil — addon shows user message
     }
 
     const nargs = lua.gettop(L);
@@ -419,13 +417,11 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
     const index: usize = @intCast(raw_index - 1);
 
     if (nargs >= 4 and lua.isnumber(L, 2)) {
-        // WorldMarker(index, x, y, z)
         const x: f32 = @floatCast(lua.tonumber(L, 2));
         const y: f32 = @floatCast(lua.tonumber(L, 3));
         const z: f32 = @floatCast(lua.tonumber(L, 4));
         _ = placeMarker(index, .{ .x = x, .y = y, .z = z });
     } else if (nargs >= 2 and lua.isstring(L, 2)) {
-        // WorldMarker(index, "unitId")
         const unit_id = lua.tostring(L, 2) orelse {
             con.print("[markers] WorldMarker: invalid unit string\n");
             return 0;
@@ -436,7 +432,6 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         };
         _ = placeMarker(index, pos);
     } else {
-        // WorldMarker(index) — cursor terrain position
         const pos = getCursorTerrainPosition() orelse {
             con.print("[markers] no terrain under cursor\n");
             return 0;
@@ -444,27 +439,30 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         _ = placeMarker(index, pos);
     }
 
-    return 0;
+    lua.pushnumber(L, 1.0);
+    return 1;
 }
 
-/// Lua: ClearWorldMarker([index])
-///   ClearWorldMarker(1) — remove marker 1
-///   ClearWorldMarker()  — remove all markers
+/// Lua: local ok = ClearWorldMarker([index])
+///   Returns 1 on success, nil on permission denied.
 pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     if (!canSetMarkers(L)) {
-        con.print("[markers] ClearWorldMarker: no permission (need leader/assist)\n");
+        con.print("[markers] ClearWorldMarker: no permission\n");
         return 0;
     }
 
     const nargs = lua.gettop(L);
+    const lua_type: *const fn (lua.State, i32) callconv(fc) i32 = @ptrFromInt(0x6F3400);
 
-    if (nargs == 0) {
+    if (nargs == 0 or lua_type(L, 1) == 0) {
+        // No args or nil — clear all
         clearAllMarkers();
-        return 0;
+        lua.pushnumber(L, 1.0);
+        return 1;
     }
 
     if (!lua.isnumber(L, 1)) {
-        con.print("[markers] ClearWorldMarker: expected index (1-5) or no args\n");
+        con.print("[markers] ClearWorldMarker: expected index (1-5) or nil\n");
         return 0;
     }
 
@@ -475,7 +473,8 @@ pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     }
 
     clearMarker(@intCast(raw_index - 1));
-    return 0;
+    lua.pushnumber(L, 1.0);
+    return 1;
 }
 
 // Delay before queuing Hold after Stand starts. Too short (<1s) causes the

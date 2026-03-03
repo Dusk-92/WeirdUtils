@@ -120,42 +120,58 @@ local function broadcastAllDefs()
 end
 
 -- =============================================================================
+-- Permission denial feedback (cooldown + max 3 per login, reset on success)
+-- =============================================================================
+
+local denyCount = 0
+local denyLastTime = 0
+local DENY_COOLDOWN = 5
+local DENY_MAX = 3
+
+local function showDenyMessage()
+    if denyCount >= DENY_MAX then return end
+    local now = GetTime()
+    if now - denyLastTime < DENY_COOLDOWN then return end
+    denyLastTime = now
+    denyCount = denyCount + 1
+    if GetNumRaidMembers() > 0 or GetNumPartyMembers() > 0 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00You must be leader or assist to use world markers.|r")
+    else
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00You must be in a group to use world markers.|r")
+    end
+end
+
+-- =============================================================================
 -- Wrap DLL functions to broadcast on group placement/clear
 -- =============================================================================
 
 local RawWorldMarker = WorldMarker
 function WorldMarker(index, ...)
-    log("WorldMarker(" .. tostring(index) .. ")")
-    -- Cancel pending sync request — we're actively placing marks
-    if syncTimer and syncTimer.pending then
-        syncTimer:Hide()
-        syncTimer.pending = false
-        log("sync timer cancelled (local mark placed)")
+    local ok = RawWorldMarker(index, unpack(arg))
+    if not ok then
+        showDenyMessage()
+        return
     end
-    RawWorldMarker(index, unpack(arg))
+    denyCount = 0
     local ch = getChannel()
     if ch then
-        if canSetMarkers() then
-            local x, y, z, areaId = GetMarkerDef(index)
-            if x then
-                log("def ok, broadcasting")
-                broadcastPlace(index, x, y, z, areaId)
-            else
-                log("GetMarkerDef(" .. index .. ")=nil")
-            end
-        else
-            log("no perm to broadcast")
+        local x, y, z, areaId = GetMarkerDef(index)
+        if x then
+            broadcastPlace(index, x, y, z, areaId)
         end
-    else
-        log("solo, no broadcast")
     end
 end
 
 local RawClearWorldMarker = ClearWorldMarker
 function ClearWorldMarker(index)
-    log("ClearWorldMarker(" .. tostring(index) .. ")")
-    RawClearWorldMarker(index)
-    if canSetMarkers() and getChannel() then
+    local ok = RawClearWorldMarker(index)
+    if not ok then
+        showDenyMessage()
+        return
+    end
+    denyCount = 0
+    local ch = getChannel()
+    if ch then
         if index then
             broadcastClear(index)
         else
