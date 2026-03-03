@@ -115,27 +115,147 @@ const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
 // Permission check — leader or raid officer required
 // =============================================================================
 
-/// WoW Lua C functions: ECX=L, plain ret, return count of pushed values.
-const LuaCFn = *const fn (lua.State) callconv(fc) u32;
-const FN_IS_PARTY_LEADER: LuaCFn = @ptrFromInt(0x004e9130);
-const FN_IS_RAID_OFFICER: LuaCFn = @ptrFromInt(0x004bb910);
+/// Get local player GUID via GetPlayerGUID (0x468550).
+/// __fastcall(), no params, returns EAX(low):EDX(high).
+fn getPlayerGUID() u64 {
+    var lo: u32 = undefined;
+    var hi: u32 = undefined;
+    asm volatile ("call *%[func]"
+        : [_] "={eax}" (lo),
+          [_] "={edx}" (hi),
+        : [func] "r" (o.FN_GET_PLAYER_GUID),
+        : .{ .ecx = true, .memory = true, .cc = true });
+    return (@as(u64, hi) << 32) | lo;
+}
 
-/// Call a WoW Lua C function that pushes 1 value, check if it pushed
-/// a truthy value (non-nil), then pop the result.
-fn luaBoolCheck(L: lua.State, func: LuaCFn) bool {
-    const before = lua.gettop(L);
-    _ = func(L);
-    const after = lua.gettop(L);
-    if (after <= before) return false;
-    const is_nil = lua.typeOf(L, -1) == 0;
-    lua.settop(L, before);
-    return !is_nil;
+/// Look up a player name from the name cache by GUID.
+/// Calls RetrieveNPCDataFromCache — __thiscall(ECX=cache), 6 stack params, RET 0x18.
+fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
+    if (guid_lo == 0 and guid_hi == 0) return null;
+    var name_buf: [2]u32 = .{ 0, 0 };
+    const stack_args = [6]u32{
+        guid_lo,
+        guid_hi,
+        @intFromPtr(&name_buf),
+        0, 0, 0,
+    };
+    const result: u32 = asm volatile (
+        \\ push 20(%[a])
+        \\ push 16(%[a])
+        \\ push 12(%[a])
+        \\ push 8(%[a])
+        \\ push 4(%[a])
+        \\ push (%[a])
+        \\ call *%[func]
+        : [ret] "={eax}" (-> u32),
+        : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
+          [a] "r" (&stack_args),
+          [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
+        : .{ .edx = true, .memory = true, .cc = true });
+    return if (result != 0) @ptrFromInt(result) else null;
 }
 
 /// Check if the local player has permission to place/clear markers.
+/// Uses direct memory reads — no Lua state required.
 /// Requires: party leader, raid leader, or raid officer (assist).
-fn canSetMarkers(L: lua.State) bool {
-    return luaBoolCheck(L, FN_IS_PARTY_LEADER) or luaBoolCheck(L, FN_IS_RAID_OFFICER);
+fn canSetMarkers() bool {
+    const player_guid = getPlayerGUID();
+    if (player_guid == 0) return false;
+    const player_lo: u32 = @truncate(player_guid);
+    const player_hi: u32 = @truncate(player_guid >> 32);
+
+    const raid_count = hook.readMem(u32, o.RAID_MEMBER_COUNT);
+    if (raid_count > 0) {
+        // Raid: check if player is leader or has rank > 0 (officer/assist)
+        const count = @min(raid_count, 40);
+        for (0..count) |i| {
+            const entry = hook.readMem(u32, o.RAID_ROSTER_ARRAY + i * 4);
+            if (entry == 0 or entry < 0x10000) continue;
+            const guid_lo = hook.readMem(u32, entry);
+            const guid_hi = hook.readMem(u32, entry + 4);
+            if (guid_lo == player_lo and guid_hi == player_hi) {
+                return hook.readMem(i32, entry + o.ROSTER_ENTRY_RANK) > 0;
+            }
+        }
+        return false;
+    }
+
+    // Party: check if player is the leader
+    const leader_lo = hook.readMem(u32, o.LEADER_GUID);
+    const leader_hi = hook.readMem(u32, o.LEADER_GUID + 4);
+    if (leader_lo == 0 and leader_hi == 0) return false;
+    return player_lo == leader_lo and player_hi == leader_hi;
+}
+
+/// Check if a named sender has permission (leader or raid officer).
+/// Used to authenticate incoming addon messages — sender name comes from
+/// CHAT_MSG_ADDON arg4 (server-verified, can't be spoofed).
+fn senderHasPermission(sender: [*:0]const u8) bool {
+    const sender_span = std.mem.span(sender);
+    if (sender_span.len == 0) return false;
+
+    const raid_count = hook.readMem(u32, o.RAID_MEMBER_COUNT);
+    if (raid_count > 0) {
+        // Raid: find sender in roster, check rank > 0
+        const count = @min(raid_count, 40);
+        for (0..count) |i| {
+            const entry = hook.readMem(u32, o.RAID_ROSTER_ARRAY + i * 4);
+            if (entry == 0 or entry < 0x10000) continue;
+            const rank = hook.readMem(i32, entry + o.ROSTER_ENTRY_RANK);
+            if (rank <= 0) continue; // skip non-officers
+            const guid_lo = hook.readMem(u32, entry);
+            const guid_hi = hook.readMem(u32, entry + 4);
+            const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
+            if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Party: check if sender is the leader
+    const leader_lo = hook.readMem(u32, o.LEADER_GUID);
+    const leader_hi = hook.readMem(u32, o.LEADER_GUID + 4);
+    if (leader_lo == 0 and leader_hi == 0) return false;
+    const leader_name = getNameFromGUID(leader_lo, leader_hi) orelse return false;
+    return std.mem.eql(u8, std.mem.span(leader_name), sender_span);
+}
+
+/// Check if a named sender is in the group (any rank).
+/// Weaker than senderHasPermission — used for sync relay (SF) where the
+/// sender is just echoing stored data, not issuing a command.
+fn senderInGroup(sender: [*:0]const u8) bool {
+    const sender_span = std.mem.span(sender);
+    if (sender_span.len == 0) return false;
+
+    const raid_count = hook.readMem(u32, o.RAID_MEMBER_COUNT);
+    if (raid_count > 0) {
+        // Raid: find sender anywhere in roster (any rank)
+        const count = @min(raid_count, 40);
+        for (0..count) |i| {
+            const entry = hook.readMem(u32, o.RAID_ROSTER_ARRAY + i * 4);
+            if (entry == 0 or entry < 0x10000) continue;
+            const guid_lo = hook.readMem(u32, entry);
+            const guid_hi = hook.readMem(u32, entry + 4);
+            const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
+            if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Party: check if sender is any party member
+    for (0..4) |i| {
+        const guid_lo = hook.readMem(u32, o.PARTY_MEMBER_GUIDS + i * 8);
+        const guid_hi = hook.readMem(u32, o.PARTY_MEMBER_GUIDS + i * 8 + 4);
+        if (guid_lo == 0 and guid_hi == 0) continue;
+        const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
+        if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // =============================================================================
@@ -397,7 +517,7 @@ fn clearAllMarkers() void {
 /// Lua: local ok = WorldMarker(index [, x, y, z | "unitId"])
 ///   Returns 1 on success, nil on permission denied.
 pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
-    if (!canSetMarkers(L)) {
+    if (!canSetMarkers()) {
         con.print("[markers] WorldMarker: no permission\n");
         return 0; // nil — addon shows user message
     }
@@ -446,7 +566,7 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
 /// Lua: local ok = ClearWorldMarker([index])
 ///   Returns 1 on success, nil on permission denied.
 pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
-    if (!canSetMarkers(L)) {
+    if (!canSetMarkers()) {
         con.print("[markers] ClearWorldMarker: no permission\n");
         return 0;
     }
@@ -549,53 +669,20 @@ fn tickAnimations() void {
     }
 }
 
-/// Lua: local x, y, z = GetPlayerPosition()
-pub fn luaGetPlayerPosition(L: lua.State) callconv(.c) u32 {
-    const player = wow.getLocalPlayer();
-    if (player == 0) return 0;
-
-    const pos = getUnitPosition(player);
-    lua.pushnumber(L, @floatCast(pos.x));
-    lua.pushnumber(L, @floatCast(pos.y));
-    lua.pushnumber(L, @floatCast(pos.z));
-    return 3;
-}
-
-/// Lua: local dist = DistanceToMark(index)
-/// Returns distance in yards from player to the stored marker position,
-/// or nil if the marker doesn't exist or there's no player.
-pub fn luaDistanceToMark(L: lua.State) callconv(.c) u32 {
-    const nargs = lua.gettop(L);
-    if (nargs < 1 or !lua.isnumber(L, 1)) return 0;
-
-    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
-    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
-    const index: usize = @intCast(raw_index - 1);
-
-    if (!marker_defs[index].active) return 0;
-    const mark_pos = marker_defs[index].pos;
-
-    const player = wow.getLocalPlayer();
-    if (player == 0) return 0;
-    const player_pos = getUnitPosition(player);
-    if (player_pos.x == 0 and player_pos.y == 0 and player_pos.z == 0) return 0;
-
-    const dx = player_pos.x - mark_pos.x;
-    const dy = player_pos.y - mark_pos.y;
-    const dz = player_pos.z - mark_pos.z;
-    const dist = @sqrt(dx * dx + dy * dy + dz * dz);
-
-    lua.pushnumber(L, @floatCast(dist));
-    return 1;
-}
-
-/// Lua: SetMarkerDef(index, x, y, z, areaId)
+/// Lua: SetMarkerDef(index, x, y, z, areaId, senderName)
 /// Store a marker definition without immediately spawning. Used by the addon
 /// when receiving remote marker data — proximity respawn handles entity creation.
+/// senderName is verified against the group roster for leader/officer permission.
 pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
     const nargs = lua.gettop(L);
-    if (nargs < 5) return 0;
-    if (!lua.isnumber(L, 1) or !lua.isnumber(L, 2) or !lua.isnumber(L, 3) or !lua.isnumber(L, 4) or !lua.isnumber(L, 5)) return 0;
+    if (nargs < 6) return 0;
+    if (!lua.isnumber(L, 1) or !lua.isnumber(L, 2) or !lua.isnumber(L, 3) or !lua.isnumber(L, 4) or !lua.isnumber(L, 5) or !lua.isstring(L, 6)) return 0;
+
+    const sender = lua.tostring(L, 6) orelse return 0;
+    if (!senderHasPermission(sender)) {
+        con.fmt("[markers] SetMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+        return 0;
+    }
 
     const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
@@ -619,20 +706,78 @@ pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
     return 0;
 }
 
-/// Lua: ClearMarkerDef([index])
-/// Clear a definition (and its entity if alive). No args = clear all.
+/// Lua: SetMarkerDefSync(index, x, y, z, areaId, senderName)
+/// Like SetMarkerDef but for sync relay (SF messages). Two checks:
+///   1. Local player must be leader/assist (only they request syncs)
+///   2. Sender must be in the group (any rank — they're just relaying data)
+pub fn luaSetMarkerDefSync(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
+    if (nargs < 6) return 0;
+    if (!lua.isnumber(L, 1) or !lua.isnumber(L, 2) or !lua.isnumber(L, 3) or !lua.isnumber(L, 4) or !lua.isnumber(L, 5) or !lua.isstring(L, 6)) return 0;
+
+    if (!canSetMarkers()) {
+        con.print("[markers] SetMarkerDefSync: local player not leader/assist\n");
+        return 0;
+    }
+
+    const sender = lua.tostring(L, 6) orelse return 0;
+    if (!senderInGroup(sender)) {
+        con.fmt("[markers] SetMarkerDefSync: sender '{s}' not in group\n", .{std.mem.span(sender)});
+        return 0;
+    }
+
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+    const index: usize = @intCast(raw_index - 1);
+
+    const x: f32 = @floatCast(lua.tonumber(L, 2));
+    const y: f32 = @floatCast(lua.tonumber(L, 3));
+    const z: f32 = @floatCast(lua.tonumber(L, 4));
+    const area_id: u32 = @intFromFloat(lua.tonumber(L, 5));
+
+    clearEntity(index);
+
+    marker_defs[index] = .{
+        .pos = .{ .x = x, .y = y, .z = z },
+        .area_id = area_id,
+        .active = true,
+    };
+
+    con.fmt("[markers] SetMarkerDefSync [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
+    return 0;
+}
+
+/// Lua: ClearMarkerDef(senderName) — clear all
+/// Lua: ClearMarkerDef(index, senderName) — clear one
+/// senderName is verified against the group roster for leader/officer permission.
 pub fn luaClearMarkerDef(L: lua.State) callconv(.c) u32 {
     const nargs = lua.gettop(L);
-    if (nargs == 0) {
+    if (nargs < 1) return 0;
+
+    if (lua.isstring(L, 1) and (nargs == 1 or !lua.isnumber(L, 1))) {
+        // ClearMarkerDef(senderName) — clear all
+        const sender = lua.tostring(L, 1) orelse return 0;
+        if (!senderHasPermission(sender)) {
+            con.fmt("[markers] ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+            return 0;
+        }
         clearAllMarkers();
         return 0;
     }
 
-    if (!lua.isnumber(L, 1)) return 0;
-    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
-    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+    if (nargs >= 2 and lua.isnumber(L, 1) and lua.isstring(L, 2)) {
+        // ClearMarkerDef(index, senderName) — clear one
+        const sender = lua.tostring(L, 2) orelse return 0;
+        if (!senderHasPermission(sender)) {
+            con.fmt("[markers] ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+            return 0;
+        }
+        const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
+        if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+        clearMarker(@intCast(raw_index - 1));
+        return 0;
+    }
 
-    clearMarker(@intCast(raw_index - 1));
     return 0;
 }
 
@@ -653,6 +798,17 @@ pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
     lua.pushnumber(L, @floatCast(marker_defs[index].pos.z));
     lua.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
     return 4;
+}
+
+/// Lua: local ok = CanSetMarkers()
+/// Returns 1 if the local player has permission (leader/assist), nil otherwise.
+/// Used by the addon for broadcast/sync decisions.
+pub fn luaCanSetMarkers(L: lua.State) callconv(.c) u32 {
+    if (canSetMarkers()) {
+        lua.pushnumber(L, 1.0);
+        return 1;
+    }
+    return 0;
 }
 
 /// Lua: local areaId = GetCurrentAreaId()

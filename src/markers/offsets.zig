@@ -197,3 +197,38 @@ pub const FN_LOAD_MODEL_ASYNC: usize = 0x0071d4e0;
 /// Parses model header from buffer at model+0x130 (ptr) / model+0x134 (size),
 /// initializes model resources, sets bit 0 of model+8 when done.
 pub const FN_PROCESS_LOADED_MODEL_DATA: usize = 0x0071d640;
+
+// =============================================================================
+// Permission check — leader / raid officer
+// =============================================================================
+
+/// Group leader GUID (64-bit): low u32 at +0, high u32 at +4.
+/// Valid for both party leader and raid leader.
+pub const LEADER_GUID: usize = 0x00bc75f8;
+
+/// Raid roster — array of 40 pointers to roster entry structs.
+/// Entry layout: +0x00/+0x04 = GUID (u64), +0x08 = subgroup, +0x0C = rank.
+/// Rank: 0 = member, 1 = assistant, 2 = leader.
+pub const RAID_ROSTER_ARRAY: usize = 0x00b712a8;
+
+/// Number of raid members (u32). 0 when not in a raid.
+pub const RAID_MEMBER_COUNT: usize = 0x00b713e0;
+
+/// Offset within a roster entry to the rank field (i32).
+pub const ROSTER_ENTRY_RANK: usize = 0x0C;
+
+/// Party member GUIDs — 4 slots, 8 bytes each (lo/hi u32 pairs).
+/// Contains other party members (not local player). Stride = 8.
+pub const PARTY_MEMBER_GUIDS: usize = 0x00bc6f48;
+
+/// GetPlayerGUID — __fastcall(), no params, returns EAX(low):EDX(high).
+pub const FN_GET_PLAYER_GUID: usize = 0x00468550;
+
+/// RetrieveNPCDataFromCache — __thiscall(ECX=cache_obj), 6 stack params, RET 0x18.
+/// (guid_low, guid_high, name_buf_ptr, 0, 0, 0) → char* name or NULL.
+/// Used by GetRaidRosterInfo to resolve player names from GUIDs.
+pub const FN_NAME_CACHE_LOOKUP: usize = 0x0055f080;
+
+/// Name cache object — static instance at this address. Passed as ECX (this)
+/// to RetrieveNPCDataFromCache.
+pub const NAME_CACHE_OBJ: usize = 0x00c0e228;

@@ -1,7 +1,7 @@
 -- Markers addon (embedded in DLL, loaded from memory)
 -- Part of WeirdUtils - only loaded when markers module is compiled
 
-MARKERS_VERSION = 3
+MARKERS_VERSION = 4
 
 BINDING_HEADER_MARKERS = "Markers"
 
@@ -16,6 +16,11 @@ end
 -- =============================================================================
 -- Addon message protocol
 -- Delimiter is ":" (pipe "|" is WoW's escape char for color codes)
+--
+-- Permission model: ALL permission checks are enforced DLL-side.
+--   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
+--   SetMarkerDef/ClearMarkerDef: DLL checks sender name against roster.
+--   CanSetMarkers(): DLL returns 1 if local player has permission.
 -- =============================================================================
 
 local MSG_PREFIX = "WMark"
@@ -30,59 +35,9 @@ local function getChannel()
     return nil
 end
 
-local function canSetMarkers()
-    if GetNumRaidMembers() > 0 then
-        for i = 1, 40 do
-            local name, rank = GetRaidRosterInfo(i)
-            if name == UnitName("player") then
-                log("canSet: raid rank=" .. rank .. (rank >= 1 and " YES" or " NO"))
-                return rank >= 1 -- 1=assist, 2=leader
-            end
-        end
-        log("canSet: not in raid roster")
-        return false
-    elseif GetNumPartyMembers() > 0 then
-        local result = IsPartyLeader()
-        log("canSet: party leader=" .. tostring(result))
-        return result
-    end
-    log("canSet: solo YES")
-    return true -- solo: always allowed
-end
-
-local function senderHasPermission(sender)
-    if GetNumRaidMembers() > 0 then
-        for i = 1, 40 do
-            local name, rank = GetRaidRosterInfo(i)
-            if name == sender then
-                log("perm: " .. sender .. " rank=" .. rank .. (rank >= 1 and " OK" or " NO"))
-                return rank >= 1
-            end
-        end
-        log("perm: " .. sender .. " not in roster")
-        return false
-    elseif GetNumPartyMembers() > 0 then
-        -- Find the sender's unit ID to check if they're party leader
-        for i = 1, GetNumPartyMembers() do
-            if UnitName("party" .. i) == sender then
-                local isLeader = UnitIsPartyLeader("party" .. i)
-                log("perm: " .. sender .. "=party" .. i .. " ldr=" .. tostring(isLeader))
-                return isLeader == 1
-            end
-        end
-        log("perm: " .. sender .. " not in party")
-        return false
-    end
-    log("perm: no group")
-    return false
-end
-
 local function broadcastPlace(index, x, y, z, areaId)
     local ch = getChannel()
-    if not ch then
-        log("send: no channel")
-        return
-    end
+    if not ch then return end
     local msg = "P:" .. index .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
     log("SEND [" .. ch .. "] " .. msg)
     SendAddonMessage(MSG_PREFIX, msg, ch)
@@ -193,6 +148,7 @@ end
 
 -- =============================================================================
 -- Addon message handler
+-- All mutation commands pass sender name to the DLL for permission check.
 -- =============================================================================
 
 local function parseMarkerFields(parts)
@@ -226,12 +182,10 @@ local function onAddonMessage(prefix, message, channel, sender)
     local cmd = parts[1]
     log("  cmd=" .. tostring(cmd) .. " n=" .. table.getn(parts))
 
-    -- SR/LSR/SF don't mutate state — handled before permission check.
-    -- P, C, CA mutate state and require sender to have leader/assist permission.
     if cmd == "SR" then
         -- Normal sync request: only leader/assist responds
         log("  sync request from " .. tostring(sender))
-        if canSetMarkers() then
+        if CanSetMarkers() then
             broadcastAllDefs()
         end
         return
@@ -251,37 +205,28 @@ local function onAddonMessage(prefix, message, channel, sender)
         end
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            log("  SetMarkerDef(" .. idx .. "," .. x .. "," .. y .. "," .. z .. "," .. areaId .. ")")
-            SetMarkerDef(idx, x, y, z, areaId)
+            SetMarkerDefSync(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
         end
         return
     end
 
-    -- Mutation commands require permission
-    if not senderHasPermission(sender) then
-        log("  no perm, skip")
-        return
-    end
-
+    -- P, C, CA — DLL checks sender permission via SetMarkerDef/ClearMarkerDef
     if cmd == "P" then
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            log("  SetMarkerDef(" .. idx .. "," .. x .. "," .. y .. "," .. z .. "," .. areaId .. ")")
-            SetMarkerDef(idx, x, y, z, areaId)
+            SetMarkerDef(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
         end
     elseif cmd == "C" then
         local idx = tonumber(parts[2])
         if idx then
-            log("  ClearMarkerDef(" .. idx .. ")")
-            ClearMarkerDef(idx)
+            ClearMarkerDef(idx, sender)
         end
     elseif cmd == "CA" then
-        log("  ClearAll")
-        ClearMarkerDef()
+        ClearMarkerDef(sender)
     else
         log("  unknown: " .. tostring(cmd))
     end
@@ -299,7 +244,7 @@ local function broadcastSyncRequest()
     end
     -- Reset first-responder lock before requesting
     syncSender = nil
-    local cmd = canSetMarkers() and "LSR" or "SR"
+    local cmd = CanSetMarkers() and "LSR" or "SR"
     log("SEND [" .. ch .. "] " .. cmd)
     SendAddonMessage(MSG_PREFIX, cmd, ch)
 end
@@ -357,7 +302,7 @@ rosterTimer:SetScript("OnUpdate", function()
         rosterTimer.pending = false
         rosterTimer.extensions = 0
         log("roster timer fired, broadcasting")
-        if canSetMarkers() then
+        if CanSetMarkers() then
             broadcastAllDefs()
         end
     end

@@ -111,12 +111,12 @@ fn registerLuaFunctions() void {
     if (build_opts.markers and markers.isActive()) {
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
-        registerFunction("GetPlayerPosition", @intFromPtr(&markers.luaGetPlayerPosition));
-        registerFunction("DistanceToMark", @intFromPtr(&markers.luaDistanceToMark));
         registerFunction("SetMarkerDef", @intFromPtr(&markers.luaSetMarkerDef));
+        registerFunction("SetMarkerDefSync", @intFromPtr(&markers.luaSetMarkerDefSync));
         registerFunction("ClearMarkerDef", @intFromPtr(&markers.luaClearMarkerDef));
         registerFunction("GetMarkerDef", @intFromPtr(&markers.luaGetMarkerDef));
         registerFunction("GetCurrentAreaId", @intFromPtr(&markers.luaGetCurrentAreaId));
+        registerFunction("CanSetMarkers", @intFromPtr(&markers.luaCanSetMarkers));
     }
 }
 
