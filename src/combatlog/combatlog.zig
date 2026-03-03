@@ -95,31 +95,35 @@ fn getPlayerGUID() u64 {
     return (@as(u64, hi) << 32) | lo;
 }
 
-/// Look up a player name from the name cache by GUID.
-/// Calls RetrieveNPCDataFromCache — __thiscall(ECX=cache), 6 stack params, RET 0x18.
-fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
-    if (guid_lo == 0 and guid_hi == 0) return null;
-    var name_buf: [2]u32 = .{ 0, 0 };
-    const stack_args = [6]u32{
-        guid_lo,
-        guid_hi,
-        @intFromPtr(&name_buf),
-        0, 0, 0,
-    };
-    const result: u32 = asm volatile (
-        \\ push 20(%[a])
-        \\ push 16(%[a])
-        \\ push 12(%[a])
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
+/// Look up a unit name by GUID — two-step approach matching perfboost:
+///   1. GetObjectPtr (0x464870) — __stdcall(u64 guid) → object ptr in EAX
+///   2. CGUnit_C::GetUnitName (0x609210) — __thiscall(ECX=unit, stack: 0) → char*
+fn getNameFromGUID(guid: u64) ?[*:0]const u8 {
+    if (guid == 0) return null;
+
+    // Step 1: GUID → object pointer via __stdcall (GUID pushed on stack as 8 bytes)
+    const guid_lo: u32 = @truncate(guid);
+    const guid_hi: u32 = @truncate(guid >> 32);
+    const obj: u32 = asm volatile (
+        \\ push %[hi]
+        \\ push %[lo]
         \\ call *%[func]
         : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
-          [a] "r" (&stack_args),
-          [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
+        : [lo] "r" (guid_lo),
+          [hi] "r" (guid_hi),
+          [func] "r" (@as(u32, o.FN_GET_OBJECT_PTR)),
         : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
-    return if (result != 0) @ptrFromInt(result) else null;
+    if (obj == 0) return null;
+
+    // Step 2: object pointer → name (__thiscall: ECX=this, push flag=0)
+    const result: u32 = asm volatile (
+        \\ push $0
+        \\ call *%[func]
+        : [ret] "={eax}" (-> u32),
+        : [_] "{ecx}" (obj),
+          [func] "r" (@as(u32, o.FN_GET_UNIT_NAME)),
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return if (result != 0 and result >= 0x10000) @ptrFromInt(result) else null;
 }
 
 // =============================================================================
@@ -138,9 +142,7 @@ fn maybeWriteSessionMarker() void {
     const player_guid = getPlayerGUID();
     if (player_guid == 0) return;
 
-    const guid_lo: u32 = @truncate(player_guid);
-    const guid_hi: u32 = @truncate(player_guid >> 32);
-    const name = getNameFromGUID(guid_lo, guid_hi) orelse {
+    const name = getNameFromGUID(player_guid) orelse {
         // TODO: If player name is unavailable at this point (e.g.
         // LoggingCombat enabled before login), could hook OnWorldUpdate for a
         // per-frame retry until name is available.
@@ -148,15 +150,19 @@ fn maybeWriteSessionMarker() void {
         return;
     };
 
-    // WriteFormattedLogMessage — __cdecl(handle, fmt, va_list)
-    // Third arg is a va_list (pointer to the arg list), NOT the arg itself.
-    const fmt_str: [*:0]const u8 = "COMBATLOG_SESSION,%s";
-    var va_args = [1]u32{@intFromPtr(name)};
-    const cdecl_args = [3]u32{
-        combat_handle,
-        @intFromPtr(fmt_str),
-        @intFromPtr(&va_args),
-    };
+    // Copy name to a stack buffer — the name cache pointer can be
+    // invalidated by game-side log writes.
+    var name_local: [49]u8 = undefined;
+    const name_span = std.mem.span(name);
+    const len = @min(name_span.len, name_local.len - 1);
+    @memcpy(name_local[0..len], name_span[0..len]);
+    name_local[len] = 0;
+
+    con.fmt("[combatlog] player name: '{s}' (ptr=0x{x:0>8}, len={d})\n", .{
+        name_local[0..len], @intFromPtr(name), len,
+    });
+
+    const args = [3]u32{ combat_handle, @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION,%s")), @intFromPtr(&name_local) };
     asm volatile (
         \\ push 8(%[a])
         \\ push 4(%[a])
@@ -164,12 +170,13 @@ fn maybeWriteSessionMarker() void {
         \\ call *%[func]
         \\ add $12, %%esp
         :
-        : [a] "r" (&cdecl_args),
+        : [a] "r" (&args),
           [func] "r" (@as(u32, o.FN_WRITE_FMT_LOG_MSG)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
+    );
 
     g_session_marker_written = true;
-    con.fmt("[combatlog] session: {s}\n", .{std.mem.span(name)});
+    con.fmt("[combatlog] session: {s}\n", .{name_local[0..len]});
 }
 
 // =============================================================================
@@ -181,6 +188,16 @@ const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
 var enable_logging_hook: hook.Detour(fn (u32, u32) callconv(fc) u32) = .{};
 
 fn enableChatLoggingDetour(lua_state: u32, index: u32) callconv(fc) u32 {
+    // The Lua VM's luaCallFunction (0x6F6050) stores luaState in ESI and the
+    // C function pointer in EDI, dispatches via CALL EDI, then reads [ESI+0x8]
+    // expecting callee-saved registers preserved. Zig may not push ESI/EDI/EBX
+    // in this function's prologue if it doesn't allocate them itself, but subcalls
+    // (callOriginal wrapper, inline asm game calls) can clobber them without the
+    // compiler knowing. This barrier forces Zig to push/pop ESI/EDI/EBX in the
+    // prologue/epilogue and avoid using them for intermediates — guaranteeing
+    // they're correctly restored on return to the Lua VM.
+    asm volatile ("" : : : .{ .esi = true, .edi = true, .ebx = true });
+
     const result = enable_logging_hook.callOriginal(.{ lua_state, index });
     // index 1 = combat log
     if (index == 1 and !g_session_marker_written) {
