@@ -288,7 +288,7 @@ fn luaPushNumber(L_ptr: usize, n: f64) void {
           [lo] "r" (raw[0]),
           [hi] "r" (raw[1]),
           [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
 }
 

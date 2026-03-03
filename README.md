@@ -11,7 +11,14 @@ interaction helpers, and an embedded addon with Lua API + keybindings.
 | **Outline** | JFA-based screen-space outlines for targets, raid marks, dead players. See [src/outline/README.md](src/outline/README.md). |
 | **Screenshot** | Hooks CTgaFile::Write for screenshot capture. |
 | **Interact** | Nearest NPC/object interaction, bulk looting with queue processing. |
-| **Embedded Addon** | Virtual addon loaded from DLL memory — .toc, .lua, .xml served via file I/O hook. Registers Lua commands and keybindings without any on-disk addon folder. |
+| **Markers** | World-space raid markers (5 colors) using M2 model entities. Proximity respawn, group sync, animated spawn/despawn. Lua API + slash commands (`/wm`, `/cwm`). |
+| **Framecrash** | Anchor vtable guards — prevents crashes from dangling relativeTo pointers and NULL frame refs. |
+| **Combatlog** | Combat log fixes. |
+| **Minimap Icons** | Minimap icon fixes. |
+| **Transmogfix** | Coalesces transmog durability update packets to prevent death frame drops. |
+| **Loose Assets** | Loose file loading, permissive MPQ glob patterns, pre-indexed file hash set. |
+| **Healtextfix** | Heal text display fix. |
+| **Embedded Addon** | Virtual addons loaded from DLL memory — .toc, .lua, .xml, .m2, .blp served via file I/O hooks (LoadFile + Storm layer). No on-disk addon folder needed. |
 | **Lua Protection Bypass** | Stubs the Lua callback address validator to allow C function registration. |
 
 ## Consolidation Plan
@@ -34,7 +41,7 @@ Users can pick the full package or grab only the features they want.
 
 ```zig
 // build.zig options (planned)
-const enable_assetfix = b.option(bool, "assetfix", "Enable asset/MPQ fixes") orelse true;
+const enable_looseassets = b.option(bool, "looseassets", "Enable loose file loading & permissive patch glob") orelse true;
 const enable_transmogfix = b.option(bool, "transmogfix", "Enable transmog coalesce fix") orelse true;
 const enable_interact = b.option(bool, "interact", "Enable interact helpers") orelse true;
 const enable_outline = b.option(bool, "outline", "Enable outline rendering") orelse true;
@@ -45,14 +52,14 @@ const enable_outline = b.option(bool, "outline", "Enable outline rendering") ore
 zig build
 
 # Single-feature builds — one DLL per feature for individual distribution
-zig build -Dassetfix=true -Dtransmogfix=false -Dinteract=false -Doutline=false
-zig build -Dassetfix=false -Dtransmogfix=true -Dinteract=false -Doutline=false
+zig build -Dlooseassets=true -Dtransmogfix=false -Dinteract=false -Doutline=false
+zig build -Dlooseassets=false -Dtransmogfix=true -Dinteract=false -Doutline=false
 # etc.
 ```
 
 Release artifacts:
 - `weirdutils.dll` — everything
-- `assetfix.dll` — just asset/MPQ fixes
+- `looseassets.dll` — just asset/MPQ fixes
 - `transmogfix.dll` — just transmog coalesce
 - `interact.dll` — just interact/loot helpers
 - `outline.dll` — just outline rendering
@@ -62,14 +69,14 @@ All built from this repo, all sharing the same hook library and codebase.
 ### Per-Feature Named Mutex
 
 A user might load the full DLL alongside one of the smaller single-feature DLLs
-(e.g. they use `weirdutils.dll` for everything but also have `assetfix.dll` from
+(e.g. they use `weirdutils.dll` for everything but also have `looseassets.dll` from
 before they switched). Each feature module claims a **named mutex** on load — if
 it's already held, that module skips hook installation. This way any combination
 of DLLs coexists safely with no duplicate hooks.
 
 ```zig
 // Each module creates a process-specific named mutex on init
-const mutex = CreateMutexA(null, 1, "Local\\WeirdUtils_AssetFix_{pid}");
+const mutex = CreateMutexA(null, 1, "Local\\WeirdUtils_LooseAssets_{pid}");
 if (GetLastError() == ERROR_ALREADY_EXISTS) {
     // Another DLL already owns this feature's hooks — skip
     CloseHandle(mutex);
@@ -120,7 +127,7 @@ gh release create v1.0 --repo YourName/WeirdUtils \
   --title "v1.0" --notes "Release notes" \
   ./zig-out/lib/weirdutils.dll \
   ./builds/outline.dll \
-  ./builds/assetfix.dll
+  ./builds/looseassets.dll
 ```
 
 ## Project Structure

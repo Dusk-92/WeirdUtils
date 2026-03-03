@@ -66,8 +66,9 @@ pub fn pushnil(L: State) void {
 
 pub fn pushnumber(L: State, n: f64) void {
     // __thiscall: ECX=L, f64 on stack [EBP+8]/[EBP+0xc], ret 8.
+    // .never_tail: callee-cleanup pops stack args — tail-call would corrupt the stack.
     const f: *const fn (State, f64) callconv(.{ .x86_thiscall = .{} }) void = @ptrFromInt(0x6F3810);
-    f(L, n);
+    @call(.never_tail, f, .{ L, n });
 }
 
 pub fn pushstring(L: State, s: [*:0]const u8) void {
@@ -82,7 +83,7 @@ pub fn pushboolean(L: State, b: i32) void {
 
 pub fn pushcclosure(L: State, func: usize, n: i32) void {
     const f: *const fn (State, usize, i32) callconv(fc) void = @ptrFromInt(0x6F3920);
-    f(L, func, n);
+    @call(.never_tail, f, .{ L, func, n });
 }
 
 pub fn tonumber(L: State, index: i32) f64 {
@@ -122,7 +123,7 @@ pub fn next(L: State, index: i32) i32 {
 
 pub fn pcall(L: State, nargs: i32, nresults: i32, errfunc: i32) i32 {
     const f: *const fn (State, i32, i32, i32) callconv(fc) i32 = @ptrFromInt(0x6F41A0);
-    return f(L, nargs, nresults, errfunc);
+    return @call(.never_tail, f, .{ L, nargs, nresults, errfunc });
 }
 
 pub fn luaError(L: State, msg: [*:0]const u8) void {
@@ -146,7 +147,7 @@ pub const LuaReg = extern struct {
 
 pub fn openlib(L: State, libname: ?[*:0]const u8, funcs: [*]const LuaReg, nup: i32) void {
     const f: *const fn (State, ?[*:0]const u8, [*]const LuaReg, i32) callconv(fc) void = @ptrFromInt(0x6F4DC0);
-    f(L, libname, funcs, nup);
+    @call(.never_tail, f, .{ L, libname, funcs, nup });
 }
 
 pub fn checknumber(L: State, index: i32) f64 {

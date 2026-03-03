@@ -129,7 +129,7 @@ fn rightClickInteract(pointer: u32, autoloot: i32, fun_ptr: usize) void {
         : [_] "{ecx}" (pointer),
           [autoloot] "r" (autoloot),
           [func] "r" (fun_ptr),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================

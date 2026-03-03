@@ -7,12 +7,12 @@ const build_opts = struct {
     const screenshot = @import("build_options").enable_screenshot;
     const interact = @import("build_options").enable_interact;
     const outline = @import("build_options").enable_outline;
-    const markers = @import("build_options").enable_markers;
+    const worldmarkers = @import("build_options").enable_worldmarkers;
     const framecrash = @import("build_options").enable_framecrash;
     const combatlog = @import("build_options").enable_combatlog;
     const minimapicons = @import("build_options").enable_minimapicons;
     const transmogfix = @import("build_options").enable_transmogfix;
-    const assetfix = @import("build_options").enable_assetfix;
+    const looseassets = @import("build_options").enable_looseassets;
     const healtextfix = @import("build_options").enable_healtextfix;
 };
 
@@ -20,12 +20,12 @@ const build_opts = struct {
 const screenshot = if (build_opts.screenshot) @import("screenshot/screenshot.zig") else struct {};
 const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
 const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
-const markers = if (build_opts.markers) @import("markers/markers.zig") else struct {};
+const markers = if (build_opts.worldmarkers) @import("markers/markers.zig") else struct {};
 const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig") else struct {};
 const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") else struct {};
 const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
 const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix.zig") else struct {};
-const assetfix = if (build_opts.assetfix) @import("assetfix/assetfix.zig") else struct {};
+const looseassets = if (build_opts.looseassets) @import("looseassets/looseassets.zig") else struct {};
 const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -87,7 +87,7 @@ fn weirdUtilsVersion(L: lua.State) callconv(.c) u32 {
         :
         : [_] "{ecx}" (@intFromPtr(L)),
           [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
     return 1;
 }
@@ -108,15 +108,22 @@ fn registerLuaFunctions() void {
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
-    if (build_opts.markers and markers.isActive()) {
+    if (build_opts.worldmarkers and markers.isActive()) {
+        // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
-        registerFunction("SetMarkerDef", @intFromPtr(&markers.luaSetMarkerDef));
-        registerFunction("SetMarkerDefSync", @intFromPtr(&markers.luaSetMarkerDefSync));
-        registerFunction("ClearMarkerDef", @intFromPtr(&markers.luaClearMarkerDef));
-        registerFunction("GetMarkerDef", @intFromPtr(&markers.luaGetMarkerDef));
-        registerFunction("GetCurrentAreaId", @intFromPtr(&markers.luaGetCurrentAreaId));
-        registerFunction("CanSetMarkers", @intFromPtr(&markers.luaCanSetMarkers));
+        registerFunction("CanSetWorldMarkers", @intFromPtr(&markers.luaCanSetMarkers));
+
+        // Internal functions in WorldMarkers table (via luaL_openlib)
+        const lib = [_]lua.LuaReg{
+            .{ .name = "SetMarkerDef", .func = @intFromPtr(&markers.luaSetMarkerDef) },
+            .{ .name = "SetMarkerDefSync", .func = @intFromPtr(&markers.luaSetMarkerDefSync) },
+            .{ .name = "ClearMarkerDef", .func = @intFromPtr(&markers.luaClearMarkerDef) },
+            .{ .name = "GetMarkerDef", .func = @intFromPtr(&markers.luaGetMarkerDef) },
+
+            .{ .name = null, .func = 0 }, // sentinel
+        };
+        lua.openlib(lua.getContext(), "WorldMarkers", &lib, 0);
     }
 }
 
@@ -160,14 +167,14 @@ const outline_files = if (build_opts.outline) [_]FileEntry{
     .{ .name = "Bindings.xml", .data = @embedFile("outline/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
-const markers_files = if (build_opts.markers) [_]FileEntry{
+const markers_files = if (build_opts.worldmarkers) [_]FileEntry{
     .{ .name = "Markers.toc", .data = @embedFile("markers/addon/Markers.toc") },
     .{ .name = "Markers.lua", .data = @embedFile("markers/addon/Markers.lua") },
     .{ .name = "Bindings.xml", .data = @embedFile("markers/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
 // Marker model + skin + textures served under Spells\ prefix
-const markers_spells_assets = if (build_opts.markers) [_]FileEntry{
+const markers_spells_assets = if (build_opts.worldmarkers) [_]FileEntry{
     // Models (5 colors)
     .{ .name = "Raid_UI_FX_Yellow.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Yellow.m2") },
     .{ .name = "Raid_UI_FX_Cyan.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Cyan.m2") },
@@ -188,18 +195,18 @@ const markers_spells_assets = if (build_opts.markers) [_]FileEntry{
 } else [_]FileEntry{};
 
 // Shared effect textures served under World\Expansion01\Doodads\Zulaman\Doors\ prefix
-const markers_world_assets = if (build_opts.markers) [_]FileEntry{
+const markers_world_assets = if (build_opts.worldmarkers) [_]FileEntry{
     .{ .name = "T_VFX_FIRE03_A.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_FIRE03_A.BLP") },
     .{ .name = "T_VFX_BORDER6.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_BORDER6.BLP") },
 } else [_]FileEntry{};
 
 // XYZ debug model (renamed to avoid collision with game's built-in xyz.m2)
-const markers_xyz_model = if (build_opts.markers) [_]FileEntry{
+const markers_xyz_model = if (build_opts.worldmarkers) [_]FileEntry{
     .{ .name = "WU_XYZ.m2", .data = @embedFile("markers/assets/Spells/WU_XYZ.m2") },
 } else [_]FileEntry{};
 
 // XYZ texture served under World\ArtTest\Boxtest\ (matches M2 internal reference)
-const markers_xyz_texture = if (build_opts.markers) [_]FileEntry{
+const markers_xyz_texture = if (build_opts.worldmarkers) [_]FileEntry{
     .{ .name = "xyz.blp", .data = @embedFile("markers/assets/Spells/xyz.blp") },
 } else [_]FileEntry{};
 
@@ -340,7 +347,7 @@ fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
         : [_] "{ecx}" (@intFromPtr(ctx)),
           [ftype] "r" (file_type),
           [func] "r" (@as(u32, 0x647290)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
 }
 
@@ -588,7 +595,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         // Call original CleanupFileHandleResources through the trampoline (bypasses our
         // detour). Must clean up file context before processLoadedModelData runs.
         con.fmt("[file]   cleanup via trampoline fh=0x{x}\n", .{file_handle});
-        cleanup_file_handle_hook.original()(file_handle);
+        cleanup_file_handle_hook.callOriginal(.{file_handle});
         con.print("[file]   cleanup done\n");
 
         // Dump model fields before processLoadedModelData
@@ -709,7 +716,7 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
             error_handler,
         );
     }
-    if (build_opts.markers and markers.isActive()) {
+    if (build_opts.worldmarkers and markers.isActive()) {
         callLoadFileListWithIncludes(
             "Interface\\AddOns\\Markers\\Markers.toc",
             &md5ctx,
@@ -732,7 +739,7 @@ fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_
           [_] "{edx}" (@intFromPtr(md5ctx)),
           [eh] "r" (error_handler),
           [func] "r" (@as(u32, 0x6EDB90)),
-        : .{ .eax = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
 }
 
@@ -749,7 +756,7 @@ fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u3
           [path] "r" (@intFromPtr(path)),
           [md5] "r" (@intFromPtr(md5ctx)),
           [cb] "r" (callback),
-        : .{ .eax = true, .memory = true, .cc = true }
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
     );
 }
 
@@ -796,13 +803,13 @@ const ModuleHooks = struct {
 /// Order matters: modules are installed top-to-bottom, removed bottom-to-top.
 /// Modules with remove_on_shutdown run their remove during shutdownDetour too.
 const modules = [_]ModuleHooks{
-    if (build_opts.assetfix) .{ .install = assetfix.installHooks, .remove = assetfix.removeHooks } else .{},
+    if (build_opts.looseassets) .{ .install = looseassets.installHooks, .remove = looseassets.removeHooks } else .{},
     if (build_opts.framecrash) .{ .install = framecrash.installHooks, .remove = framecrash.removeHooks } else .{},
     if (build_opts.combatlog) .{ .install = combatlog.installHooks, .remove = combatlog.removeHooks } else .{},
     if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},
     if (build_opts.minimapicons) .{ .install = minimapicons.installHooks, .remove = minimapicons.removeHooks } else .{},
     if (build_opts.healtextfix) .{ .install = healtextfix.installHooks, .remove = healtextfix.removeHooks } else .{},
-    if (build_opts.markers) .{ .install = markers.installHooks, .remove = markers.removeHooks } else .{},
+    if (build_opts.worldmarkers) .{ .install = markers.installHooks, .remove = markers.removeHooks } else .{},
     if (build_opts.interact) .{ .install = interact.installHooks, .remove = interact.removeHooks } else .{},
     if (build_opts.outline) .{ .remove = outline.cleanup } else .{},
     if (build_opts.screenshot) .{ .remove = screenshot.removeHook } else .{},
@@ -810,7 +817,7 @@ const modules = [_]ModuleHooks{
 
 fn shutdownDetour() callconv(sc) void {
     // Clear marker definitions on logout/exit (not on map change).
-    if (build_opts.markers) markers.onShutdown();
+    if (build_opts.worldmarkers) markers.onShutdown();
 
     // Clean up world objects BEFORE game shutdown — atexit handlers run before
     // DllMain so modules with remove_on_shutdown must destroy here.

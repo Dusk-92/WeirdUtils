@@ -12,7 +12,7 @@ On Turtle WoW, place your chosen DLLs next to your `WoW.exe` and add them to you
 
 ### World Markers
 
-Place up to 5 animated colored markers at any position in the world, useful for raid positioning, pull planning, or route marking.
+Place up to 5 animated colored markers at any position in the world, useful for raid positioning, pull planning, or route marking. Requires party/raid leader or raid assist.
 
 - `/worldmarker 1` through `/worldmarker 5` (or `/wm 1`) -- place a marker where your cursor is pointing
 - `/worldmarker 1 target` -- place a marker on a unit (player, target, mouseover, etc.)
@@ -21,14 +21,17 @@ Place up to 5 animated colored markers at any position in the world, useful for 
 
 Keybindings for placing each marker and clearing all markers are available in the Key Bindings menu.
 
+Markers automatically sync with group members who also have WeirdUtils installed. When a leader/assist places or clears a marker, all group members see it. Markers persist across zone transitions and respawn when you return to the area.
+
 Lua API for addon developers:
 
-- `WorldMarker(index)` -- place marker at cursor terrain position
+- `WorldMarker(index)` -- place marker at cursor terrain position (returns 1 on success, nil if no permission)
 - `WorldMarker(index, "unit")` -- place marker at a unit's position
 - `WorldMarker(index, x, y, z)` -- place marker at world coordinates
-- `ClearWorldMarker(index)` / `ClearWorldMarker()` -- remove one or all markers
+- `ClearWorldMarker(index)` / `ClearWorldMarker()` -- remove one or all markers (returns 1 on success, nil if no permission)
+- `CanSetWorldMarkers()` -- returns 1 if the local player is party/raid leader or raid assist, nil otherwise
 
-**DLL:** `markers.dll`
+**DLL:** `worldmarkers.dll`
 
 ---
 
@@ -83,7 +86,7 @@ Prevents a class of crashes caused by stale UI frame anchor pointers. No configu
 
 ### Transmog Fix
 
-Eliminates FPS lag spikes caused by rapid equipment visual updates during transmog changes. No configuration needed, install and forget.
+Eliminates FPS drops caused by rapid equipment visual updates when transmogged items lose durability. No configuration needed, install and forget.
 
 **DLL:** `transmogfix.dll`
 
@@ -91,9 +94,15 @@ Eliminates FPS lag spikes caused by rapid equipment visual updates during transm
 
 ### Custom Assets
 
-Enables loading loose asset files (textures, models) from disk without repacking MPQ archives. Also supports multi-character patch archive names. No configuration needed, install and forget.
+Enables loading loose game asset files (models, textures, etc.) from the `Data/` directory without repacking MPQ archives. Place files in `Data/` mirroring the game's internal paths (e.g. `Data/Character/Troll/Female/TrollFemale.m2`) and they will be used instead of the MPQ version.
 
-**DLL:** `assetfix.dll`
+At startup, recursively scans `Data/` and indexes all non-MPQ files into an O(1) hash set, so loose file lookups are as fast as MPQ lookups.
+
+Also allows multi-character patch archive names (e.g. `patch-12.mpq`, `patch-jimbo.mpq`). Patch archives are sorted case-insensitively by filename — last in the sort gets highest priority, and all patches override the base archives.
+
+No configuration needed, install and forget.
+
+**DLL:** `looseassets.dll`
 
 ---
 

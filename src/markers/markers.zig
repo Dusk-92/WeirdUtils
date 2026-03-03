@@ -5,15 +5,19 @@
 //! Markers persist across zone transitions via MarkerDef definitions.
 //! Entities are respawned automatically when the player approaches within 200y.
 //!
-//! Lua API:
+//! Lua API (globals):
 //!   WorldMarker(index, x, y, z)     — place marker at coordinates
 //!   WorldMarker(index, "unit")      — place marker at unit's position
 //!   WorldMarker(index)              — place marker at cursor terrain position
 //!   ClearWorldMarker(index)         — remove specific marker (1-5)
 //!   ClearWorldMarker()              — remove all markers
-//!   SetMarkerDef(i, x, y, z, area) — store definition (no immediate spawn)
-//!   ClearMarkerDef([index])         — clear definition (and entity)
-//!   GetMarkerDef(index)             — returns x, y, z, areaId or nil
+//!   CanSetWorldMarkers()            — returns 1 if leader/assist, nil otherwise
+//!
+//! Lua API (WorldMarkers table — internal, used by addon):
+//!   WorldMarkers.SetMarkerDef(i, x, y, z, area, sender)
+//!   WorldMarkers.SetMarkerDefSync(i, x, y, z, area, sender)
+//!   WorldMarkers.ClearMarkerDef([index,] sender)
+//!   WorldMarkers.GetMarkerDef(index) — returns x, y, z, areaId or nil
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -151,7 +155,7 @@ fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
         : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
           [a] "r" (&stack_args),
           [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
-        : .{ .edx = true, .memory = true, .cc = true });
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
     return if (result != 0) @ptrFromInt(result) else null;
 }
 
@@ -340,7 +344,7 @@ fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u
           [_] "{edx}" (@intFromPtr(pos)),
           [a] "r" (&stack_args),
           [func] "r" (o.FN_CREATE_ENTITY_INSTANCE),
-        : .{ .memory = true, .cc = true });
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 
     return if (result != 0) @ptrFromInt(result) else null;
 }
@@ -351,7 +355,7 @@ fn cleanupEntity(obj: *anyopaque) void {
         :
         : [_] "{ecx}" (@intFromPtr(obj)),
           [func] "r" (o.FN_CLEANUP_ENTITY),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -389,7 +393,7 @@ fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
         : [_] "{ecx}" (model),
           [a] "r" (&stack_args),
           [func] "r" (o.FN_PLAY_BONE_ANIMATION),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 /// Clean up despawning entities whose Decay animation has finished.
@@ -800,7 +804,7 @@ pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
     return 4;
 }
 
-/// Lua: local ok = CanSetMarkers()
+/// Lua: local ok = CanSetWorldMarkers()
 /// Returns 1 if the local player has permission (leader/assist), nil otherwise.
 /// Used by the addon for broadcast/sync decisions.
 pub fn luaCanSetMarkers(L: lua.State) callconv(.c) u32 {
@@ -811,13 +815,7 @@ pub fn luaCanSetMarkers(L: lua.State) callconv(.c) u32 {
     return 0;
 }
 
-/// Lua: local areaId = GetCurrentAreaId()
-/// Returns the current zone area ID from the game global.
-pub fn luaGetCurrentAreaId(L: lua.State) callconv(.c) u32 {
-    const area_id = hook.readMem(u32, o.ZONE_AREA_ID);
-    lua.pushnumber(L, @floatCast(@as(f64, @floatFromInt(area_id))));
-    return 1;
-}
+
 
 // =============================================================================
 // World teardown hook

@@ -20,7 +20,7 @@ end
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
 --   SetMarkerDef/ClearMarkerDef: DLL checks sender name against roster.
---   CanSetMarkers(): DLL returns 1 if local player has permission.
+--   CanSetWorldMarkers(): DLL returns 1 if local player has permission.
 -- =============================================================================
 
 local MSG_PREFIX = "WMark"
@@ -63,7 +63,7 @@ local function broadcastAllDefs()
     if not ch then return end
     local count = 0
     for i = 1, NUM_MARKERS do
-        local x, y, z, areaId = GetMarkerDef(i)
+        local x, y, z, areaId = WorldMarkers.GetMarkerDef(i)
         if x then
             local msg = "SF:" .. i .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
             log("SEND [" .. ch .. "] " .. msg)
@@ -110,7 +110,7 @@ function WorldMarker(index, ...)
     denyCount = 0
     local ch = getChannel()
     if ch then
-        local x, y, z, areaId = GetMarkerDef(index)
+        local x, y, z, areaId = WorldMarkers.GetMarkerDef(index)
         if x then
             broadcastPlace(index, x, y, z, areaId)
         end
@@ -185,7 +185,7 @@ local function onAddonMessage(prefix, message, channel, sender)
     if cmd == "SR" then
         -- Normal sync request: only leader/assist responds
         log("  sync request from " .. tostring(sender))
-        if CanSetMarkers() then
+        if CanSetWorldMarkers() then
             broadcastAllDefs()
         end
         return
@@ -205,7 +205,7 @@ local function onAddonMessage(prefix, message, channel, sender)
         end
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            SetMarkerDefSync(idx, x, y, z, areaId, sender)
+            WorldMarkers.SetMarkerDefSync(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
         end
@@ -216,17 +216,17 @@ local function onAddonMessage(prefix, message, channel, sender)
     if cmd == "P" then
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            SetMarkerDef(idx, x, y, z, areaId, sender)
+            WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
         end
     elseif cmd == "C" then
         local idx = tonumber(parts[2])
         if idx then
-            ClearMarkerDef(idx, sender)
+            WorldMarkers.ClearMarkerDef(idx, sender)
         end
     elseif cmd == "CA" then
-        ClearMarkerDef(sender)
+        WorldMarkers.ClearMarkerDef(sender)
     else
         log("  unknown: " .. tostring(cmd))
     end
@@ -244,7 +244,7 @@ local function broadcastSyncRequest()
     end
     -- Reset first-responder lock before requesting
     syncSender = nil
-    local cmd = CanSetMarkers() and "LSR" or "SR"
+    local cmd = CanSetWorldMarkers() and "LSR" or "SR"
     log("SEND [" .. ch .. "] " .. cmd)
     SendAddonMessage(MSG_PREFIX, cmd, ch)
 end
@@ -302,7 +302,7 @@ rosterTimer:SetScript("OnUpdate", function()
         rosterTimer.pending = false
         rosterTimer.extensions = 0
         log("roster timer fired, broadcasting")
-        if CanSetMarkers() then
+        if CanSetWorldMarkers() then
             broadcastAllDefs()
         end
     end
