@@ -1,7 +1,7 @@
 ## Interface: 11200
-## Title: Markers
-## Notes: Client-side raid markers and indicators
+## Title: WorldMarkers
+## Notes: Client-side world markers
 ## Version: 1.0
 ## Dependencies: WeirdUtils
 
-Markers.lua
+WorldMarkers.lua

@@ -1,0 +1,150 @@
+# Releasing WeirdUtils
+
+> **Remote:** https://codeberg.org/MarcelineVQ/WeirdUtils
+
+## How the remote repo works
+
+This project is developed entirely locally. The remote repo is **only** a
+distribution point for releases — no source code is pushed.
+
+The remote `main` branch contains a single file: `README.md` (built from the
+local `DLL_README.md`). This must be set up once when creating the repo:
+
+```sh
+tea repo create --name WeirdUtils --description "Vanilla WoW 1.12.1 utility DLLs" --login MarcelineVQ
+```
+
+Codeberg disables releases on new repos by default. Enable via API:
+
+```sh
+curl -s -X PATCH \
+  -H "Authorization: token <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"has_releases":true}' \
+  "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils"
+```
+
+Then push the initial README:
+
+```sh
+# In a temporary directory:
+git init && git remote add origin ssh://git@codeberg.org/MarcelineVQ/WeirdUtils.git && git checkout -b main
+cp /path/to/weirdutils/DLL_README.md README.md
+git add README.md
+git commit -m "Add README"
+git push origin main
+```
+
+After that, the remote `main` only needs updating when `DLL_README.md` changes.
+
+## 1. Build DLLs
+
+Decide which modules to include in this release. Check `build.zig` for the
+current list of module flags (`b.option(bool, ...)` declarations) and their
+defaults. List them with:
+
+```sh
+zig build --help 2>&1 | grep 'Enable'
+```
+
+### Combined DLL
+
+Build `weirdutils.dll` with only the modules for this release. Explicitly
+disable everything not being included — defaults may enable modules you don't
+want:
+
+```sh
+# Example: only transmogfix + customassets + healtextfix
+zig build -Doptimize=ReleaseSmall \
+  -Dscreenshot=false -Dinteract=false -Doutline=false \
+  -Dworldmarkers=false -Dframecrash=false -Dcombatlog=false \
+  -Dminimapicons=false \
+  -Dtransmogfix=true -Dcustomassets=true -Dhealtextfix=true
+```
+
+### Individual variant DLLs
+
+```sh
+zig build all-variants -Doptimize=ReleaseSmall
+```
+
+This builds all variants — you only attach the ones for this release.
+
+### Output locations
+
+| Artifact | Path |
+|----------|------|
+| Combined DLL | `zig-out/bin/weirdutils.dll` |
+| Variant DLLs | `zig-out/variants/<name>.dll` |
+
+Verify:
+
+```sh
+ls -lh zig-out/bin/weirdutils.dll zig-out/variants/*.dll
+```
+
+## 2. Update the remote README
+
+The remote README should match the features in this release. Start from
+`DLL_README.md` and remove the sections for modules not being released —
+keep the header, install instructions, and included feature sections exactly
+as they are.
+
+```sh
+# from a clone or worktree of the remote repo
+# edit README.md: remove sections for modules not in this release
+git add README.md
+git commit -m "Update README for vX.Y.Z"
+git push origin main
+```
+
+## 3. Write the release notes
+
+Use this template — fill in the sections that apply, delete the rest:
+
+```markdown
+## What's New
+
+- ...
+
+## Bug Fixes
+
+- ...
+
+## Module Changes
+
+- ...
+
+## Notes
+
+- Place DLLs next to `WoW.exe` and add to `dlls.txt`
+- `weirdutils.dll` includes all features; individual DLLs are also provided
+```
+
+## 4. Create the release and upload DLLs
+
+Uses `tea` (Gitea/Forgejo CLI) which handles release creation, tagging, and
+asset upload in one command. The tag is created on the remote automatically.
+
+Run from a clone of the remote repo, or specify `--repo` explicitly.
+Only attach the combined DLL and the variant DLLs for modules in this release:
+
+```sh
+# Example: transmogfix + customassets + healtextfix release
+tea release create \
+  --repo MarcelineVQ/WeirdUtils \
+  --tag vX.Y.Z \
+  --target main \
+  --title "vX.Y.Z" \
+  --note-file release-notes.md \
+  --asset zig-out/bin/weirdutils.dll \
+  --asset zig-out/variants/transmogfix.dll \
+  --asset zig-out/variants/customassets.dll \
+  --asset zig-out/variants/healtextfix.dll
+```
+
+## Checklist
+
+- [ ] Built with `ReleaseSmall` (both default and `all-variants`)
+- [ ] Remote README updated (if `DLL_README.md` changed)
+- [ ] Release created and DLLs uploaded via `tea`

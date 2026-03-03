@@ -102,7 +102,7 @@ Patch archives are sorted case-insensitively by filename — last in the sort ge
 
 No configuration needed, install and forget.
 
-**DLL:** `dataassets.dll`
+**DLL:** `customassets.dll`
 
 ---
 
@@ -111,3 +111,11 @@ No configuration needed, install and forget.
 Fixes duplicate floating heal numbers caused by SuperWoW 1.5. Only relevant if you use SuperWoW. No configuration needed, install and forget.
 
 **DLL:** `healtextfix.dll`
+
+---
+
+## Why No Source Code?
+
+This project is distributed as pre-built DLLs only. The source code is not and will not be made publicly available.
+
+These DLLs work by hooking deeply into the game client's internals — memory layout, function addresses, rendering pipeline, input handling, and more. While every feature here is built for legitimate quality-of-life use, the underlying techniques touch on too many core mechanisms that are trivially abusable. Publishing the source would be handing a candy store to bad actors: the same hooks and patterns used to render a raid marker or fix a crash can be repurposed for cheats, exploits, and in particular automation with minimal effort.

@@ -12,7 +12,7 @@ const build_opts = struct {
     const combatlog = @import("build_options").enable_combatlog;
     const minimapicons = @import("build_options").enable_minimapicons;
     const transmogfix = @import("build_options").enable_transmogfix;
-    const dataassets = @import("build_options").enable_dataassets;
+    const customassets = @import("build_options").enable_customassets;
     const healtextfix = @import("build_options").enable_healtextfix;
 };
 
@@ -25,7 +25,7 @@ const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig
 const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") else struct {};
 const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
 const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix.zig") else struct {};
-const dataassets = if (build_opts.dataassets) @import("dataassets/dataassets.zig") else struct {};
+const customassets = if (build_opts.customassets) @import("customassets/customassets.zig") else struct {};
 const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -168,8 +168,8 @@ const outline_files = if (build_opts.outline) [_]FileEntry{
 } else [_]FileEntry{};
 
 const markers_files = if (build_opts.worldmarkers) [_]FileEntry{
-    .{ .name = "Markers.toc", .data = @embedFile("markers/addon/Markers.toc") },
-    .{ .name = "Markers.lua", .data = @embedFile("markers/addon/Markers.lua") },
+    .{ .name = "WorldMarkers.toc", .data = @embedFile("markers/addon/Markers.toc") },
+    .{ .name = "WorldMarkers.lua", .data = @embedFile("markers/addon/Markers.lua") },
     .{ .name = "Bindings.xml", .data = @embedFile("markers/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
@@ -216,7 +216,7 @@ const addon_prefixes = [_]AddonPrefix{
     .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
     .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
     .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
-    .{ .prefix = "Interface\\AddOns\\Markers\\", .files = &markers_files },
+    .{ .prefix = "Interface\\AddOns\\WorldMarkers\\", .files = &markers_files },
     .{ .prefix = "Spells\\", .files = &markers_spells_assets },
     .{ .prefix = "Spells\\", .files = &markers_xyz_model },
     .{ .prefix = "World\\Expansion01\\Doodads\\Zulaman\\Doors\\", .files = &markers_world_assets },
@@ -718,12 +718,12 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         callLoadFileListWithIncludes(
-            "Interface\\AddOns\\Markers\\Markers.toc",
+            "Interface\\AddOns\\WorldMarkers\\WorldMarkers.toc",
             &md5ctx,
             error_handler,
         );
         callLoadUIBindingsFromFile(
-            "Interface\\AddOns\\Markers\\Bindings.xml",
+            "Interface\\AddOns\\WorldMarkers\\Bindings.xml",
             &md5ctx,
             error_handler,
         );
@@ -803,7 +803,7 @@ const ModuleHooks = struct {
 /// Order matters: modules are installed top-to-bottom, removed bottom-to-top.
 /// Modules with remove_on_shutdown run their remove during shutdownDetour too.
 const modules = [_]ModuleHooks{
-    if (build_opts.dataassets) .{ .install = dataassets.installHooks, .remove = dataassets.removeHooks } else .{},
+    if (build_opts.customassets) .{ .install = customassets.installHooks, .remove = customassets.removeHooks } else .{},
     if (build_opts.framecrash) .{ .install = framecrash.installHooks, .remove = framecrash.removeHooks } else .{},
     if (build_opts.combatlog) .{ .install = combatlog.installHooks, .remove = combatlog.removeHooks } else .{},
     if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},

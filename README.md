@@ -41,7 +41,7 @@ Users can pick the full package or grab only the features they want.
 
 ```zig
 // build.zig options (planned)
-const enable_dataassets = b.option(bool, "dataassets", "Enable loose file loading & permissive patch glob") orelse true;
+const enable_customassets = b.option(bool, "customassets", "Enable loose file loading & permissive patch glob") orelse true;
 const enable_transmogfix = b.option(bool, "transmogfix", "Enable transmog coalesce fix") orelse true;
 const enable_interact = b.option(bool, "interact", "Enable interact helpers") orelse true;
 const enable_outline = b.option(bool, "outline", "Enable outline rendering") orelse true;
@@ -52,14 +52,14 @@ const enable_outline = b.option(bool, "outline", "Enable outline rendering") ore
 zig build
 
 # Single-feature builds — one DLL per feature for individual distribution
-zig build -Ddataassets=true -Dtransmogfix=false -Dinteract=false -Doutline=false
-zig build -Ddataassets=false -Dtransmogfix=true -Dinteract=false -Doutline=false
+zig build -Dcustomassets=true -Dtransmogfix=false -Dinteract=false -Doutline=false
+zig build -Dcustomassets=false -Dtransmogfix=true -Dinteract=false -Doutline=false
 # etc.
 ```
 
 Release artifacts:
 - `weirdutils.dll` — everything
-- `dataassets.dll` — just asset/MPQ fixes
+- `customassets.dll` — just asset/MPQ fixes
 - `transmogfix.dll` — just transmog coalesce
 - `interact.dll` — just interact/loot helpers
 - `outline.dll` — just outline rendering
@@ -69,14 +69,14 @@ All built from this repo, all sharing the same hook library and codebase.
 ### Per-Feature Named Mutex
 
 A user might load the full DLL alongside one of the smaller single-feature DLLs
-(e.g. they use `weirdutils.dll` for everything but also have `dataassets.dll` from
+(e.g. they use `weirdutils.dll` for everything but also have `customassets.dll` from
 before they switched). Each feature module claims a **named mutex** on load — if
 it's already held, that module skips hook installation. This way any combination
 of DLLs coexists safely with no duplicate hooks.
 
 ```zig
 // Each module creates a process-specific named mutex on init
-const mutex = CreateMutexA(null, 1, "Local\\WeirdUtils_DataAssets_{pid}");
+const mutex = CreateMutexA(null, 1, "Local\\WeirdUtils_CustomAssetsHook_{pid}");
 if (GetLastError() == ERROR_ALREADY_EXISTS) {
     // Another DLL already owns this feature's hooks — skip
     CloseHandle(mutex);
@@ -127,7 +127,7 @@ gh release create v1.0 --repo YourName/WeirdUtils \
   --title "v1.0" --notes "Release notes" \
   ./zig-out/lib/weirdutils.dll \
   ./builds/outline.dll \
-  ./builds/dataassets.dll
+  ./builds/customassets.dll
 ```
 
 ## Project Structure

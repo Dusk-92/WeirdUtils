@@ -1,9 +1,9 @@
--- Markers addon (embedded in DLL, loaded from memory)
--- Part of WeirdUtils - only loaded when markers module is compiled
+-- WorldMarkers addon (embedded in DLL, loaded from memory)
+-- Part of WeirdUtils - only loaded when worldmarkers module is compiled
 
-MARKERS_VERSION = 4
+WORLDMARKERS_VERSION = 4
 
-BINDING_HEADER_MARKERS = "Markers"
+BINDING_HEADER_WORLDMARKERS = "World Markers"
 
 -- =============================================================================
 -- Debug logging
@@ -343,7 +343,7 @@ frame:RegisterEvent("RAID_ROSTER_UPDATE")
 
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00Markers|r v" .. MARKERS_VERSION .. " loaded")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00WorldMarkers|r v" .. WORLDMARKERS_VERSION .. " loaded")
         lastGroupSize = getGroupSize()
         scheduleSyncRequest()
     elseif event == "CHAT_MSG_ADDON" then

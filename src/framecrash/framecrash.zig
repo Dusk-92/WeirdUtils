@@ -627,7 +627,7 @@ fn restoreVtableSlot(slot_addr: usize, saved: *usize) void {
 pub fn installHooks() void {
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\FramecrashHook_{d}", .{GetCurrentProcessId()}) catch return;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_FramecrashHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
