@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     const enable_combatlog = b.option(bool, "combatlog", "Enable combat log freshness") orelse true;
     const enable_minimapicons = b.option(bool, "minimapicons", "Enable custom minimap icons") orelse true;
     const enable_transmogfix = b.option(bool, "transmogfix", "Enable transmog update coalescing") orelse true;
-    const enable_looseassets = b.option(bool, "looseassets", "Enable loose file loading & permissive patch glob") orelse true;
+    const enable_dataassets = b.option(bool, "dataassets", "Enable loose file loading & permissive patch glob") orelse true;
     const enable_healtextfix = b.option(bool, "healtextfix", "Enable SuperWoW heal text fix") orelse true;
 
     // Create build options module
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_combatlog", enable_combatlog);
     build_options.addOption(bool, "enable_minimapicons", enable_minimapicons);
     build_options.addOption(bool, "enable_transmogfix", enable_transmogfix);
-    build_options.addOption(bool, "enable_looseassets", enable_looseassets);
+    build_options.addOption(bool, "enable_dataassets", enable_dataassets);
     build_options.addOption(bool, "enable_healtextfix", enable_healtextfix);
     const build_options_module = build_options.createModule();
 
@@ -60,19 +60,19 @@ pub fn build(b: *std.Build) void {
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
     // Helper to create a single-module build
-    const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, worldmarkers: bool, framecrash: bool, combatlog: bool, minimapicons: bool, transmogfix: bool, looseassets: bool, healtextfix: bool };
+    const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, worldmarkers: bool, framecrash: bool, combatlog: bool, minimapicons: bool, transmogfix: bool, dataassets: bool, healtextfix: bool };
     inline for (&[_]Variant{
-        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .worldmarkers = true, .framecrash = true, .combatlog = true, .minimapicons = true, .transmogfix = true, .looseassets = true, .healtextfix = true },
-        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "worldmarkers", .screenshot = false, .interact = false, .outline = false, .worldmarkers = true, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = false, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "combatlog", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = true, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "minimapicons", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = false, .minimapicons = true, .transmogfix = false, .looseassets = false, .healtextfix = false },
-        .{ .name = "transmogfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = true, .looseassets = false, .healtextfix = false },
-        .{ .name = "looseassets", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .looseassets = true, .healtextfix = false },
-        .{ .name = "healtextfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .looseassets = false, .healtextfix = true },
+        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .worldmarkers = true, .framecrash = true, .combatlog = true, .minimapicons = true, .transmogfix = true, .dataassets = true, .healtextfix = true },
+        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .worldmarkers = false, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "worldmarkers", .screenshot = false, .interact = false, .outline = false, .worldmarkers = true, .framecrash = true, .combatlog = true, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = false, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "combatlog", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = true, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "minimapicons", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .combatlog = false, .minimapicons = true, .transmogfix = false, .dataassets = false, .healtextfix = false },
+        .{ .name = "transmogfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = true, .dataassets = false, .healtextfix = false },
+        .{ .name = "dataassets", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .dataassets = true, .healtextfix = false },
+        .{ .name = "healtextfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .combatlog = false, .minimapicons = false, .transmogfix = false, .dataassets = false, .healtextfix = true },
     }) |variant| {
         const opts = b.addOptions();
         opts.addOption(bool, "enable_screenshot", variant.screenshot);
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
         opts.addOption(bool, "enable_combatlog", variant.combatlog);
         opts.addOption(bool, "enable_minimapicons", variant.minimapicons);
         opts.addOption(bool, "enable_transmogfix", variant.transmogfix);
-        opts.addOption(bool, "enable_looseassets", variant.looseassets);
+        opts.addOption(bool, "enable_dataassets", variant.dataassets);
         opts.addOption(bool, "enable_healtextfix", variant.healtextfix);
 
         const variant_lib = b.addLibrary(.{

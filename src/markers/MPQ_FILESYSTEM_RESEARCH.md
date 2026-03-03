@@ -408,9 +408,9 @@ A minimal V1 MPQ for ~20 uncompressed files requires:
 
 The hash table uses a specific encryption algorithm (documented in wowdev.wiki and StormLib source). Could implement in Zig comptime or use a build-time tool.
 
-### Loose Assets Synergy
+### Data Assets Synergy
 
-The [looseassets project](/media/storage/projects/zig/looseassets/) already implements the glob pattern patch (`0x82edc2: '?' → '*'`) for multi-character patch names. If combined with looseassets, the temp file could use any name like `patch-weirdutils.MPQ`.
+The [dataassets project](/media/storage/projects/zig/dataassets/) already implements the glob pattern patch (`0x82edc2: '?' → '*'`) for multi-character patch names. If combined with dataassets, the temp file could use any name like `patch-weirdutils.MPQ`.
 
 ---
 
@@ -532,11 +532,11 @@ If we could insert entries into this hash table mapping our asset paths to disk 
 
 ---
 
-## Approach D: CheckFileExistence Hook (looseassets Pattern)
+## Approach D: CheckFileExistence Hook (dataassets Pattern)
 
 ### Concept
 
-The [looseassets project](/media/storage/projects/zig/looseassets/) takes a different approach entirely:
+The [dataassets project](/media/storage/projects/zig/dataassets/) takes a different approach entirely:
 
 1. **NOP two gates** in `File_FindInArchive` (0x654b5c, 0x654b6a) that restrict `CheckFileExistence` to only "Interface/AddOns" paths
 2. **Hook `CheckFileExistence`** (0x654DD0) to check a hash map of loose disk files
@@ -544,7 +544,7 @@ The [looseassets project](/media/storage/projects/zig/looseassets/) takes a diff
 
 This works for **disk-based** loose files but not for in-memory embedded data. However, combined with writing temp files to disk, it provides a clean single-hook solution.
 
-### Key Addresses (from looseassets)
+### Key Addresses (from dataassets)
 
 | Target | Address | Patch |
 |--------|---------|-------|
@@ -564,7 +564,7 @@ This works for **disk-based** loose files but not for in-memory embedded data. H
 | Fake contexts | ~20 | **0** | 0 | 1 | 0 | 0 |
 | Async handling | Manual | **Native** | Native | Uncertain | Native | Native |
 | Build complexity | Low | **Low** | Medium (MPQ builder) | Medium (MPQ builder) | High (struct RE) | Low |
-| RE work needed | Done | **Minimal** (verify path redirect) | Archive_OpenUnified conv | Same as A + async verify | Full struct layout | Already done (looseassets) |
+| RE work needed | Done | **Minimal** (verify path redirect) | Archive_OpenUnified conv | Same as A + async verify | Full struct layout | Already done (dataassets) |
 | Risk | Proven but fragile | **Low** (real OS handles) | Low (native I/O) | Medium (async path?) | High (struct mismatch) | Low |
 | Cleanup needed | None | **Auto** (DELETE_ON_CLOSE) | Delete temp file | None | Remove from array | Delete temp files |
 | Purely in-memory | Yes | Mostly (cache-backed) | No | Yes | Yes | No |
@@ -595,9 +595,9 @@ This works for **disk-based** loose files but not for in-memory embedded data. H
 
 If a single-file solution is preferred over ~20 temp files, building a real MPQ and registering it via `Archive_OpenUnified` eliminates all hooks entirely. The cost is implementing an MPQ V1 builder (hash table encryption, block table, header). Could be combined with Approach E: use temp files now, migrate to MPQ later.
 
-### Worth Combining With: Loose Assets Integration
+### Worth Combining With: Data Assets Integration
 
-The looseassets project's `CheckFileExistence` hook and glob pattern patch could complement either approach, especially for supporting user-provided loose asset files alongside our embedded ones.
+The dataassets project's `CheckFileExistence` hook and glob pattern patch could complement either approach, especially for supporting user-provided loose asset files alongside our embedded ones.
 
 ---
 
@@ -687,6 +687,6 @@ The looseassets project's `CheckFileExistence` hook and glob pattern patch could
 | Archive search critsec | 0xc54008 | Critical section for archive ops |
 | Archive search state | 0xc53ff0 | Used by File_FindInArchive |
 | Patch glob "patch-?.MPQ" | 0x82edbc | Glob pattern for patch discovery |
-| Patch glob char | 0x82edc2 | The '?' byte (looseassets patches to '*') |
+| Patch glob char | 0x82edc2 | The '?' byte (dataassets patches to '*') |
 | Data path format | 0x82edc8 | `"Data\%s"` format string |
 | SArchive RTTI | 0x82e248 | `".PAVSArchive@@"` |

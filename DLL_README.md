@@ -92,17 +92,17 @@ Eliminates FPS drops caused by rapid equipment visual updates when transmogged i
 
 ---
 
-### Custom Assets
+### Custom Data/ Assets
 
 Enables loading loose game asset files (models, textures, etc.) from the `Data/` directory without repacking MPQ archives. Place files in `Data/` mirroring the game's internal paths (e.g. `Data/Character/Troll/Female/TrollFemale.m2`) and they will be used instead of the MPQ version.
 
-At startup, recursively scans `Data/` and indexes all non-MPQ files into an O(1) hash set, so loose file lookups are as fast as MPQ lookups.
+Also allows multi-character patch archive names (e.g. `patch-12.mpq`, `patch-jimbo.mpq`).
 
-Also allows multi-character patch archive names (e.g. `patch-12.mpq`, `patch-jimbo.mpq`). Patch archives are sorted case-insensitively by filename — last in the sort gets highest priority, and all patches override the base archives.
+Patch archives are sorted case-insensitively by filename — last in the sort gets highest priority, and all patches override the base archives.
 
 No configuration needed, install and forget.
 
-**DLL:** `looseassets.dll`
+**DLL:** `dataassets.dll`
 
 ---
 

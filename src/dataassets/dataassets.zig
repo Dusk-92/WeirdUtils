@@ -1,5 +1,5 @@
 // =============================================================================
-// looseassets - Loose file loading & permissive patch glob
+// dataassets - Loose file loading & permissive patch glob
 // =============================================================================
 //
 // 1. Patches patch-?.MPQ → patch-*.MPQ so multi-char patch names work
@@ -192,7 +192,7 @@ fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u3
     if (filename_ptr != 0) {
         if (looseFilesLookup(filename_ptr)) |disk_path| {
             const raw: [*]const u8 = @ptrFromInt(filename_ptr);
-            con.fmt("[looseassets] loose hit: \"{s}\"\n", .{raw[0..cStrLen(raw)]});
+            con.fmt("[dataassets] loose hit: \"{s}\"\n", .{raw[0..cStrLen(raw)]});
 
             if (output_buffer_ptr != 0) {
                 const disk_len = cStrLen(disk_path);
@@ -281,11 +281,11 @@ var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
 pub fn installHooks() void {
-    con.print("[looseassets] Module loaded\n");
+    con.print("[dataassets] Module loaded\n");
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\LooseassetsHook_{d}", .{GetCurrentProcessId()}) catch return;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\DataAssetsHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
@@ -295,7 +295,7 @@ pub fn installHooks() void {
         _ = CloseHandle(g_mutex.?);
         g_mutex = null;
         g_is_hook_owner = false;
-        con.print("[looseassets] Another DLL owns hooks (mutex taken), skipping\n");
+        con.print("[dataassets] Another DLL owns hooks (mutex taken), skipping\n");
         return;
     }
     g_is_hook_owner = true;
