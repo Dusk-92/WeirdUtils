@@ -95,35 +95,32 @@ fn getPlayerGUID() u64 {
     return (@as(u64, hi) << 32) | lo;
 }
 
-/// Look up a unit name by GUID — two-step approach matching perfboost:
-///   1. GetObjectPtr (0x464870) — __stdcall(u64 guid) → object ptr in EAX
-///   2. CGUnit_C::GetUnitName (0x609210) — __thiscall(ECX=unit, stack: 0) → char*
-fn getNameFromGUID(guid: u64) ?[*:0]const u8 {
-    if (guid == 0) return null;
-
-    // Step 1: GUID → object pointer via __stdcall (GUID pushed on stack as 8 bytes)
-    const guid_lo: u32 = @truncate(guid);
-    const guid_hi: u32 = @truncate(guid >> 32);
-    const obj: u32 = asm volatile (
-        \\ push %[hi]
-        \\ push %[lo]
-        \\ call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [lo] "r" (guid_lo),
-          [hi] "r" (guid_hi),
-          [func] "r" (@as(u32, o.FN_GET_OBJECT_PTR)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
-    if (obj == 0) return null;
-
-    // Step 2: object pointer → name (__thiscall: ECX=this, push flag=0)
+/// Look up a player name from the name cache by GUID.
+/// Calls RetrieveNPCDataFromCache — __thiscall(ECX=cache), 6 stack params, RET 0x18.
+/// Available before the object manager is populated (unlike GetObjectPtr → GetUnitName).
+fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
+    if (guid_lo == 0 and guid_hi == 0) return null;
+    var name_buf: [2]u32 = .{ 0, 0 };
+    const stack_args = [6]u32{
+        guid_lo,
+        guid_hi,
+        @intFromPtr(&name_buf),
+        0, 0, 0,
+    };
     const result: u32 = asm volatile (
-        \\ push $0
+        \\ push 20(%[a])
+        \\ push 16(%[a])
+        \\ push 12(%[a])
+        \\ push 8(%[a])
+        \\ push 4(%[a])
+        \\ push (%[a])
         \\ call *%[func]
         : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (obj),
-          [func] "r" (@as(u32, o.FN_GET_UNIT_NAME)),
+        : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
+          [a] "r" (&stack_args),
+          [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
         : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
-    return if (result != 0 and result >= 0x10000) @ptrFromInt(result) else null;
+    return if (result != 0) @ptrFromInt(result) else null;
 }
 
 // =============================================================================
@@ -141,12 +138,11 @@ fn maybeWriteSessionMarker() void {
 
     const player_guid = getPlayerGUID();
     if (player_guid == 0) return;
+    const guid_lo: u32 = @truncate(player_guid);
+    const guid_hi: u32 = @truncate(player_guid >> 32);
 
-    const name = getNameFromGUID(player_guid) orelse {
-        // TODO: If player name is unavailable at this point (e.g.
-        // LoggingCombat enabled before login), could hook OnWorldUpdate for a
-        // per-frame retry until name is available.
-        con.print("[combatlog] session marker: player name not yet available\n");
+    const name = getNameFromGUID(guid_lo, guid_hi) orelse {
+        con.print("[combatlog] session marker: player name not in cache yet\n");
         return;
     };
 

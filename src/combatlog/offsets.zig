@@ -32,16 +32,16 @@ pub const FN_WRITE_FMT_LOG_MSG: usize = 0x0065ac20;
 pub const FN_ENABLE_CHAT_LOGGING: usize = 0x0049fe50;
 
 // =============================================================================
-// Player identity (shared with markers module)
+// Player identity
 // =============================================================================
 
 /// GetPlayerGUID — __fastcall(), no params, returns EAX(low):EDX(high).
 pub const FN_GET_PLAYER_GUID: usize = 0x00468550;
 
-/// GetObjectPtr — __stdcall(u64 guid) → object ptr in EAX.
-/// GUID is pushed on the stack as 8 bytes. (perfboost: 0x464870)
-pub const FN_GET_OBJECT_PTR: usize = 0x00464870;
+/// RetrieveNPCDataFromCache — __thiscall(ECX=cache_obj), 6 stack params, RET 0x18.
+/// (guid_low, guid_high, name_buf_ptr, 0, 0, 0) → char* name or NULL in EAX.
+/// Resolves player/NPC names from the name cache — available before the object manager.
+pub const FN_NAME_CACHE_LOOKUP: usize = 0x0055f080;
 
-/// CGUnit_C::GetUnitName — __thiscall(ECX=unit_ptr, stack: flag=0) → char* in EAX.
-/// (perfboost: 0x609210)
-pub const FN_GET_UNIT_NAME: usize = 0x00609210;
+/// Name cache object — static instance passed as ECX (this) to RetrieveNPCDataFromCache.
+pub const NAME_CACHE_OBJ: usize = 0x00c0e228;
