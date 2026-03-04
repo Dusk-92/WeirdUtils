@@ -99,8 +99,15 @@ var g_session_realm_len: usize = 0;
 /// True once paths have been configured for this login session.
 var g_paths_configured: bool = false;
 
-/// Session marker written flag.
-var g_session_marker_written: bool = false;
+/// Per-log-type session marker flags.
+var g_combat_marker_written: bool = false;
+var g_chat_marker_written: bool = false;
+var g_raw_marker_written: bool = false;
+
+/// Raw combat log handle address — captured from initLogDetour when SuperWoW
+/// calls InitializeLogBuffer for WoWRawCombatLog. We don't know this address
+/// statically; SuperWoW passes it as handle_out.
+var g_raw_combat_handle_addr: u32 = 0;
 
 /// Saved original path pointers for restoration.
 var g_original_combat_path_ptr: u32 = 0;
@@ -375,6 +382,7 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
     }
 
     if (g_raw_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWRawCombatLog.txt")) {
+        g_raw_combat_handle_addr = handle_out; // capture SuperWoW's handle address
         con.fmt("[combatlog] redirect: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_raw_combat_path), flags, handle_out });
     }
@@ -388,7 +396,7 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
 }
 
 // =============================================================================
-// WriteFormattedLogMessage hook — inject session marker on first combat write
+// WriteFormattedLogMessage hook — inject session markers on first write per log
 // =============================================================================
 
 var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) void) = .{};
@@ -396,24 +404,37 @@ var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) void) = .{};
 fn writeLogDetour(handle: u32, fmt: u32, va_list: u32) callconv(sc) void {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    if (!g_session_marker_written) {
-        const combat_handle = hook.readMem(u32, o.COMBAT_LOG_HANDLE);
-        if (handle == combat_handle and combat_handle != 0) {
-            writeSessionMarkerNow(handle);
+    if (g_session_char_len > 0) {
+        if (!g_combat_marker_written) {
+            const combat_handle = hook.readMem(u32, o.COMBAT_LOG_HANDLE);
+            if (handle == combat_handle and combat_handle != 0) {
+                writeSessionMarker(handle, "COMBATLOG_SESSION: %s");
+                g_combat_marker_written = true;
+            }
+        }
+
+        if (!g_chat_marker_written) {
+            const chat_handle = hook.readMem(u32, o.CHAT_LOG_HANDLE);
+            if (handle == chat_handle and chat_handle != 0) {
+                writeSessionMarker(handle, "CHAT_SESSION: %s");
+                g_chat_marker_written = true;
+            }
+        }
+
+        if (!g_raw_marker_written and g_raw_combat_handle_addr != 0) {
+            const raw_handle = hook.readMem(u32, g_raw_combat_handle_addr);
+            if (handle == raw_handle and raw_handle != 0) {
+                writeSessionMarker(handle, "COMBATLOG_SESSION: %s");
+                g_raw_marker_written = true;
+            }
         }
     }
 
     write_log_hook.callOriginal(.{ handle, fmt, va_list });
 }
 
-/// Write session marker using stored character + realm names (no inline asm needed).
-fn writeSessionMarkerNow(handle: u32) void {
-    if (g_session_char_len == 0) {
-        con.print("[combatlog] session marker: names not resolved yet\n");
-        return;
-    }
-
-    // Build "CharName RealmName" string on the stack
+/// Write a session marker line using stored character + realm names.
+fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
     var marker_buf: [128]u8 = undefined;
     const marker_str = std.fmt.bufPrint(&marker_buf, "{s} {s}", .{
         g_session_char[0..g_session_char_len],
@@ -421,16 +442,14 @@ fn writeSessionMarkerNow(handle: u32) void {
     }) catch return;
     marker_buf[marker_str.len] = 0;
 
-    // va_list for %s: pointer to a char*
     const marker_ptr: u32 = @intFromPtr(&marker_buf);
     write_log_hook.callOriginal(.{
         handle,
-        @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION: %s")),
+        @intFromPtr(fmt_str),
         @intFromPtr(&marker_ptr),
     });
 
-    g_session_marker_written = true;
-    con.fmt("[combatlog] session marker: {s}\n", .{marker_str});
+    con.fmt("[combatlog] marker: {s}\n", .{marker_str});
 }
 
 // =============================================================================
@@ -440,11 +459,14 @@ fn writeSessionMarkerNow(handle: u32) void {
 /// Resets all session state so the next login gets fresh paths.
 /// Called from logoutDetour/shutdownDetour in main.zig.
 pub fn onShutdown() void {
-    if (g_paths_configured or g_session_marker_written) {
+    if (g_paths_configured) {
         con.print("[combatlog] session reset\n");
     }
     g_paths_configured = false;
-    g_session_marker_written = false;
+    g_combat_marker_written = false;
+    g_chat_marker_written = false;
+    g_raw_marker_written = false;
+    g_raw_combat_handle_addr = 0;
     g_combat_path_len = 0;
     g_raw_combat_path_len = 0;
     g_chat_path_len = 0;
