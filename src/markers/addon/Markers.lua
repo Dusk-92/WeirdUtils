@@ -10,12 +10,21 @@ BINDING_HEADER_WORLDMARKERS = "World Markers"
 -- =============================================================================
 
 local function log(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cff88aaff[WMark]|r " .. msg)
+    -- DEFAULT_CHAT_FRAME:AddMessage("|cff88aaff[WMark]|r " .. msg)
 end
 
 -- =============================================================================
 -- Addon message protocol
 -- Delimiter is ":" (pipe "|" is WoW's escape char for color codes)
+--
+-- Messages:
+--   P:idx:x:y:z:area    — live placement (everyone processes)
+--   C:idx                — clear one marker
+--   CA                   — clear all markers
+--   SR                   — sync request (non-leader asking leader to send defs)
+--   LSR                  — leader sync request (leader asking anyone to send defs)
+--   SF:idx:x:y:z:area   — sync fill (only processed by requester in sync mode)
+--   SD                   — sync done (ends sync mode on requester)
 --
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
@@ -35,7 +44,58 @@ local function getChannel()
     return nil
 end
 
+-- =============================================================================
+-- Sync state: after sending SR/LSR, accept SF from the first responder only.
+-- Cleared by SD from the locked sender, or by a 5s fallback timer.
+-- Also cleared when we send our own placement/clear messages.
+-- =============================================================================
+
+local syncing = false
+local syncSender = nil
+
+-- General-purpose one-shot timer. Set .delay, .callback, then :Show().
+local syncTimer = CreateFrame("Frame")
+syncTimer.elapsed = 0
+syncTimer.delay = 5
+syncTimer.callback = nil
+syncTimer:Hide()
+syncTimer:SetScript("OnUpdate", function()
+    syncTimer.elapsed = syncTimer.elapsed + arg1
+    if syncTimer.elapsed >= syncTimer.delay then
+        syncTimer:Hide()
+        if syncTimer.callback then
+            syncTimer.callback()
+        end
+    end
+end)
+
+local function clearSyncState()
+    syncing = false
+    syncSender = nil
+    syncTimer:Hide()
+end
+
+local function startSyncing()
+    syncing = true
+    syncSender = nil
+    syncTimer.elapsed = 0
+    syncTimer.delay = 5
+    syncTimer.callback = function()
+        if syncing then
+            log("sync timeout (5s), clearing sync state")
+            syncing = false
+            syncSender = nil
+        end
+    end
+    syncTimer:Show()
+end
+
+-- =============================================================================
+-- Broadcast helpers
+-- =============================================================================
+
 local function broadcastPlace(index, x, y, z, areaId)
+    clearSyncState()
     local ch = getChannel()
     if not ch then return end
     local msg = "P:" .. index .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
@@ -44,6 +104,7 @@ local function broadcastPlace(index, x, y, z, areaId)
 end
 
 local function broadcastClear(index)
+    clearSyncState()
     local ch = getChannel()
     if not ch then return end
     local msg = "C:" .. index
@@ -52,6 +113,7 @@ local function broadcastClear(index)
 end
 
 local function broadcastClearAll()
+    clearSyncState()
     local ch = getChannel()
     if not ch then return end
     log("SEND [" .. ch .. "] CA")
@@ -71,6 +133,8 @@ local function broadcastAllDefs()
             count = count + 1
         end
     end
+    log("SEND [" .. ch .. "] SD")
+    SendAddonMessage(MSG_PREFIX, "SD", ch)
     log("syncAll: " .. count .. " on " .. ch)
 end
 
@@ -136,17 +200,6 @@ function ClearWorldMarker(index)
 end
 
 -- =============================================================================
--- Sync response deduplication
--- Only accept SF from the first responder after we send SR/LSR.
--- =============================================================================
-
-local syncSender = nil -- name of the first SF responder
-
-local function resetSyncSender()
-    syncSender = nil
-end
-
--- =============================================================================
 -- Addon message handler
 -- All mutation commands pass sender name to the DLL for permission check.
 -- =============================================================================
@@ -195,7 +248,11 @@ local function onAddonMessage(prefix, message, channel, sender)
         broadcastAllDefs()
         return
     elseif cmd == "SF" then
-        -- Sync response: only accept from the first responder
+        -- Sync fill: only process if we're in sync mode
+        if not syncing then
+            log("  ignoring SF (not syncing)")
+            return
+        end
         if syncSender == nil then
             syncSender = sender
             log("  sync responder locked: " .. sender)
@@ -205,9 +262,16 @@ local function onAddonMessage(prefix, message, channel, sender)
         end
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            WorldMarkers.SetMarkerDefSync(idx, x, y, z, areaId, sender)
+            WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
+        end
+        return
+    elseif cmd == "SD" then
+        -- Sync done: clear sync state if from the locked sender
+        if syncing and (syncSender == nil or syncSender == sender) then
+            log("  sync done from " .. tostring(sender))
+            clearSyncState()
         end
         return
     end
@@ -242,8 +306,7 @@ local function broadcastSyncRequest()
         log("syncReq: no channel (not in group)")
         return
     end
-    -- Reset first-responder lock before requesting
-    syncSender = nil
+    startSyncing()
     local cmd = CanSetWorldMarkers() and "LSR" or "SR"
     log("SEND [" .. ch .. "] " .. cmd)
     SendAddonMessage(MSG_PREFIX, cmd, ch)
@@ -251,23 +314,13 @@ end
 
 -- Delayed sync request: roster isn't populated at PLAYER_LOGIN/ENTERING_WORLD,
 -- so we fire a one-shot 5s timer to request markers after joining the group.
-syncTimer = CreateFrame("Frame")
-syncTimer.elapsed = 0
-syncTimer.pending = false
-syncTimer:Hide()
-syncTimer:SetScript("OnUpdate", function()
-    syncTimer.elapsed = syncTimer.elapsed + arg1
-    if syncTimer.elapsed >= 5 then
-        syncTimer:Hide()
-        syncTimer.pending = false
+local function scheduleSyncRequest()
+    syncTimer.elapsed = 0
+    syncTimer.delay = 5
+    syncTimer.callback = function()
         log("login sync timer fired")
         broadcastSyncRequest()
     end
-end)
-
-local function scheduleSyncRequest()
-    syncTimer.elapsed = 0
-    syncTimer.pending = true
     syncTimer:Show()
     log("sync request scheduled (5s)")
 end

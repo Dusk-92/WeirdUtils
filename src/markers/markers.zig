@@ -15,7 +15,6 @@
 //!
 //! Lua API (WorldMarkers table — internal, used by addon):
 //!   WorldMarkers.SetMarkerDef(i, x, y, z, area, sender)
-//!   WorldMarkers.SetMarkerDefSync(i, x, y, z, area, sender)
 //!   WorldMarkers.ClearMarkerDef([index,] sender)
 //!   WorldMarkers.GetMarkerDef(index) — returns x, y, z, areaId or nil
 
@@ -225,42 +224,6 @@ fn senderHasPermission(sender: [*:0]const u8) bool {
     return std.mem.eql(u8, std.mem.span(leader_name), sender_span);
 }
 
-/// Check if a named sender is in the group (any rank).
-/// Weaker than senderHasPermission — used for sync relay (SF) where the
-/// sender is just echoing stored data, not issuing a command.
-fn senderInGroup(sender: [*:0]const u8) bool {
-    const sender_span = std.mem.span(sender);
-    if (sender_span.len == 0) return false;
-
-    const raid_count = hook.readMem(u32, o.RAID_MEMBER_COUNT);
-    if (raid_count > 0) {
-        // Raid: find sender anywhere in roster (any rank)
-        const count = @min(raid_count, 40);
-        for (0..count) |i| {
-            const entry = hook.readMem(u32, o.RAID_ROSTER_ARRAY + i * 4);
-            if (entry == 0 or entry < 0x10000) continue;
-            const guid_lo = hook.readMem(u32, entry);
-            const guid_hi = hook.readMem(u32, entry + 4);
-            const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
-            if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Party: check if sender is any party member
-    for (0..4) |i| {
-        const guid_lo = hook.readMem(u32, o.PARTY_MEMBER_GUIDS + i * 8);
-        const guid_hi = hook.readMem(u32, o.PARTY_MEMBER_GUIDS + i * 8 + 4);
-        if (guid_lo == 0 and guid_hi == 0) continue;
-        const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
-        if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
-            return true;
-        }
-    }
-    return false;
-}
 
 // =============================================================================
 // Position helpers
@@ -707,47 +670,6 @@ pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
     };
 
     con.fmt("[worldmarkers] SetMarkerDef [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
-    return 0;
-}
-
-/// Lua: SetMarkerDefSync(index, x, y, z, areaId, senderName)
-/// Like SetMarkerDef but for sync relay (SF messages). Two checks:
-///   1. Local player must be leader/assist (only they request syncs)
-///   2. Sender must be in the group (any rank — they're just relaying data)
-pub fn luaSetMarkerDefSync(L: lua.State) callconv(.c) u32 {
-    const nargs = lua.gettop(L);
-    if (nargs < 6) return 0;
-    if (!lua.isnumber(L, 1) or !lua.isnumber(L, 2) or !lua.isnumber(L, 3) or !lua.isnumber(L, 4) or !lua.isnumber(L, 5) or !lua.isstring(L, 6)) return 0;
-
-    if (!canSetMarkers()) {
-        con.print("[worldmarkers] SetMarkerDefSync: local player not leader/assist\n");
-        return 0;
-    }
-
-    const sender = lua.tostring(L, 6) orelse return 0;
-    if (!senderInGroup(sender)) {
-        con.fmt("[worldmarkers] SetMarkerDefSync: sender '{s}' not in group\n", .{std.mem.span(sender)});
-        return 0;
-    }
-
-    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
-    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
-    const index: usize = @intCast(raw_index - 1);
-
-    const x: f32 = @floatCast(lua.tonumber(L, 2));
-    const y: f32 = @floatCast(lua.tonumber(L, 3));
-    const z: f32 = @floatCast(lua.tonumber(L, 4));
-    const area_id: u32 = @intFromFloat(lua.tonumber(L, 5));
-
-    clearEntity(index);
-
-    marker_defs[index] = .{
-        .pos = .{ .x = x, .y = y, .z = z },
-        .area_id = area_id,
-        .active = true,
-    };
-
-    con.fmt("[worldmarkers] SetMarkerDefSync [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
     return 0;
 }
 

@@ -117,7 +117,6 @@ fn registerLuaFunctions() void {
         // Internal functions in WorldMarkers table (via luaL_openlib)
         const lib = [_]lua.LuaReg{
             .{ .name = "SetMarkerDef", .func = @intFromPtr(&markers.luaSetMarkerDef) },
-            .{ .name = "SetMarkerDefSync", .func = @intFromPtr(&markers.luaSetMarkerDefSync) },
             .{ .name = "ClearMarkerDef", .func = @intFromPtr(&markers.luaClearMarkerDef) },
             .{ .name = "GetMarkerDef", .func = @intFromPtr(&markers.luaGetMarkerDef) },
 
