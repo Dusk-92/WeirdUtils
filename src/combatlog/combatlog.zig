@@ -260,9 +260,8 @@ fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
     // Generate new timestamped filename
     var st: SYSTEMTIME = undefined;
     GetLocalTime(&st);
-    const pid = GetCurrentProcessId();
 
-    const path = std.fmt.bufPrint(result_buf, "{s}{s}_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{d}.txt", .{
+    const path = std.fmt.bufPrint(result_buf, "{s}{s}_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}.txt", .{
         g_dir_path[0..g_dir_path_len],
         prefix,
         st.wYear,
@@ -271,7 +270,6 @@ fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
         st.wHour,
         st.wMinute,
         st.wSecond,
-        pid,
     }) catch return 0;
     result_buf[path.len] = 0;
     con.fmt("[combatlog] new: {s}\n", .{path});

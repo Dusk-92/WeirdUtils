@@ -1,10 +1,9 @@
 # WeirdUtils
 
-This package provides many pre-built DLLs for enhancing the vanilla WoW gameplay experience, aimed in particular at ease of use and accessibility but also bug fixes.
+This package provides many pre-built DLLs for enhancing the vanilla 1.12 client WoW gameplay experience, aimed in particular at ease of use and accessibility but also bug fixes.
 
-You may get all features by installing `weirdutils.dll`, or choose any selection of features via individual DLLs.
-
-On Turtle WoW, place your chosen DLLs next to your `WoW.exe` and add them to your `dlls.txt`. For other versions you will need some sort of DLL loader.
+You may get all features by installing `weirdutils.dll`, or choose any selection of features via individual DLLs.  
+On Turtle WoW, place your chosen DLLs next to your `WoW.exe` and add them to your `dlls.txt`. For other versions you will need some sort of DLL loader.  
 
 ---
 
@@ -106,6 +105,30 @@ No configuration needed, install and forget.
 
 ---
 
+### Combat Log Sessions
+
+Organizes combat, raw combat, and chat logs into per-character directories with timestamped filenames:
+
+```
+Logs\<Realm>\<Character>\WoWChatLog_YYYYMMDD_HHMMSS.txt
+Logs\<Realm>\<Character>\WoWCombatLog_YYYYMMDD_HHMMSS.txt
+Logs\<Realm>\<Character>\WoWRawCombatLog_YYYYMMDD_HHMMSS.txt (superwow only)
+```
+
+Session markers are written as the first line of each log file:
+- `COMBATLOG_SESSION: <Character> <Realm>` in combat and raw combat logs
+- `CHAT_SESSION: <Character> <Realm>` in chat logs
+
+If a log file for the same character was written to within the last 30 minutes, the session continues into the same file instead of creating a new one. This consolidates brief relogs into a single file.
+
+Character and realm names are resolved from the character select screen when you click Enter World, so paths are ready before any logging begins. On character logout the session state resets, so the next login gets fresh paths and markers.
+
+No configuration needed, install and forget.
+
+**DLL:** `combatlog.dll`
+
+---
+
 ### SuperWoW Heal Text Fix
 
 Fixes duplicate floating heal numbers caused by SuperWoW 1.5. Only relevant if you use SuperWoW. No configuration needed, install and forget.
@@ -118,4 +141,6 @@ Fixes duplicate floating heal numbers caused by SuperWoW 1.5. Only relevant if y
 
 This project is distributed as pre-built DLLs only. The source code is not and will not be made publicly available.
 
-These DLLs work by hooking deeply into the game client's internals — memory layout, function addresses, rendering pipeline, input handling, and more. While every feature here is built for legitimate quality-of-life use, the underlying techniques touch on too many core mechanisms that are trivially abusable. Publishing the source would be handing a candy store to bad actors: the same hooks and patterns used to render a raid marker or fix a crash can be repurposed for cheats, exploits, and in particular automation with minimal effort.
+These DLLs work by hooking deeply into the game client's internals: memory layout, function addresses, rendering pipeline, input handling, and more.  
+While every feature here is built for legitimate quality-of-life use, the underlying techniques touch on too many core mechanisms that are trivially abusable.  
+Publishing the source would be handing a candy store to bad actors: the same hooks and patterns used to render a raid marker or fix a crash can be repurposed for cheats, exploits, and in particular automation with minimal effort.
