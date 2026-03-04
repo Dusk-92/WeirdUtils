@@ -4,7 +4,16 @@
 //! (e.g. `Logs\WoWCombatLog_20260303_193045_1234.txt`), and writes a
 //! `COMBATLOG_SESSION,<PlayerName>` marker line when combat logging is enabled.
 //!
+//! Also redirects SuperWoW's raw combat log (`WoWRawCombatLog.txt`) to a
+//! matching timestamped file. SuperWoW calls InitializeLogBuffer directly with
+//! hardcoded paths, bypassing the path pointer table — so we hook
+//! InitializeLogBuffer itself to intercept both callers.
+//!
 //! All DLL-side — no Lua addon needed.
+//!
+//! TODO: Small-file cleanup — consolidate WoWCombatLog_*.txt files < 1KB on startup
+//!       based on dates and session ownership
+//!       (empty sessions from crashes or quick relogs).
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -35,39 +44,47 @@ var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
 // =============================================================================
-// Path redirect
+// Path redirect via InitializeLogBuffer hook
 // =============================================================================
 
-/// Static buffer for the redirected combat log path. Must outlive the process.
-var g_path_buf: [260]u8 = undefined;
+/// Static buffers for the redirected paths. Must outlive the process.
+var g_combat_path: [260]u8 = undefined;
+var g_raw_combat_path: [260]u8 = undefined;
+var g_combat_path_len: usize = 0;
+var g_raw_combat_path_len: usize = 0;
 
-/// Saved original path pointer so we can restore on unload.
+/// Also overwrite the path pointer table as a belt-and-suspenders measure
+/// for the normal game code path (EnableChatLogging reads from here).
 var g_original_path_ptr: u32 = 0;
 
-fn setupPathRedirect() void {
-    // Save the original pointer value
-    g_original_path_ptr = hook.readMem(u32, o.COMBAT_LOG_PATH_PTR);
-
+fn setupPaths() void {
     var st: SYSTEMTIME = undefined;
     GetLocalTime(&st);
     const pid = GetCurrentProcessId();
+    const ts = .{ st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, pid };
 
-    const path = std.fmt.bufPrint(&g_path_buf, "Logs\\WoWCombatLog_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{d}.txt", .{
-        st.wYear, st.wMonth,  st.wDay,
-        st.wHour, st.wMinute, st.wSecond,
-        pid,
-    }) catch {
-        con.print("[combatlog] path format error\n");
-        return;
-    };
-    g_path_buf[path.len] = 0;
+    if (std.fmt.bufPrint(&g_combat_path, "Logs\\WoWCombatLog_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{d}.txt", ts)) |p| {
+        g_combat_path[p.len] = 0;
+        g_combat_path_len = p.len;
+        con.fmt("[combatlog] combat path: {s}\n", .{p});
+    } else |_| {
+        con.print("[combatlog] combat path format error\n");
+    }
 
-    // Overwrite the pointer at 0x00843610 to point to our buffer.
-    // .data section is RW, no VirtualProtect needed.
-    const ptr_bytes: [4]u8 = @bitCast(@intFromPtr(&g_path_buf));
-    hook.writeMem(o.COMBAT_LOG_PATH_PTR, &ptr_bytes);
+    if (std.fmt.bufPrint(&g_raw_combat_path, "Logs\\WoWRawCombatLog_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}_{d}.txt", ts)) |p| {
+        g_raw_combat_path[p.len] = 0;
+        g_raw_combat_path_len = p.len;
+        con.fmt("[combatlog] raw combat path: {s}\n", .{p});
+    } else |_| {
+        con.print("[combatlog] raw combat path format error\n");
+    }
 
-    con.fmt("[combatlog] path: {s}\n", .{path});
+    // Also overwrite the pointer table for the normal game path
+    g_original_path_ptr = hook.readMem(u32, o.COMBAT_LOG_PATH_PTR);
+    if (g_combat_path_len > 0) {
+        const ptr_bytes: [4]u8 = @bitCast(@intFromPtr(&g_combat_path));
+        hook.writeMem(o.COMBAT_LOG_PATH_PTR, &ptr_bytes);
+    }
 }
 
 fn restorePathPointer() void {
@@ -76,6 +93,32 @@ fn restorePathPointer() void {
         hook.writeMem(o.COMBAT_LOG_PATH_PTR, &ptr_bytes);
         g_original_path_ptr = 0;
     }
+}
+
+// =============================================================================
+// InitializeLogBuffer hook — intercept path argument
+// =============================================================================
+
+var init_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) u32) = .{};
+
+fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    const path_ptr: [*:0]const u8 = @ptrFromInt(file_path);
+    const path_span = std.mem.span(path_ptr);
+
+    // Check if this is a combat log path we should redirect
+    if (g_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWCombatLog.txt")) {
+        con.fmt("[combatlog] intercepted InitializeLogBuffer: {s} -> {s}\n", .{ path_span, g_combat_path[0..g_combat_path_len] });
+        return init_log_hook.callOriginal(.{ @intFromPtr(&g_combat_path), flags, handle_out });
+    }
+
+    if (g_raw_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWRawCombatLog.txt")) {
+        con.fmt("[combatlog] intercepted InitializeLogBuffer: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
+        return init_log_hook.callOriginal(.{ @intFromPtr(&g_raw_combat_path), flags, handle_out });
+    }
+
+    return init_log_hook.callOriginal(.{ file_path, flags, handle_out });
 }
 
 // =============================================================================
@@ -122,6 +165,7 @@ fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
         : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
     return if (result != 0) @ptrFromInt(result) else null;
 }
+
 
 // =============================================================================
 // Session marker state
@@ -215,8 +259,15 @@ pub fn installHooks() void {
     }
     g_is_hook_owner = true;
 
-    // Redirect combat log path to timestamped+PID filename
-    setupPathRedirect();
+    // Set up timestamped paths and overwrite pointer table
+    setupPaths();
+
+    // Hook InitializeLogBuffer to intercept path from any caller (game + SuperWoW)
+    if (init_log_hook.attach(o.FN_INIT_LOG_BUFFER, &initLogDetour) != .ok) {
+        con.print("[combatlog] FAILED to hook InitializeLogBuffer!\n");
+    } else {
+        con.print("[combatlog] hooked InitializeLogBuffer OK\n");
+    }
 
     // Hook WriteFormattedLogMessage to inject session marker before the first combat log write
     if (write_log_hook.attach(o.FN_WRITE_FMT_LOG_MSG, &writeLogDetour) != .ok) {
@@ -229,6 +280,7 @@ pub fn installHooks() void {
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         write_log_hook.detach();
+        init_log_hook.detach();
         restorePathPointer();
 
         if (g_mutex) |m| {

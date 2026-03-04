@@ -17,6 +17,12 @@ pub const COMBAT_LOG_HANDLE: usize = 0x00b50544;
 // Log writing
 // =============================================================================
 
+/// InitializeLogBuffer — __stdcall(filePath: [*:0]const u8, flags: u32, handleOut: *u32).
+/// Creates a log buffer context. Copies path into context struct (max 260 bytes).
+/// Returns nonzero on success. Callee cleans stack (RET 0xC).
+/// Called by EnableChatLogging (game) and CombatLogAdd (SuperWoW) with hardcoded paths.
+pub const FN_INIT_LOG_BUFFER: usize = 0x0065a0c0;
+
 /// WriteFormattedLogMessage — __stdcall(handle: u32, fmt: [*:0]const u8, va_list: *anyopaque).
 /// Three fixed params, callee cleans stack (RET 0xC). Third arg is va_list pointer.
 /// Writes a timestamped, formatted line to the log buffer. Auto-flushes at 48KB.

@@ -313,11 +313,72 @@ login -- player object not in object manager yet. Use name cache instead:
 `RetrieveNPCDataFromCache` (0x55f080, cache at 0xc0e228) is populated before the
 object manager and works for the local player GUID.
 
+## SuperWoW Combat Log Interference
+
+SuperWoWhook.dll has its own Lua C function `CombatLogAdd` (at 0x10001f50 in
+the current build) that calls `InitializeLogBuffer` (0x0065a0c0) directly with
+**hardcoded path strings**, bypassing the path pointer table at 0x0084360c entirely.
+
+### SuperWoW CombatLogAdd (0x10001f50) logic
+
+```
+CombatLogAdd(lua_State *L):
+  raw = LuaValueToBool(L, 2, false)    // arg2: is this a raw log event?
+  if raw:
+    handle_ptr = 0x1001e4c8            // SuperWoW's own handle (in DLL .bss)
+    path = "Logs\WoWRawCombatLog.txt"  // hardcoded at 0x1001af00
+  else:
+    handle_ptr = 0x00b50544            // WoW's combat log handle
+    path = "Logs\WoWCombatLog.txt"     // hardcoded at 0x1001aee8
+  if *handle_ptr == 0:
+    CreateDirectoryRecursive("Logs")
+    InitializeLogBuffer(path, 4, handle_ptr)
+  WriteTimestampToLogBuffer(*handle_ptr, fmt, value)
+  return 1.0
+```
+
+### Why pointer redirect sometimes fails
+
+When SuperWoW's `CombatLogAdd` fires before the game's `LoggingCombat(1)`:
+1. SuperWoW calls `InitializeLogBuffer("Logs\WoWCombatLog.txt", 4, 0x00b50544)`
+   using its own hardcoded string -- our pointer at 0x00843610 is never read
+2. Handle at 0x00b50544 becomes non-zero
+3. When `EnableChatLogging` runs later, it sees handle != 0 and skips init
+4. Result: log file created with default name despite our pointer redirect
+
+The "sometimes works" depends on whether the addon's `LoggingCombat(1)` or
+SuperWoW's first `CombatLogAdd` call fires first.
+
+### Fix: Hook InitializeLogBuffer
+
+Instead of overwriting the path pointer, hook `InitializeLogBuffer` (0x0065a0c0)
+itself. Intercept the `filePath` argument and replace:
+- `"Logs\WoWCombatLog.txt"` -> our timestamped combat log path
+- `"Logs\WoWRawCombatLog.txt"` -> our timestamped raw combat log path
+
+This works regardless of who calls InitializeLogBuffer (game or SuperWoW).
+
+`InitializeLogBuffer` is __stdcall with RET 0xC: (filePath, flags, *handleOut).
+The path is copied into the context struct via SafeStringCopy (max 260 bytes),
+so substituting a different pointer is safe.
+
+### SuperWoW raw log handle
+
+SuperWoW stores its raw combat log handle at `0x1001e4c8` (in SuperWoWhook.dll's
+.bss section). This is NOT in WoW.exe's handle array -- it's SuperWoW-private.
+The raw log path `"Logs\WoWRawCombatLog.txt"` is at `0x1001af00` in the DLL.
+
+### ShutdownMessageSystem (0x00659ec0) -- __stdcall(handle), RET 0x4
+
+Proper cleanup for a log buffer handle:
+1. Gets log buffer context from handle
+2. If file handle != -1: flushes (WriteLogBufferToFile), closes (CloseHandle)
+3. Frees context memory (FreeMemoryFromPool)
+
+Called from ShutdownChatSubsystem (0x00498700) which loops both handle slots.
+
 ## Open Questions
 
-- [ ] Where does SuperWoW write `WoWRawCombatLog.txt`? Need to check
-      SuperWoWhook.dll. Same redirect approach should work if it uses the
-      same table or a similar one.
 - [x] Exact prologue size of `EnableChatLogging` for hooking (need 5+ bytes).
       First 3 instructions = PUSH EBX; PUSH ESI; PUSH EDI = 3 bytes. Then
       MOV ESI,EDX = 2 bytes. Total = 5 bytes -- just enough for a jmp hook.
