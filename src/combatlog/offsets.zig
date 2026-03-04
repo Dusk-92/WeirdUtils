@@ -43,16 +43,27 @@ pub const FN_INIT_LOG_BUFFER: usize = 0x0065a0c0;
 pub const FN_WRITE_FMT_LOG_MSG: usize = 0x0065ac20;
 
 // =============================================================================
-// Player identity
+// Character select / enter world
 // =============================================================================
 
-/// GetPlayerGUID — __fastcall(), no params, returns EAX(low):EDX(high).
-pub const FN_GET_PLAYER_GUID: usize = 0x00468550;
+/// HandleCharacterSelection — void(void), called by Lua EnterWorld().
+/// Fires when the player clicks "Enter World" on the character select screen,
+/// before world loading and log buffer initialization.
+pub const FN_HANDLE_CHAR_SELECT: usize = 0x0046b500;
 
-/// RetrieveNPCDataFromCache — __thiscall(ECX=cache_obj), 6 stack params, RET 0x18.
-/// (guid_low, guid_high, name_buf_ptr, 0, 0, 0) → char* name or NULL in EAX.
-/// Resolves player/NPC names from the name cache — available before the object manager.
-pub const FN_NAME_CACHE_LOOKUP: usize = 0x0055f080;
+/// Selected character index (int) on the character select screen.
+pub const CHAR_SELECT_INDEX: usize = 0x0083856c;
 
-/// Name cache object — static instance passed as ECX (this) to RetrieveNPCDataFromCache.
-pub const NAME_CACHE_OBJ: usize = 0x00c0e228;
+/// Character list base pointer. Each entry is 0x120 bytes.
+/// Character name (C string) is at entry + 0x08.
+pub const CHAR_LIST_BASE: usize = 0x00b42144;
+
+/// Number of characters in the character list.
+pub const CHAR_LIST_COUNT: usize = 0x00b42140;
+
+/// Size of each character entry in the character list.
+pub const CHAR_ENTRY_SIZE: usize = 0x120;
+
+/// Offset of character name within a character entry.
+pub const CHAR_NAME_OFFSET: usize = 0x08;
+

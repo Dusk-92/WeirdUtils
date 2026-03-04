@@ -4,7 +4,8 @@
 //! directories: `Logs\<realm>\<character>\<Type>_<timestamp>_<PID>.txt`.
 //!
 //! Features:
-//! - Lazy path setup: resolves character/realm on first InitializeLogBuffer call
+//! - Early path setup: hooks HandleCharacterSelection to resolve character/realm
+//!   from the select screen data before world loading begins
 //! - Session continuation: reuses files modified < 30 min ago
 //! - Session marker: writes `COMBATLOG_SESSION: <char> <realm>` on first combat write
 //!
@@ -105,55 +106,10 @@ var g_session_marker_written: bool = false;
 var g_original_combat_path_ptr: u32 = 0;
 var g_original_chat_path_ptr: u32 = 0;
 
-/// Pending init tracking — log types initialized before paths were ready.
-/// When setupSessionPaths succeeds, we replay these with the correct paths
-/// to re-initialize the already-created buffer contexts.
-const PendingInit = struct { active: bool = false, flags: u32 = 0, handle_out: u32 = 0 };
-var g_pending: [3]PendingInit = .{ .{}, .{}, .{} }; // [0]=combat, [1]=raw, [2]=chat
 
 // =============================================================================
-// Player identity (same inline asm patterns as markers module)
+// Character / realm identity
 // =============================================================================
-
-/// Get local player GUID via GetPlayerGUID (0x468550).
-/// __fastcall(), no params, returns EAX(low):EDX(high).
-fn getPlayerGUID() u64 {
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile ("call *%[func]"
-        : [_] "={eax}" (lo),
-          [_] "={edx}" (hi),
-        : [func] "r" (o.FN_GET_PLAYER_GUID),
-        : .{ .ecx = true, .memory = true, .cc = true });
-    return (@as(u64, hi) << 32) | lo;
-}
-
-/// Look up a player name from the name cache by GUID.
-/// Calls RetrieveNPCDataFromCache — __thiscall(ECX=cache), 6 stack params, RET 0x18.
-fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
-    if (guid_lo == 0 and guid_hi == 0) return null;
-    var name_buf: [2]u32 = .{ 0, 0 };
-    const stack_args = [6]u32{
-        guid_lo,
-        guid_hi,
-        @intFromPtr(&name_buf),
-        0, 0, 0,
-    };
-    const result: u32 = asm volatile (
-        \\ push 20(%[a])
-        \\ push 16(%[a])
-        \\ push 12(%[a])
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
-        \\ call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
-          [a] "r" (&stack_args),
-          [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
-    return if (result != 0) @ptrFromInt(result) else null;
-}
 
 /// Read realm name from CVar: dereference base pointer, then read string at +0x20.
 fn getRealmName() ?[*:0]const u8 {
@@ -162,6 +118,20 @@ fn getRealmName() ?[*:0]const u8 {
     const str_addr = hook.readMem(u32, base + 0x20);
     if (str_addr == 0) return null;
     return @ptrFromInt(str_addr);
+}
+
+/// Read the selected character's name from the character select screen data.
+/// Available when the player clicks Enter World (before world loading begins).
+fn getCharSelectName() ?[*:0]const u8 {
+    const index = hook.readMem(i32, o.CHAR_SELECT_INDEX);
+    if (index < 0) return null;
+    const count = hook.readMem(i32, o.CHAR_LIST_COUNT);
+    if (index >= count) return null;
+    const list_base = hook.readMem(u32, o.CHAR_LIST_BASE);
+    if (list_base == 0) return null;
+    const entry_addr = list_base + @as(u32, @intCast(index)) * o.CHAR_ENTRY_SIZE + o.CHAR_NAME_OFFSET;
+    // Name is a C string embedded in the entry struct (not a pointer)
+    return @ptrFromInt(entry_addr);
 }
 
 // =============================================================================
@@ -302,34 +272,12 @@ fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
 }
 
 // =============================================================================
-// Lazy session path setup
+// Session path configuration
 // =============================================================================
 
-/// Called from initLogDetour on first call per session.
-/// Resolves character/realm, creates directories, resolves all log file paths.
-fn setupSessionPaths() void {
-    // Get player GUID → name
-    const player_guid = getPlayerGUID();
-    if (player_guid == 0) {
-        con.print("[combatlog] setup: no player GUID yet\n");
-        return;
-    }
-    const guid_lo: u32 = @truncate(player_guid);
-    const guid_hi: u32 = @truncate(player_guid >> 32);
-
-    const char_name = getNameFromGUID(guid_lo, guid_hi) orelse {
-        con.print("[combatlog] setup: player name not in cache\n");
-        return;
-    };
-    const char_span = std.mem.span(char_name);
-
-    // Get realm name from CVar
-    const realm_name = getRealmName() orelse {
-        con.print("[combatlog] setup: realm name not available\n");
-        return;
-    };
-    const realm_span = std.mem.span(realm_name);
-
+/// Core path setup: sanitize names, create directories, resolve all log paths.
+/// Called from enterWorldDetour when the player clicks Enter World.
+fn configureSession(char_span: []const u8, realm_span: []const u8) void {
     // Sanitize and store names
     g_session_char_len = sanitizeName(char_span, &g_session_char);
     g_session_realm_len = sanitizeName(realm_span, &g_session_realm);
@@ -369,6 +317,32 @@ fn setupSessionPaths() void {
     g_paths_configured = true;
 }
 
+// =============================================================================
+// HandleCharacterSelection hook — set up paths before world loading
+// =============================================================================
+
+var enter_world_hook: hook.Detour(fn () callconv(sc) void) = .{};
+
+/// Fires when the player clicks Enter World on the character select screen.
+/// Character name and realm are available from the select screen data.
+/// Sets up paths BEFORE the world loading sequence calls InitializeLogBuffer.
+fn enterWorldDetour() callconv(sc) void {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    if (!g_paths_configured) {
+        const char_name = getCharSelectName();
+        const realm_name = getRealmName();
+
+        if (char_name != null and realm_name != null) {
+            configureSession(std.mem.span(char_name.?), std.mem.span(realm_name.?));
+        } else {
+            con.print("[combatlog] enter world: char/realm not available\n");
+        }
+    }
+
+    enter_world_hook.callOriginal(.{});
+}
+
 fn restorePathPointers() void {
     if (g_original_combat_path_ptr != 0) {
         const ptr_bytes: [4]u8 = @bitCast(g_original_combat_path_ptr);
@@ -390,11 +364,6 @@ var init_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) u32) = .{};
 
 fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
-
-    // Lazy setup: configure session paths on first call after login
-    if (!g_paths_configured) {
-        setupSessionPaths();
-    }
 
     const path_ptr: [*:0]const u8 = @ptrFromInt(file_path);
     const path_span = std.mem.span(path_ptr);
@@ -510,7 +479,13 @@ pub fn installHooks() void {
     }
     g_is_hook_owner = true;
 
-    // Paths are set up lazily on first InitializeLogBuffer call (after player login)
+    // Hook HandleCharacterSelection — sets up paths when player clicks Enter World,
+    // before the world loading sequence calls InitializeLogBuffer.
+    if (enter_world_hook.attach(o.FN_HANDLE_CHAR_SELECT, &enterWorldDetour) != .ok) {
+        con.print("[combatlog] FAILED to hook HandleCharacterSelection!\n");
+    } else {
+        con.print("[combatlog] hooked HandleCharacterSelection OK\n");
+    }
 
     if (init_log_hook.attach(o.FN_INIT_LOG_BUFFER, &initLogDetour) != .ok) {
         con.print("[combatlog] FAILED to hook InitializeLogBuffer!\n");
@@ -529,6 +504,7 @@ pub fn removeHooks() void {
     if (g_is_hook_owner) {
         write_log_hook.detach();
         init_log_hook.detach();
+        enter_world_hook.detach();
         restorePathPointers();
 
         if (g_mutex) |m| {
