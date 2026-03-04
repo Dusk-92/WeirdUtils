@@ -24,7 +24,6 @@ end
 --   SR                   — sync request (non-leader asking leader to send defs)
 --   LSR                  — leader sync request (leader asking anyone to send defs)
 --   SF:idx:x:y:z:area   — sync fill (only processed by requester in sync mode)
---   SD                   — sync done (ends sync mode on requester)
 --
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
@@ -46,8 +45,7 @@ end
 
 -- =============================================================================
 -- Sync state: after sending SR/LSR, accept SF from the first responder only.
--- Cleared by SD from the locked sender, or by a 5s fallback timer.
--- Also cleared when we send our own placement/clear messages.
+-- Cleared by a 5s timer, or when we send our own placement/clear messages.
 -- =============================================================================
 
 local syncing = false
@@ -133,8 +131,6 @@ local function broadcastAllDefs()
             count = count + 1
         end
     end
-    log("SEND [" .. ch .. "] SD")
-    SendAddonMessage(MSG_PREFIX, "SD", ch)
     log("syncAll: " .. count .. " on " .. ch)
 end
 
@@ -265,13 +261,6 @@ local function onAddonMessage(prefix, message, channel, sender)
             WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
         else
             log("  PARSE FAIL")
-        end
-        return
-    elseif cmd == "SD" then
-        -- Sync done: clear sync state if from the locked sender
-        if syncing and (syncSender == nil or syncSender == sender) then
-            log("  sync done from " .. tostring(sender))
-            clearSyncState()
         end
         return
     end
