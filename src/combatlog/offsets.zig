@@ -9,9 +9,23 @@
 /// Overwriting the u32 at this address redirects where the combat log file is created.
 pub const COMBAT_LOG_PATH_PTR: usize = 0x00843610;
 
+/// Chat log path pointer — .data section (RW), points to "Logs\WoWChatLog.txt" string.
+/// Index 0 in the path table at 0x0084360c.
+pub const CHAT_LOG_PATH_PTR: usize = 0x0084360c;
+
 /// Runtime combat log buffer handle (log_handles[1], BSS).
 /// Non-zero when combat logging is active. Read to check if we can write log lines.
 pub const COMBAT_LOG_HANDLE: usize = 0x00b50544;
+
+/// Runtime chat log buffer handle (log_handles[0], BSS).
+pub const CHAT_LOG_HANDLE: usize = 0x00b50540;
+
+// =============================================================================
+// Realm name
+// =============================================================================
+
+/// CVar base pointer for realm name. Dereference once, then read string at +0x20.
+pub const REALM_NAME_CVAR_BASE: usize = 0x00c28130;
 
 // =============================================================================
 // Log writing
