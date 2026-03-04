@@ -269,17 +269,67 @@ On DLL init, scan `Logs\` directory for `WoWCombatLog_*.txt` files:
       .ebx=true })` barrier at top of detour forces Zig to push/pop in
       prologue/epilogue regardless of internal register allocation.
 
+## Logout Detection
+
+`CGGameUI_Shutdown` (0x490BD0) fires on `/reload` AND logout -- unsuitable for
+per-session reset. The correct logout-only function is:
+
+### World_HandleLogoutCleanup (0x491180) -- __stdcall(), no params
+
+Only called from `ShutdownClientSystems` (0x401ee0), which is called from:
+- `NetworkDisconnectHandler` (0x46c540)
+- `handleDisconnectWithReason` (0x5aad70)
+- `cleanupAfterDisconnect` (0x5aaeb0)
+
+These are all real disconnect/logout paths. NOT called on `/reload` or map change.
+
+`World_HandleLogoutCleanup` calls `World_HandlePlayerLogin` (0x490BD0) as its
+first action, which fires `SignalEvent(271)` (PLAYER_LOGOUT).
+
+Full cleanup sequence: World_HandlePlayerLogin (fires PLAYER_LOGOUT event),
+UI_ProcessDirtyFaces, release_minimap_textures, ShutdownChatSubsystem,
+SpellBookManager_Cleanup, CleanupUnitSystem, UnregisterPlayerStateHandlers, etc.
+
+Hooked in `main.zig` as `logout_hook` -- available to all modules via `onLogout()`.
+
+### Event IDs (verified via event table at 0xbe1198)
+
+- PLAYER_LOGIN = 270 (table slot 0xbe15d0, string at 0x852d50)
+- PLAYER_LOGOUT = 271 (table slot 0xbe15d4, string at 0x852d40)
+- PLAYER_ENTERING_WORLD = 272 (table slot 0xbe15d8, string at 0x852d28)
+- LOGOUT_CANCEL = event at table slot 0xbe15f0, string at 0x852cc4
+
+### SignalEvent callers for login/logout events
+
+- `SignalEvent(270)` PLAYER_LOGIN: from `CGGameUI::EnterWorld` (0x4908c0)
+- `SignalEvent(271)` PLAYER_LOGOUT: from `World_HandlePlayerLogin` (0x490bd0)
+- `SignalEvent(272)` PLAYER_ENTERING_WORLD: from `CGGameUI::EnterWorld` (0x4908c0)
+- `SignalEvent(273)`: from `World_HandleEnterWorldCleanup` (0x490a80)
+
+### Player Name Resolution
+
+`GetObjectPtr` (0x464870) -> `GetUnitName` (0x609210) does NOT work during early
+login -- player object not in object manager yet. Use name cache instead:
+`RetrieveNPCDataFromCache` (0x55f080, cache at 0xc0e228) is populated before the
+object manager and works for the local player GUID.
+
 ## Open Questions
 
 - [ ] Where does SuperWoW write `WoWRawCombatLog.txt`? Need to check
       SuperWoWhook.dll. Same redirect approach should work if it uses the
       same table or a similar one.
-- [ ] Exact prologue size of `EnableChatLogging` for hooking (need 5+ bytes).
+- [x] Exact prologue size of `EnableChatLogging` for hooking (need 5+ bytes).
       First 3 instructions = PUSH EBX; PUSH ESI; PUSH EDI = 3 bytes. Then
       MOV ESI,EDX = 2 bytes. Total = 5 bytes -- just enough for a jmp hook.
 - [x] **Markers permission check**: markers' `getNameFromGUID` uses
       `RetrieveNPCDataFromCache` (0x55f080) and works correctly for roster GUIDs.
       The combatlog crash (EAX=name bytes instead of char*) is specific to the
-      context — either the player's own GUID is handled differently, or the cache
-      state during `EnableChatLogging` is incomplete. Combatlog uses `GetObjectName`
-      (0x6264E0) instead, which avoids the issue. No change needed for markers.
+      context -- either the player's own GUID is handled differently, or the cache
+      state during `EnableChatLogging` is incomplete. Combatlog now uses
+      RetrieveNPCDataFromCache directly (same pattern as markers) and it works.
+- [x] **Player name at EnableChatLogging time**: name cache IS populated when
+      LoggingCombat(1) fires. The GetObjectPtr path failed because the object
+      manager isn't ready, not because the name isn't known.
+- [x] **Session marker ordering**: Hooking WriteFormattedLogMessage (0x65ac20)
+      directly guarantees our marker is the first line -- intercepts the first
+      write to the combat log handle and prepends the session marker.

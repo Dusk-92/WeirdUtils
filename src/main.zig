@@ -781,6 +781,34 @@ fn engineInitDetour() callconv(sc) void {
 }
 
 // =============================================================================
+// Hook: World_HandleLogoutCleanup (0x491180)
+// Fires on real character logout/disconnect only — NOT on /reload or map change.
+// =============================================================================
+
+var logout_hook: hook.Detour(fn () callconv(sc) void) = .{};
+
+fn logoutDetour() callconv(sc) void {
+    con.print("[weirdutils] World_HandleLogoutCleanup -- player logout\n");
+
+    // Reset per-session state — only on real logout/disconnect, not /reload.
+    if (build_opts.worldmarkers) markers.onShutdown();
+    if (build_opts.combatlog) combatlog.onShutdown();
+
+    // Clean up world objects BEFORE game teardown — modules with
+    // remove_on_shutdown must destroy while game systems are alive.
+    comptime var i = modules.len;
+    inline while (i > 0) {
+        i -= 1;
+        const m = modules[i];
+        if (m.remove_on_shutdown) {
+            if (m.remove) |rm| rm();
+        }
+    }
+
+    logout_hook.callOriginal(.{});
+}
+
+// =============================================================================
 // Hook: CGGameUI_Shutdown (0x490BD0)
 // =============================================================================
 
@@ -816,20 +844,9 @@ const modules = [_]ModuleHooks{
 };
 
 fn shutdownDetour() callconv(sc) void {
-    // Clear marker definitions on logout/exit (not on map change).
-    if (build_opts.worldmarkers) markers.onShutdown();
-
-    // Clean up world objects BEFORE game shutdown — atexit handlers run before
-    // DllMain so modules with remove_on_shutdown must destroy here.
-    comptime var i = modules.len;
-    inline while (i > 0) {
-        i -= 1;
-        const m = modules[i];
-        if (m.remove_on_shutdown) {
-            if (m.remove) |rm| rm();
-        }
-    }
-
+    con.print("[weirdutils] CGGameUI_Shutdown\n");
+    // Per-session resets and remove_on_shutdown cleanup live in logoutDetour
+    // (World_HandleLogoutCleanup) — fires on real logout/disconnect only, not /reload.
     shutdown_hook.callOriginal(.{});
 }
 
@@ -851,11 +868,13 @@ fn install() void {
 
     _ = load_addons_hook.attach(0x51F600, &loadAddonsDetour);
     _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
+    _ = logout_hook.attach(0x491180, &logoutDetour);
     _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
 }
 
 fn uninstall() void {
     shutdown_hook.detach();
+    logout_hook.detach();
     engine_init_hook.detach();
 
     // Remove in reverse order

@@ -23,15 +23,6 @@ pub const COMBAT_LOG_HANDLE: usize = 0x00b50544;
 pub const FN_WRITE_FMT_LOG_MSG: usize = 0x0065ac20;
 
 // =============================================================================
-// Combat log enable
-// =============================================================================
-
-/// EnableChatLogging — __fastcall(ECX=lua_State, EDX=index).
-/// index 0=chat, 1=combat. Called by LoggingCombat()/LoggingChat() Lua functions.
-/// Reads path from path_table[index] and opens log file on first enable.
-pub const FN_ENABLE_CHAT_LOGGING: usize = 0x0049fe50;
-
-// =============================================================================
 // Player identity
 // =============================================================================
 

@@ -124,18 +124,35 @@ fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
 }
 
 // =============================================================================
-// Session marker
+// Session marker state
 // =============================================================================
 
 var g_session_marker_written: bool = false;
 
-/// Write a COMBATLOG_SESSION line with the player's name to the combat log.
-/// Called once after combat logging is first enabled for this session.
-fn maybeWriteSessionMarker() void {
-    // Read combat log handle — 0 means log not active yet
-    const combat_handle = hook.readMem(u32, o.COMBAT_LOG_HANDLE);
-    if (combat_handle == 0) return;
+// =============================================================================
+// WriteFormattedLogMessage hook — inject session marker on first combat log write
+// =============================================================================
 
+const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
+
+var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) void) = .{};
+
+fn writeLogDetour(handle: u32, fmt: u32, va_list: u32) callconv(sc) void {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    // On first write to combat log, prepend our session marker
+    if (!g_session_marker_written) {
+        const combat_handle = hook.readMem(u32, o.COMBAT_LOG_HANDLE);
+        if (handle == combat_handle and combat_handle != 0) {
+            writeSessionMarkerNow(handle);
+        }
+    }
+
+    write_log_hook.callOriginal(.{ handle, fmt, va_list });
+}
+
+/// Resolve player name and write COMBATLOG_SESSION via callOriginal.
+fn writeSessionMarkerNow(handle: u32) void {
     const player_guid = getPlayerGUID();
     if (player_guid == 0) return;
     const guid_lo: u32 = @truncate(player_guid);
@@ -146,63 +163,32 @@ fn maybeWriteSessionMarker() void {
         return;
     };
 
-    // Copy name to a stack buffer — the name cache pointer can be
-    // invalidated by game-side log writes.
+    // Copy name to stack buffer — cache pointer can be invalidated by the write
     var name_local: [49]u8 = undefined;
     const name_span = std.mem.span(name);
     const len = @min(name_span.len, name_local.len - 1);
     @memcpy(name_local[0..len], name_span[0..len]);
     name_local[len] = 0;
 
-    con.fmt("[combatlog] player name: '{s}' (ptr=0x{x:0>8}, len={d})\n", .{
-        name_local[0..len], @intFromPtr(name), len,
+    // va_list for %s: pointer to a char*
+    const name_ptr: u32 = @intFromPtr(&name_local);
+    write_log_hook.callOriginal(.{
+        handle,
+        @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION: %s")),
+        @intFromPtr(&name_ptr),
     });
 
-    // WriteFormattedLogMessage — __stdcall(handle, fmt, va_list).
-    // RET 0xC: callee cleans 12 bytes (3 args), no caller cleanup needed.
-    // arg3 (va_list) is a pointer to the variadic args on the stack.
-    // For %s, vsprintf reads *(char**)va_list, so va_list must point to a char*.
-    const name_ptr: u32 = @intFromPtr(&name_local);
-    const args = [3]u32{ combat_handle, @intFromPtr(@as([*:0]const u8, "COMBATLOG_SESSION: %s")), @intFromPtr(&name_ptr) };
-    asm volatile (
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
-        \\ call *%[func]
-        :
-        : [a] "r" (&args),
-          [func] "r" (@as(u32, o.FN_WRITE_FMT_LOG_MSG)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-
     g_session_marker_written = true;
-    con.fmt("[combatlog] session: {s}\n", .{name_local[0..len]});
+    con.fmt("[combatlog] session marker written: {s}\n", .{name_local[0..len]});
 }
 
-// =============================================================================
-// EnableChatLogging hook
-// =============================================================================
-
-const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
-
-var enable_logging_hook: hook.Detour(fn (u32, u32) callconv(fc) u32) = .{};
-
-fn enableChatLoggingDetour(lua_state: u32, index: u32) callconv(fc) u32 {
-    // The Lua VM's luaCallFunction (0x6F6050) stores luaState in ESI and the
-    // C function pointer in EDI, dispatches via CALL EDI, then reads [ESI+0x8]
-    // expecting callee-saved registers preserved. Zig may not push ESI/EDI/EBX
-    // in this function's prologue if it doesn't allocate them itself, but subcalls
-    // (callOriginal wrapper, inline asm game calls) can clobber them without the
-    // compiler knowing. This barrier forces Zig to push/pop ESI/EDI/EBX in the
-    // prologue/epilogue and avoid using them for intermediates — guaranteeing
-    // they're correctly restored on return to the Lua VM.
-    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
-
-    const result = enable_logging_hook.callOriginal(.{ lua_state, index });
-    // index 1 = combat log
-    if (index == 1 and !g_session_marker_written) {
-        maybeWriteSessionMarker();
+/// Resets session marker so the next login's first write gets a new marker.
+/// Called from both logoutDetour (real logout) and shutdownDetour (logout/exit/reload).
+pub fn onShutdown() void {
+    if (g_session_marker_written) {
+        g_session_marker_written = false;
+        con.print("[combatlog] session marker reset\n");
     }
-    return result;
 }
 
 // =============================================================================
@@ -232,17 +218,17 @@ pub fn installHooks() void {
     // Redirect combat log path to timestamped+PID filename
     setupPathRedirect();
 
-    // Hook EnableChatLogging to inject session marker on combat log enable
-    if (enable_logging_hook.attach(o.FN_ENABLE_CHAT_LOGGING, &enableChatLoggingDetour) != .ok) {
-        con.print("[combatlog] FAILED to hook EnableChatLogging!\n");
+    // Hook WriteFormattedLogMessage to inject session marker before the first combat log write
+    if (write_log_hook.attach(o.FN_WRITE_FMT_LOG_MSG, &writeLogDetour) != .ok) {
+        con.print("[combatlog] FAILED to hook WriteFormattedLogMessage!\n");
     } else {
-        con.print("[combatlog] hooked EnableChatLogging OK\n");
+        con.print("[combatlog] hooked WriteFormattedLogMessage OK\n");
     }
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        enable_logging_hook.detach();
+        write_log_hook.detach();
         restorePathPointer();
 
         if (g_mutex) |m| {
