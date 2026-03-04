@@ -14,6 +14,7 @@
 const std = @import("std");
 const hook = @import("zhook");
 const con = @import("../console.zig");
+const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
 
 const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
@@ -473,6 +474,30 @@ pub fn onShutdown() void {
     g_session_realm_len = 0;
     // Restore original path pointers so next session starts clean
     restorePathPointers();
+}
+
+// =============================================================================
+// Lua API — log path accessors
+// =============================================================================
+
+/// GetCombatLogPath() → string or nil
+pub fn luaGetCombatLogPath(L: lua.State) callconv(.c) u32 {
+    if (g_combat_path_len > 0) {
+        lua.pushstring(L, @ptrCast(g_combat_path[0..g_combat_path_len :0]));
+    } else {
+        lua.pushnil(L);
+    }
+    return 1;
+}
+
+/// GetChatLogPath() → string or nil
+pub fn luaGetChatLogPath(L: lua.State) callconv(.c) u32 {
+    if (g_chat_path_len > 0) {
+        lua.pushstring(L, @ptrCast(g_chat_path[0..g_chat_path_len :0]));
+    } else {
+        lua.pushnil(L);
+    }
+    return 1;
 }
 
 // =============================================================================

@@ -10,6 +10,14 @@ frame:RegisterEvent("PLAYER_LOGIN")
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00WeirdUtils|r v" .. WEIRDUTILS_VERSION .. " core loaded")
+
+        -- Update log path globals to show actual redirected paths (English locale only)
+        if GetCombatLogPath and COMBATLOGENABLED == "Combat being logged to Logs\\WoWCombatLog.txt" then
+            COMBATLOGENABLED = "Combat being logged to " .. GetCombatLogPath()
+        end
+        if GetChatLogPath and CHATLOGENABLED == "Chat being logged to Logs\\WoWChatLog.txt" then
+            CHATLOGENABLED = "Chat being logged to " .. GetChatLogPath()
+        end
     end
 end)
 

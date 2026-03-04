@@ -115,15 +115,18 @@ Logs\<Realm>\<Character>\WoWCombatLog_YYYYMMDD_HHMMSS.txt
 Logs\<Realm>\<Character>\WoWRawCombatLog_YYYYMMDD_HHMMSS.txt (superwow only)
 ```
 
-Session markers are written as the first line of each log file:
-- `COMBATLOG_SESSION: <Character> <Realm>` in combat and raw combat logs
-- `CHAT_SESSION: <Character> <Realm>` in chat logs
+Each new game session begins with a marker line (`COMBATLOG_SESSION` or `CHAT_SESSION`) identifying the character and realm. If a log file for the same character was written to within the last 30 minutes, the session continues into the same file instead of creating a new one.
 
-If a log file for the same character was written to within the last 30 minutes, the session continues into the same file instead of creating a new one. This consolidates brief relogs into a single file.
+Like any normal log use, logging must be enabled in-game for files to appear:
+- **Combat log**: `/combatlog` in chat, or `LoggingCombat(1)` from a macro/addon
+- **Chat log**: `/chatlog` in chat, or `LoggingChat(1)` from a macro/addon
 
-Character and realm names are resolved from the character select screen when you click Enter World, so paths are ready before any logging begins. On character logout the session state resets, so the next login gets fresh paths and markers.
+Lua API for addon developers:
 
-No configuration needed, install and forget.
+- `GetCombatLogPath()` -- returns the current combat log file path
+- `GetChatLogPath()` -- returns the current chat log file path
+
+No other configuration needed, install and forget.
 
 **DLL:** `combatlog.dll`
 

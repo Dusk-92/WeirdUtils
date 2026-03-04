@@ -108,6 +108,10 @@ fn registerLuaFunctions() void {
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
+    if (build_opts.combatlog) {
+        registerFunction("GetCombatLogPath", @intFromPtr(&combatlog.luaGetCombatLogPath));
+        registerFunction("GetChatLogPath", @intFromPtr(&combatlog.luaGetChatLogPath));
+    }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
