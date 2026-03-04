@@ -105,9 +105,9 @@ No configuration needed, install and forget.
 
 ---
 
-### Combat Log Sessions
+### Log Sessions
 
-Organizes combat, raw combat, and chat logs into per-character directories with timestamped filenames:
+Organizes the combat, raw combat, and chat logs into per-character directories with timestamped filenames:
 
 ```
 Logs\<Realm>\<Character>\WoWChatLog_YYYYMMDD_HHMMSS.txt
@@ -115,11 +115,8 @@ Logs\<Realm>\<Character>\WoWCombatLog_YYYYMMDD_HHMMSS.txt
 Logs\<Realm>\<Character>\WoWRawCombatLog_YYYYMMDD_HHMMSS.txt (superwow only)
 ```
 
-Each new game session begins with a marker line (`COMBATLOG_SESSION` or `CHAT_SESSION`) identifying the character and realm. If a log file for the same character was written to within the last 30 minutes, the session continues into the same file instead of creating a new one.
-
-Like any normal log use, logging must be enabled in-game for files to appear:
-- **Combat log**: `/combatlog` in chat, or `LoggingCombat(1)` from a macro/addon
-- **Chat log**: `/chatlog` in chat, or `LoggingChat(1)` from a macro/addon
+Every character login begins with a marker line (`COMBATLOG_SESSION` or `CHAT_SESSION`) identifying the character and realm.
+If a log file for the same character was written to within the last 60 minutes, the same logfile will be used instead of creating a new one.
 
 Lua API for addon developers:
 
@@ -128,7 +125,7 @@ Lua API for addon developers:
 
 No other configuration needed, install and forget.
 
-**DLL:** `combatlog.dll`
+**DLL:** `logsessions.dll`
 
 ---
 
@@ -137,6 +134,14 @@ No other configuration needed, install and forget.
 Fixes duplicate floating heal numbers caused by SuperWoW 1.5. Only relevant if you use SuperWoW. No configuration needed, install and forget.
 
 **DLL:** `healtextfix.dll`
+
+---
+
+### Big Cursor
+
+Increases the hardware cursor render size for improved visibility. No configuration needed, install and forget.
+
+**DLL:** `bigcursor.dll`
 
 ---
 

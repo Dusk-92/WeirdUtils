@@ -1,4 +1,4 @@
-//! Address constants for combat log session rotation.
+//! Address constants for log session rotation.
 
 // =============================================================================
 // Combat log path and state

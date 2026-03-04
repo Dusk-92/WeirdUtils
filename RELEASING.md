@@ -57,7 +57,7 @@ want:
 # Example: only transmogfix + customassets + healtextfix
 zig build -Doptimize=ReleaseSmall \
   -Dscreenshot=false -Dinteract=false -Doutline=false \
-  -Dworldmarkers=false -Dframecrash=false -Dcombatlog=false \
+  -Dworldmarkers=false -Dframecrash=false -Dlogsessions=false \
   -Dminimapicons=false \
   -Dtransmogfix=true -Dcustomassets=true -Dhealtextfix=true
 ```
@@ -100,7 +100,8 @@ git push origin main
 
 ## 3. Write the release notes
 
-Use this template — fill in the sections that apply, delete the rest:
+Use this template - fill in the sections that apply, delete the rest.
+Use `-` (not em dash) anywhere a dash would be used:
 
 ```markdown
 ## What's New
@@ -143,8 +144,23 @@ tea release create \
   --asset zig-out/variants/healtextfix.dll
 ```
 
+## 5. Hide source archives
+
+Codeberg attaches empty source tar/zip by default. Hide them via API:
+
+```sh
+curl -s -X PATCH \
+  -H "Authorization: token <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"hide_archive_links":true}' \
+  "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils/releases/<release-id>"
+```
+
+Get the release ID from `tea release list --repo MarcelineVQ/WeirdUtils --output json`.
+
 ## Checklist
 
 - [ ] Built with `ReleaseSmall` (both default and `all-variants`)
 - [ ] Remote README updated (if `DLL_README.md` changed)
 - [ ] Release created and DLLs uploaded via `tea`
+- [ ] Source archives hidden

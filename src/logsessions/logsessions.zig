@@ -1,4 +1,4 @@
-//! Combat log session rotation with per-character directories.
+//! Log session rotation with per-character directories.
 //!
 //! Redirects combat log, raw combat log, and chat log to per-character
 //! directories: `Logs\<realm>\<character>\<Type>_<timestamp>_<PID>.txt`.
@@ -6,7 +6,7 @@
 //! Features:
 //! - Early path setup: hooks HandleCharacterSelection to resolve character/realm
 //!   from the select screen data before world loading begins
-//! - Session continuation: reuses files modified < 30 min ago
+//! - Session continuation: reuses files modified < 60 min ago
 //! - Session marker: writes `COMBATLOG_SESSION: <char> <realm>` on first combat write
 //!
 //! All DLL-side — no Lua addon needed.
@@ -184,7 +184,7 @@ fn setupSessionDir(realm: []const u8, char_name: []const u8) bool {
     g_dir_path[dir_path.len] = 0;
     g_dir_path_len = dir_path.len;
 
-    con.fmt("[combatlog] dir: {s}\n", .{g_dir_path[0..g_dir_path_len]});
+    con.fmt("[logsessions] dir: {s}\n", .{g_dir_path[0..g_dir_path_len]});
     return true;
 }
 
@@ -193,7 +193,7 @@ fn setupSessionDir(realm: []const u8, char_name: []const u8) bool {
 // =============================================================================
 
 /// Scan directory for files matching `<prefix>_*.txt`, return the newest if
-/// modified within 30 minutes. Writes full path into result_buf, returns length.
+/// modified within 60 minutes. Writes full path into result_buf, returns length.
 fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
     if (g_dir_path_len == 0) return null;
 
@@ -235,7 +235,7 @@ fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
     var current_ft: FILETIME = undefined;
     GetSystemTimeAsFileTime(&current_ft);
     const current: u64 = @bitCast(current_ft);
-    const threshold: u64 = 30 * 60 * 10_000_000; // 30 minutes
+    const threshold: u64 = 60 * 60 * 10_000_000; // 60 minutes
 
     if (current > newest_time and (current - newest_time) < threshold) {
         // Build full path: dir + filename
@@ -252,9 +252,9 @@ fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
 
 /// Resolve a log file path: reuse recent file or generate new timestamped name.
 fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
-    // Try to reuse a recent file (modified < 30 min ago)
+    // Try to reuse a recent file (modified < 60 min ago)
     if (findRecentFile(prefix, result_buf)) |len| {
-        con.fmt("[combatlog] reusing: {s}\n", .{result_buf[0..len]});
+        con.fmt("[logsessions] reusing: {s}\n", .{result_buf[0..len]});
         return len;
     }
 
@@ -273,7 +273,7 @@ fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
         st.wSecond,
     }) catch return 0;
     result_buf[path.len] = 0;
-    con.fmt("[combatlog] new: {s}\n", .{path});
+    con.fmt("[logsessions] new: {s}\n", .{path});
     return path.len;
 }
 
@@ -288,7 +288,7 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
     g_session_char_len = sanitizeName(char_span, &g_session_char);
     g_session_realm_len = sanitizeName(realm_span, &g_session_realm);
 
-    con.fmt("[combatlog] session: {s} on {s}\n", .{
+    con.fmt("[logsessions] session: {s} on {s}\n", .{
         g_session_char[0..g_session_char_len],
         g_session_realm[0..g_session_realm_len],
     });
@@ -298,7 +298,7 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
         g_session_realm[0..g_session_realm_len],
         g_session_char[0..g_session_char_len],
     )) {
-        con.print("[combatlog] setup: failed to create directories\n");
+        con.print("[logsessions] setup: failed to create directories\n");
         return;
     }
 
@@ -342,7 +342,7 @@ fn enterWorldDetour() callconv(sc) void {
         if (char_name != null and realm_name != null) {
             configureSession(std.mem.span(char_name.?), std.mem.span(realm_name.?));
         } else {
-            con.print("[combatlog] enter world: char/realm not available\n");
+            con.print("[logsessions] enter world: char/realm not available\n");
         }
     }
 
@@ -376,18 +376,18 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
 
     // Redirect based on path suffix
     if (g_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWCombatLog.txt")) {
-        con.fmt("[combatlog] redirect: {s} -> {s}\n", .{ path_span, g_combat_path[0..g_combat_path_len] });
+        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_combat_path[0..g_combat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_combat_path), flags, handle_out });
     }
 
     if (g_raw_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWRawCombatLog.txt")) {
         g_raw_combat_handle_addr = handle_out; // capture SuperWoW's handle address
-        con.fmt("[combatlog] redirect: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
+        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_raw_combat_path), flags, handle_out });
     }
 
     if (g_chat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWChatLog.txt")) {
-        con.fmt("[combatlog] redirect: {s} -> {s}\n", .{ path_span, g_chat_path[0..g_chat_path_len] });
+        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_chat_path[0..g_chat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_chat_path), flags, handle_out });
     }
 
@@ -448,7 +448,7 @@ fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
         @intFromPtr(&marker_ptr),
     });
 
-    con.fmt("[combatlog] marker: {s}\n", .{marker_str});
+    con.fmt("[logsessions] marker: {s}\n", .{marker_str});
 }
 
 // =============================================================================
@@ -459,7 +459,7 @@ fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
 /// Called from logoutDetour/shutdownDetour in main.zig.
 pub fn onShutdown() void {
     if (g_paths_configured) {
-        con.print("[combatlog] session reset\n");
+        con.print("[logsessions] session reset\n");
     }
     g_paths_configured = false;
     g_combat_marker_written = false;
@@ -505,11 +505,11 @@ pub fn luaGetChatLogPath(L: lua.State) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHooks() void {
-    con.print("[combatlog] Module loaded\n");
+    con.print("[logsessions] Module loaded\n");
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_CombatlogHook_{d}", .{GetCurrentProcessId()}) catch return;
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_LogSessionsHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
@@ -519,7 +519,7 @@ pub fn installHooks() void {
         _ = CloseHandle(g_mutex.?);
         g_mutex = null;
         g_is_hook_owner = false;
-        con.print("[combatlog] Another DLL owns hooks (mutex taken), skipping\n");
+        con.print("[logsessions] Another DLL owns hooks (mutex taken), skipping\n");
         return;
     }
     g_is_hook_owner = true;
@@ -527,21 +527,21 @@ pub fn installHooks() void {
     // Hook HandleCharacterSelection — sets up paths when player clicks Enter World,
     // before the world loading sequence calls InitializeLogBuffer.
     if (enter_world_hook.attach(o.FN_HANDLE_CHAR_SELECT, &enterWorldDetour) != .ok) {
-        con.print("[combatlog] FAILED to hook HandleCharacterSelection!\n");
+        con.print("[logsessions] FAILED to hook HandleCharacterSelection!\n");
     } else {
-        con.print("[combatlog] hooked HandleCharacterSelection OK\n");
+        con.print("[logsessions] hooked HandleCharacterSelection OK\n");
     }
 
     if (init_log_hook.attach(o.FN_INIT_LOG_BUFFER, &initLogDetour) != .ok) {
-        con.print("[combatlog] FAILED to hook InitializeLogBuffer!\n");
+        con.print("[logsessions] FAILED to hook InitializeLogBuffer!\n");
     } else {
-        con.print("[combatlog] hooked InitializeLogBuffer OK\n");
+        con.print("[logsessions] hooked InitializeLogBuffer OK\n");
     }
 
     if (write_log_hook.attach(o.FN_WRITE_FMT_LOG_MSG, &writeLogDetour) != .ok) {
-        con.print("[combatlog] FAILED to hook WriteFormattedLogMessage!\n");
+        con.print("[logsessions] FAILED to hook WriteFormattedLogMessage!\n");
     } else {
-        con.print("[combatlog] hooked WriteFormattedLogMessage OK\n");
+        con.print("[logsessions] hooked WriteFormattedLogMessage OK\n");
     }
 }
 

@@ -70,8 +70,7 @@ fn unitGUID(unit_id: [*:0]const u8) u64 {
           [hi] "={edx}" (hi),
         : [_] "{ecx}" (unit_id),
           [func] "r" (@as(u32, ADDR_UnitGUID)),
-        : .{ .memory = true, .cc = true }
-    );
+        : .{ .memory = true, .cc = true });
     return @as(u64, hi) << 32 | lo;
 }
 
@@ -86,8 +85,7 @@ fn getObjectByGUID(guid: u64) u32 {
         : [lo] "r" (lo),
           [hi] "r" (hi),
           [func] "r" (@as(u32, ADDR_GetObjectByGUID)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 fn updateInventoryAlertStates() void {
@@ -765,7 +763,6 @@ fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, forc
 // =============================================================================
 
 fn hookSceneEnd(device: u32) callconv(tc) void {
-
     if (g_enabled and (g_local_pending_count > 0 or g_other_pending_count > 0)) {
         processTimeouts(GetTickCount());
     }
@@ -782,7 +779,8 @@ pub fn installHooks() void {
 
     // Multi-DLL safety: only one instance per process should hook
     var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_TransmogCoalesceHook_{d}", .{GetCurrentProcessId()}) catch return;
+    // muted name scheme not quite the same because this dll exists in the wild and we want to match it
+    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\TransmogCoalesceHook_{d}", .{GetCurrentProcessId()}) catch return;
     mutex_name_buf[mutex_name.len] = 0;
 
     g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));

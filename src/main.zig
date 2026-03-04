@@ -9,11 +9,12 @@ const build_opts = struct {
     const outline = @import("build_options").enable_outline;
     const worldmarkers = @import("build_options").enable_worldmarkers;
     const framecrash = @import("build_options").enable_framecrash;
-    const combatlog = @import("build_options").enable_combatlog;
+    const logsessions = @import("build_options").enable_logsessions;
     const minimapicons = @import("build_options").enable_minimapicons;
     const transmogfix = @import("build_options").enable_transmogfix;
     const customassets = @import("build_options").enable_customassets;
     const healtextfix = @import("build_options").enable_healtextfix;
+    const bigcursor = @import("build_options").enable_bigcursor;
 };
 
 // Conditional module imports
@@ -22,11 +23,12 @@ const interact = if (build_opts.interact) @import("interact/interact.zig") else 
 const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
 const markers = if (build_opts.worldmarkers) @import("markers/markers.zig") else struct {};
 const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig") else struct {};
-const combatlog = if (build_opts.combatlog) @import("combatlog/combatlog.zig") else struct {};
+const logsessions = if (build_opts.logsessions) @import("logsessions/logsessions.zig") else struct {};
 const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
 const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix.zig") else struct {};
 const customassets = if (build_opts.customassets) @import("customassets/customassets.zig") else struct {};
 const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
+const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -108,9 +110,9 @@ fn registerLuaFunctions() void {
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
     }
-    if (build_opts.combatlog) {
-        registerFunction("GetCombatLogPath", @intFromPtr(&combatlog.luaGetCombatLogPath));
-        registerFunction("GetChatLogPath", @intFromPtr(&combatlog.luaGetChatLogPath));
+    if (build_opts.logsessions) {
+        registerFunction("GetCombatLogPath", @intFromPtr(&logsessions.luaGetCombatLogPath));
+        registerFunction("GetChatLogPath", @intFromPtr(&logsessions.luaGetChatLogPath));
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
@@ -795,7 +797,7 @@ fn logoutDetour() callconv(sc) void {
 
     // Reset per-session state — only on real logout/disconnect, not /reload.
     if (build_opts.worldmarkers) markers.onShutdown();
-    if (build_opts.combatlog) combatlog.onShutdown();
+    if (build_opts.logsessions) logsessions.onShutdown();
 
     // Clean up world objects BEFORE game teardown — modules with
     // remove_on_shutdown must destroy while game systems are alive.
@@ -836,10 +838,11 @@ const ModuleHooks = struct {
 const modules = [_]ModuleHooks{
     if (build_opts.customassets) .{ .install = customassets.installHooks, .remove = customassets.removeHooks } else .{},
     if (build_opts.framecrash) .{ .install = framecrash.installHooks, .remove = framecrash.removeHooks } else .{},
-    if (build_opts.combatlog) .{ .install = combatlog.installHooks, .remove = combatlog.removeHooks } else .{},
+    if (build_opts.logsessions) .{ .install = logsessions.installHooks, .remove = logsessions.removeHooks } else .{},
     if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},
     if (build_opts.minimapicons) .{ .install = minimapicons.installHooks, .remove = minimapicons.removeHooks } else .{},
     if (build_opts.healtextfix) .{ .install = healtextfix.installHooks, .remove = healtextfix.removeHooks } else .{},
+    if (build_opts.bigcursor) .{ .install = bigcursor.installHooks, .remove = bigcursor.removeHooks } else .{},
     if (build_opts.worldmarkers) .{ .install = markers.installHooks, .remove = markers.removeHooks } else .{},
     if (build_opts.interact) .{ .install = interact.installHooks, .remove = interact.removeHooks } else .{},
     if (build_opts.outline) .{ .remove = outline.cleanup } else .{},
