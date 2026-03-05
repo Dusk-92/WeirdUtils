@@ -64,7 +64,6 @@ pub fn build(b: *std.Build) void {
     // Helper to create a single-module build
     const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, worldmarkers: bool, framecrash: bool, logsessions: bool, minimapicons: bool, transmogfix: bool, customassets: bool, healtextfix: bool, bigcursor: bool };
     inline for (&[_]Variant{
-        .{ .name = "full", .screenshot = true, .interact = true, .outline = true, .worldmarkers = true, .framecrash = true, .logsessions = true, .minimapicons = true, .transmogfix = true, .customassets = true, .healtextfix = true, .bigcursor = true },
         .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
         .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
         .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
