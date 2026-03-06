@@ -18,12 +18,12 @@ end
 -- Delimiter is ":" (pipe "|" is WoW's escape char for color codes)
 --
 -- Messages:
---   P:idx:x:y:z:area    — live placement (everyone processes)
---   C:idx                — clear one marker
---   CA                   — clear all markers
---   SR                   — sync request (non-leader asking leader to send defs)
---   LSR                  — leader sync request (leader asking anyone to send defs)
---   SF:idx:x:y:z:area   — sync fill (only processed by requester in sync mode)
+--   P:idx:x:y:z:area    - live placement (everyone processes)
+--   C:idx                - clear one marker
+--   CA                   - clear all markers
+--   SR                   - sync request (non-leader asking leader to send defs)
+--   LSR                  - leader sync request (leader asking anyone to send defs)
+--   SF:idx:x:y:z:area   - sync fill (only processed by requester in sync mode)
 --
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
@@ -265,7 +265,7 @@ local function onAddonMessage(prefix, message, channel, sender)
         return
     end
 
-    -- P, C, CA — DLL checks sender permission via SetMarkerDef/ClearMarkerDef
+    -- P, C, CA - DLL checks sender permission via SetMarkerDef/ClearMarkerDef
     if cmd == "P" then
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
@@ -315,7 +315,7 @@ local function scheduleSyncRequest()
 end
 
 -- =============================================================================
--- Roster change tracking — retriggerable debounce timer
+-- Roster change tracking - retriggerable debounce timer
 -- Each roster event that increases group size adds 1s to the timer (starts at
 -- 5s, caps at 10s). When the timer expires, one broadcast fires. This
 -- guarantees delivery after the storm of events settles.

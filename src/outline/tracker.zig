@@ -2,12 +2,12 @@
 //!
 //! Maintains fixed-size arrays of tracked object pointers (target, raid marks,
 //! dead players) and the per-frame set of outline model entries.
-//! All state is single-threaded (main WoW thread) — no synchronisation needed.
+//! All state is single-threaded (main WoW thread) - no synchronisation needed.
 //!
 //! Model classification uses forward mapping: scanObjects stores object pointers
 //! from the object manager, then classifyModel (ManageRenderListNode) reads the
 //! model's back-pointers (model+0x28, model+0x3C0) and compares them against
-//! known object pointers.  No dereferencing of unknown memory — just value
+//! known object pointers.  No dereferencing of unknown memory - just value
 //! comparison against the object manager's validated set.
 
 const std = @import("std");
@@ -27,7 +27,7 @@ const MAX_OUTLINE_MODELS = 256;
 // Tracked object set (populated by scanObjects from the object manager)
 // =============================================================================
 // Stores obj_ptr + category for entities we want to outline.
-// classifyModel matches model back-pointers against these — no pointer chasing.
+// classifyModel matches model back-pointers against these - no pointer chasing.
 
 const TrackedObj = struct {
     obj_ptr: u32,
@@ -46,7 +46,7 @@ var frame_outlines: [MAX_OUTLINE_MODELS]types.OutlineEntry = undefined;
 var frame_outline_count: usize = 0;
 
 // =============================================================================
-// Per-frame game object tracking (for render ordering — game objects first)
+// Per-frame game object tracking (for render ordering - game objects first)
 // =============================================================================
 // Game object M2 models need to render before outline targets so their depth
 // is in the buffer when stencil marks are written. Tracked separately from
@@ -127,7 +127,7 @@ pub fn getOutlinePixels(cat: types.ModelCategory) f32 {
 
 /// Classify a model by comparing its back-pointers against known object pointers.
 /// Safe: only reads from the model struct (which WoW just handed us via the
-/// ManageRenderListNode __thiscall), then compares values — never dereferences
+/// ManageRenderListNode __thiscall), then compares values - never dereferences
 /// the back-pointer values as pointers.
 pub fn classifyModel(model_ptr: u32) void {
     if (model_ptr == 0 or !enabled) return;
@@ -155,7 +155,10 @@ pub fn classifyModel(model_ptr: u32) void {
                 // Deduplicate
                 var found = false;
                 for (game_obj_models[0..game_obj_model_count]) |m| {
-                    if (m == model_ptr) { found = true; break; }
+                    if (m == model_ptr) {
+                        found = true;
+                        break;
+                    }
                 }
                 if (!found) {
                     game_obj_models[game_obj_model_count] = model_ptr;
@@ -214,7 +217,7 @@ pub fn scanObjects() void {
     // Cache raid target GUIDs
     wow.cacheRaidTargets();
 
-    // Resolve target to object pointer (highest priority — added first)
+    // Resolve target to object pointer (highest priority - added first)
     const target_guid = wow.getTargetGUID();
     if (target_guid != 0) {
         const target_obj = wow.getObjectByGUID(target_guid);

@@ -64,7 +64,7 @@ Verified 2026-02-23 using Ghidra MCP against WoW.exe 1.12.1 (build 5875, 4,907,0
 
 ### Method
 
-Raw bytes read from each hook target address via `get_bytes`. Instruction boundaries decoded to confirm the `prologue_size` parameter passed to `hook.prepare()` lands on a clean instruction boundary. A mid-instruction cut would corrupt the trampoline — the copied bytes would decode as a different instruction when followed by the trampoline's JMP.
+Raw bytes read from each hook target address via `get_bytes`. Instruction boundaries decoded to confirm the `prologue_size` parameter passed to `hook.prepare()` lands on a clean instruction boundary. A mid-instruction cut would corrupt the trampoline - the copied bytes would decode as a different instruction when followed by the trampoline's JMP.
 
 ### Results
 
@@ -81,4 +81,4 @@ Raw bytes read from each hook target address via `get_bytes`. Instruction bounda
 ### No other changes needed
 
 - All three prologues contain only register/memory instructions (no `E8 CALL` or `E9 JMP`), so `rel32_fixups` remains `&.{}`.
-- The 4-byte NOP padding (bytes 5-8) at `0x0070b360` after the 5-byte `E9 JMP` is harmless — it is never executed (execution jumps to the detour thunk).
+- The 4-byte NOP padding (bytes 5-8) at `0x0070b360` after the 5-byte `E9 JMP` is harmless - it is never executed (execution jumps to the detour thunk).

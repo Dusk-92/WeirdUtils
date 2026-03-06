@@ -9,7 +9,7 @@
 //! - Session continuation: reuses files modified < 60 min ago
 //! - Session marker: writes `COMBATLOG_SESSION: <char> <realm>` on first combat write
 //!
-//! All DLL-side — no Lua addon needed.
+//! All DLL-side - no Lua addon needed.
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -72,11 +72,19 @@ const WIN32_FIND_DATAA = extern struct {
 // Mutex state
 // =============================================================================
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "logsessions";
+
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
+
 // =============================================================================
-// Session state — reset on logout
+// Session state - reset on logout
 // =============================================================================
 
 /// Static buffers for redirected paths (null-terminated). Must outlive the process.
@@ -105,7 +113,7 @@ var g_combat_marker_written: bool = false;
 var g_chat_marker_written: bool = false;
 var g_raw_marker_written: bool = false;
 
-/// Raw combat log handle address — captured from initLogDetour when SuperWoW
+/// Raw combat log handle address - captured from initLogDetour when SuperWoW
 /// calls InitializeLogBuffer for WoWRawCombatLog. We don't know this address
 /// statically; SuperWoW passes it as handle_out.
 var g_raw_combat_handle_addr: u32 = 0;
@@ -113,7 +121,6 @@ var g_raw_combat_handle_addr: u32 = 0;
 /// Saved original path pointers for restoration.
 var g_original_combat_path_ptr: u32 = 0;
 var g_original_chat_path_ptr: u32 = 0;
-
 
 // =============================================================================
 // Character / realm identity
@@ -189,7 +196,7 @@ fn setupSessionDir(realm: []const u8, char_name: []const u8) bool {
 }
 
 // =============================================================================
-// Session continuation — find recent file to reuse
+// Session continuation - find recent file to reuse
 // =============================================================================
 
 /// Scan directory for files matching `<prefix>_*.txt`, return the newest if
@@ -231,7 +238,7 @@ fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
 
     if (newest_name_len == 0) return null;
 
-    // Compare against current time — both UTC FILETIME (100ns units)
+    // Compare against current time - both UTC FILETIME (100ns units)
     var current_ft: FILETIME = undefined;
     GetSystemTimeAsFileTime(&current_ft);
     const current: u64 = @bitCast(current_ft);
@@ -324,7 +331,7 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
 }
 
 // =============================================================================
-// HandleCharacterSelection hook — set up paths before world loading
+// HandleCharacterSelection hook - set up paths before world loading
 // =============================================================================
 
 var enter_world_hook: hook.Detour(fn () callconv(sc) void) = .{};
@@ -363,7 +370,7 @@ fn restorePathPointers() void {
 }
 
 // =============================================================================
-// InitializeLogBuffer hook — lazy setup + path redirect
+// InitializeLogBuffer hook - lazy setup + path redirect
 // =============================================================================
 
 var init_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) u32) = .{};
@@ -395,7 +402,7 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
 }
 
 // =============================================================================
-// WriteFormattedLogMessage hook — inject session markers on first write per log
+// WriteFormattedLogMessage hook - inject session markers on first write per log
 // =============================================================================
 
 var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) void) = .{};
@@ -452,7 +459,7 @@ fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
 }
 
 // =============================================================================
-// Shutdown — reset session state for next login
+// Shutdown - reset session state for next login
 // =============================================================================
 
 /// Resets all session state so the next login gets fresh paths.
@@ -477,7 +484,7 @@ pub fn onShutdown() void {
 }
 
 // =============================================================================
-// Lua API — log path accessors
+// Lua API - log path accessors
 // =============================================================================
 
 /// GetCombatLogPath() → string or nil
@@ -507,24 +514,12 @@ pub fn luaGetChatLogPath(L: lua.State) callconv(.c) u32 {
 pub fn installHooks() void {
     con.print("[logsessions] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_LogSessionsHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return;
 
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[logsessions] Another DLL owns hooks (mutex taken), skipping\n");
-        return;
-    }
-    g_is_hook_owner = true;
-
-    // Hook HandleCharacterSelection — sets up paths when player clicks Enter World,
+    // Hook HandleCharacterSelection - sets up paths when player clicks Enter World,
     // before the world loading sequence calls InitializeLogBuffer.
     if (enter_world_hook.attach(o.FN_HANDLE_CHAR_SELECT, &enterWorldDetour) != .ok) {
         con.print("[logsessions] FAILED to hook HandleCharacterSelection!\n");
@@ -551,12 +546,7 @@ pub fn removeHooks() void {
         init_log_hook.detach();
         enter_world_hook.detach();
         restorePathPointers();
-
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

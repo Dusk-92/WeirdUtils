@@ -18,8 +18,8 @@
 
 ### Model Rendering Hooks
 - **File:** `src/outline/model_hook.zig`
-- `CM2SceneRenderDraw` hook — batch reordering for depth control
-- `CM2Scene_DrawBatchProjected` hook — per-batch interception
+- `CM2SceneRenderDraw` hook - batch reordering for depth control
+- `CM2Scene_DrawBatchProjected` hook - per-batch interception
 - Access to render context and model pointers
 - Batch reordering ensures outline targets render when only terrain+WMO depth exists
 
@@ -40,10 +40,10 @@
 ### UnitXP SP3 Reference
 - **Path:** `/media/storage/projects/UnitXP_SP3_Orig/UnitXP_SP3/`
 - **Key file:** `Vanilla1121_functions.h`
-- `vanilla1121_worldToScreen(C3Vector& world)` — world → screen projection
-- `CWorld_Intersect()` — raycast through world geometry
-- `vanilla1121_unitPosition()` — unit world position
-- `vanilla1121_getCameraPosition()` — camera world position
+- `vanilla1121_worldToScreen(C3Vector& world)` - world → screen projection
+- `CWorld_Intersect()` - raycast through world geometry
+- `vanilla1121_unitPosition()` - unit world position
+- `vanilla1121_getCameraPosition()` - camera world position
 
 ### WoWee Terrain Renderer Reference
 - **Path:** `/media/storage/projects/WoWee/src/rendering/terrain_renderer.cpp`

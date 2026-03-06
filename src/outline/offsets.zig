@@ -93,7 +93,7 @@ pub const IS_IN_WORLD: usize = 0xB4B424;
 // =============================================================================
 
 /// __stdcall(guidLo_stack, guidHi_stack) → object pointer (EAX). Returns 0 on miss.
-/// Callee cleans 8 bytes (RET 8). NOT __fastcall — params on stack, not registers.
+/// Callee cleans 8 bytes (RET 8). NOT __fastcall - params on stack, not registers.
 pub const FN_GET_OBJECT_BY_GUID: usize = 0x464870;
 
 /// __fastcall(unitIdStr_ECX) → GUID in EAX:EDX. Accepts "player", "target", etc.
@@ -106,14 +106,14 @@ pub const FN_UNIT_REACTION: usize = 0x6061E0;
 // Hooked function addresses (model rendering pipeline)
 // =============================================================================
 
-/// CM2SceneRenderDraw — main batch rendering entry point.
+/// CM2SceneRenderDraw - main batch rendering entry point.
 /// __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
 pub const FN_CM2SCENE_RENDER_DRAW: usize = 0x0070b360;
 
-/// CM2Model_ManageRenderListNode — called for every model added/removed from render list.
+/// CM2Model_ManageRenderListNode - called for every model added/removed from render list.
 /// __thiscall(model_ECX, addToList_stack)
 pub const FN_CM2MODEL_MANAGE_RENDER_LIST: usize = 0x00710b90;
 
-/// CM2Scene_DrawModelBatchProjected — called per batch (type 0) during rendering.
+/// CM2Scene_DrawModelBatchProjected - called per batch (type 0) during rendering.
 /// __fastcall(renderContext_ECX)
 pub const FN_DRAW_BATCH_PROJ: usize = 0x0070cb30;

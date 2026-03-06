@@ -36,7 +36,7 @@ Uses **depth-buffer + Sobel edge detection** tightly integrated into the renderi
 
 - During the skinned mesh rendering pass, shaders write **scaled depth** to a secondary buffer via **Multiple Render Targets (MRT)**.
 - Outlines are produced by running a **Sobel filter** on that scaled depth buffer. The Sobel filter finds discontinuities in depth corresponding to silhouette edges.
-- The detected edge is rendered back over the skinned mesh — done **per-mesh individually**, not as a single full-screen post-process.
+- The detected edge is rendered back over the skinned mesh - done **per-mesh individually**, not as a single full-screen post-process.
 - For GPUs that do not support MRT, there is a **fallback using stencil buffers**.
 - Rendering order places outlines as a dedicated stage between skinned meshes and grass/water in a 13-stage pipeline.
 
@@ -48,13 +48,13 @@ Sources:
 
 ### Valve Source Engine (Left 4 Dead / DOTA 2 / TF2)
 
-Uses the **"L4D Glow Effect"** — a **stencil + render-to-texture + blur** approach. Used across Left 4 Dead, TF2, CS:GO, and DOTA 2 (pre-Source 2):
+Uses the **"L4D Glow Effect"** - a **stencil + render-to-texture + blur** approach. Used across Left 4 Dead, TF2, CS:GO, and DOTA 2 (pre-Source 2):
 
 1. **Stencil pass**: Draw the entity onto the Stencil Buffer. Creates a "cutout" mask of the entity's silhouette.
 2. **Color pass**: Draw the entity with the desired glow color (flat/constant color) onto a separate Render Target ("GlowBuff1").
 3. **Blur + composite**: Blur GlowBuff1 (using a second RT "GlowBuff2" for ping-pong blur passes), then render the blurred result to the screen **while respecting the stencil buffer**. The stencil test ensures only the blurred pixels that extend beyond the entity's silhouette are visible, producing a halo/outline effect.
 
-The stencil cutout is the key innovation — it prevents the glow color from appearing inside the character, so you only see the outline fringe.
+The stencil cutout is the key innovation - it prevents the glow color from appearing inside the character, so you only see the outline fringe.
 
 Sources:
 - https://developer.valvesoftware.com/wiki/L4D_Glow_Effect
@@ -94,10 +94,10 @@ Sources:
 
 **How it works:**
 
-Render each target's silhouette as flat color to an offscreen render target (depth-tested against terrain for alive, no depth for dead). Then run a pixel shader that samples an NxN neighborhood — if any sample is "on", the pixel is outline. Subtract the original mask to get just the ring. Composite over backbuffer.
+Render each target's silhouette as flat color to an offscreen render target (depth-tested against terrain for alive, no depth for dead). Then run a pixel shader that samples an NxN neighborhood - if any sample is "on", the pixel is outline. Subtract the original mask to get just the ring. Composite over backbuffer.
 
 ```hlsl
-// SM3.0 pixel shader — fixed-size box dilation
+// SM3.0 pixel shader - fixed-size box dilation
 sampler2D SilhouetteTex;
 float2 TexelSize; // (1.0/screenW, 1.0/screenH)
 
@@ -131,7 +131,7 @@ if (length(float2(x, y)) <= OutlineRadius) {
 
 **Cons:**
 - Square corners at large radii (box kernel artifact)
-- Cost grows as O(N^2) with outline width — impractical beyond ~8px
+- Cost grows as O(N^2) with outline width - impractical beyond ~8px
 - Needs 2-3 render targets
 
 **Performance:** 49 texture samples per pixel at 1024x768 = ~38M samples. On modern hardware: effectively free (<1ms). On 2004-era hardware: 2-4ms.
@@ -144,7 +144,7 @@ if (length(float2(x, y)) <= OutlineRadius) {
 
 The JFA (Rong & Tan, 2006) computes an approximate 2D distance transform on the GPU using O(log N) pixel shader passes. This is the foundation of high-quality screen-space outlines in modern games.
 
-**Step 1 — Seed initialization:**
+**Step 1 - Seed initialization:**
 Render unit silhouettes into a binary mask. An init shader reads this mask: "on" pixels output their own UV coordinates, "off" pixels get a sentinel value (e.g., `(9999, 9999)`). Output format: RG16F (two channels for x,y coordinates).
 
 ```hlsl
@@ -159,7 +159,7 @@ float4 SeedInitPS(float2 uv : TEXCOORD0) : COLOR0
 }
 ```
 
-**Step 2 — JFA propagation (iterative):**
+**Step 2 - JFA propagation (iterative):**
 Execute `ceil(log2(maxOutlineRadius))` passes. For pass k, step size = `2^(N-k-1)` (starts large, halves each pass). Each pixel samples itself and 8 compass neighbors at the step offset (9 total samples in a 3x3 grid with large spacing). Keep the seed coordinate nearest to the current pixel. Ping-pong between two render targets.
 
 ```hlsl
@@ -190,7 +190,7 @@ float4 JFAPassPS(float2 uv : TEXCOORD0) : COLOR0
 }
 ```
 
-**Step 3 — Distance readout and outline generation:**
+**Step 3 - Distance readout and outline generation:**
 After all passes, each texel holds the UV of the nearest seed. Convert to pixel-space distance and threshold:
 
 ```hlsl
@@ -210,12 +210,12 @@ float4 OutlinePS(float2 uv : TEXCOORD0) : COLOR0
 }
 ```
 
-**D3D9/SM3.0 compatibility:** Fully compatible. Each pass is a simple pixel shader with 9 texture samples and simple arithmetic. No gather, no integer bitops, no geometry/compute shaders required. Ping-pong between two textures is standard D3D9. The only requirement is that D3D9 does not allow reading and writing the same surface — alternate between two textures each pass.
+**D3D9/SM3.0 compatibility:** Fully compatible. Each pass is a simple pixel shader with 9 texture samples and simple arithmetic. No gather, no integer bitops, no geometry/compute shaders required. Ping-pong between two textures is standard D3D9. The only requirement is that D3D9 does not allow reading and writing the same surface - alternate between two textures each pass.
 
 **Pros:**
-- Exact circular distance field — perfectly round outlines at any width
+- Exact circular distance field - perfectly round outlines at any width
 - Anti-aliasable (smoothstep on the distance)
-- Cost is O(log2(N)) passes — a 32px outline costs only 5 passes
+- Cost is O(log2(N)) passes - a 32px outline costs only 5 passes
 - Enables soft glow, pulsing, gradient effects for free (just change threshold function)
 - Nothing requires anything beyond SM2.0
 
@@ -227,7 +227,7 @@ float4 OutlinePS(float2 uv : TEXCOORD0) : COLOR0
 
 **Performance:** 10 fullscreen passes at 9 samples each = 90M samples at 1024x768. On modern hardware: sub-millisecond. Can run at half resolution (512x384) to halve cost with minimal quality loss for outlines up to 5-6px.
 
-**Occlusion:** Same as dilation — mask generation is independent of outline generation.
+**Occlusion:** Same as dilation - mask generation is independent of outline generation.
 
 **JFA quality:** Approximation error bounded at sqrt(2)/2 pixels at jump step boundaries. For outlines up to ~20px, visually imperceptible. Results are smooth, rotationally symmetric, and anti-aliasable.
 
@@ -247,7 +247,7 @@ Sources:
 
 **How it works:**
 
-Render each target with a unique ID value into an R8 render target (depth-tested). Run a 3x3 Sobel filter — pixels where neighboring IDs differ are edges.
+Render each target with a unique ID value into an R8 render target (depth-tested). Run a 3x3 Sobel filter - pixels where neighboring IDs differ are edges.
 
 ```hlsl
 float4 SobelEdgePS(float2 uv : TEXCOORD0) : COLOR0
@@ -276,7 +276,7 @@ float4 SobelEdgePS(float2 uv : TEXCOORD0) : COLOR0
 - No variable-thickness artifacts
 
 **Cons:**
-- Produces only 1-2px outlines — can't thicken without adding dilation anyway
+- Produces only 1-2px outlines - can't thicken without adding dilation anyway
 - Detects unit-to-unit boundaries too (unwanted internal edges between overlapping characters)
 - Alone, not sufficient for controllable-width outlines
 
@@ -291,7 +291,7 @@ float4 SobelEdgePS(float2 uv : TEXCOORD0) : COLOR0
 Render silhouette to RT. Separable Gaussian blur (H pass + V pass). Subtract original from blurred → outline. Can downsample to 1/4 res for performance (like retail WoW does for bloom).
 
 ```hlsl
-// Gaussian blur 5-tap (separable — run horizontal then vertical)
+// Gaussian blur 5-tap (separable - run horizontal then vertical)
 float weights[5] = {0.0625, 0.25, 0.375, 0.25, 0.0625};
 
 float4 GaussianBlurPS(float2 uv : TEXCOORD0) : COLOR0
@@ -320,13 +320,13 @@ float4 OutlineExtractPS(float2 uv : TEXCOORD0) : COLOR0
 - Downsampling to 1/4 res makes a 4px kernel act like a 16px outline
 
 **Cons:**
-- Soft/gradient edges, not crisp — looks like a glow, not a hard outline
+- Soft/gradient edges, not crisp - looks like a glow, not a hard outline
 - Width control is imprecise (tied to blur sigma)
 - Can't produce a hard-edged outline without thresholding (which re-introduces aliasing)
 
 **Performance:** 2 fullscreen passes with 5 samples each = 10 samples total. Very cheap.
 
-**Occlusion:** Same as dilation — mask generation is independent.
+**Occlusion:** Same as dilation - mask generation is independent.
 
 ### 5. Normal Extrusion (Current Approach, Refined)
 
@@ -371,12 +371,12 @@ This makes outline thickness uniform in screen pixels at any depth.
 
 All screen-space techniques (1-4) share a two-phase architecture that differs fundamentally from the current normal-extrusion approach:
 
-**Phase A — Silhouette mask generation (in DIP hook, per-unit)**
+**Phase A - Silhouette mask generation (in DIP hook, per-unit)**
 - For alive targets: render unit geometry with depth test ON against scene depth → writes to RT_Silhouette
 - For dead targets: render with depth test OFF → writes to RT_Dead
 - This is where the 3 occlusion requirements are enforced
 
-**Phase B — Outline generation + composite (in EndScene, once per frame)**
+**Phase B - Outline generation + composite (in EndScene, once per frame)**
 - Dilate/JFA/blur the mask → extract outline ring → alpha-blend over backbuffer
 - This is purely 2D, knows nothing about depth
 
@@ -397,9 +397,9 @@ Requirement 2 (other units don't occlude outlines) is the hardest to satisfy. It
 **JFA with batch reordering for Req 2.**
 
 Rationale:
-- Batch reordering already solves Req 2 without needing a secondary depth buffer — outline targets render when only terrain depth exists
+- Batch reordering already solves Req 2 without needing a secondary depth buffer - outline targets render when only terrain depth exists
 - JFA gives the best outline quality (uniform, circular, anti-aliased, any width) at O(log2(N)) cost
-- The outline width of 2-3px only needs ~2 JFA passes — nearly free
+- The outline width of 2-3px only needs ~2 JFA passes - nearly free
 - Glow/pulse effects come for free if desired
 - Everything is SM2.0 compatible, let alone SM3.0
 - The silhouette mask pass replaces the current pass 1+2 (stencil body + normal extrusion) with a simpler "render flat color to RT"
@@ -409,9 +409,9 @@ Rationale:
 
 **Resources to create at device creation/reset:**
 ```
-RT_Silhouette:  RGBA8, screen size — mask for all outline targets
-RT_JFA_A:       RG16F, screen size — JFA ping-pong buffer A
-RT_JFA_B:       RG16F, screen size — JFA ping-pong buffer B
+RT_Silhouette:  RGBA8, screen size - mask for all outline targets
+RT_JFA_A:       RG16F, screen size - JFA ping-pong buffer A
+RT_JFA_B:       RG16F, screen size - JFA ping-pong buffer B
 ```
 
 **Hook intercept points:**
@@ -454,15 +454,15 @@ Restore all after outline composite.
 
 ## Additional References
 
-- "Inking the Cube" (GPU Gems 1, Chapter 11, Everitt) — screen-space dilation
-- "Advanced Techniques in Real-Time Rendering" (GDC 2011, de Carpentier) — screen-space outlines
-- "Post-Processing Effects in Games" (GDC 2013, Wihlidal) — Sobel ID-buffer approach
+- "Inking the Cube" (GPU Gems 1, Chapter 11, Everitt) - screen-space dilation
+- "Advanced Techniques in Real-Time Rendering" (GDC 2011, de Carpentier) - screen-space outlines
+- "Post-Processing Effects in Games" (GDC 2013, Wihlidal) - Sobel ID-buffer approach
 - Unreal Engine 4 custom depth/stencil outline documentation
-- https://ameye.dev/notes/rendering-outlines/ — "5 Ways to Draw an Outline"
-- https://linework.ameye.dev/soft-outline/ — soft outline documentation
+- https://ameye.dev/notes/rendering-outlines/ - "5 Ways to Draw an Outline"
+- https://linework.ameye.dev/soft-outline/ - soft outline documentation
 - https://www.codeproject.com/Articles/128527/Stencil-Buffer-Glows-Part-1
 - https://www.codeproject.com/Articles/156323/Stencil-Buffer-Glows-Part-2
 - https://www.tomlooman.com/unreal-engine-soft-outline/
-- https://aras-p.info/texts/D3D9GPUHacks.html — D3D9 GPU hacks reference
-- https://ameye.dev/notes/edge-detection-outlines/ — edge detection outlines
-- https://www.videopoetics.com/tutorials/pixel-perfect-outline-shaders-unity/ — pixel-perfect outlines
+- https://aras-p.info/texts/D3D9GPUHacks.html - D3D9 GPU hacks reference
+- https://ameye.dev/notes/edge-detection-outlines/ - edge detection outlines
+- https://www.videopoetics.com/tutorials/pixel-perfect-outline-shaders-unity/ - pixel-perfect outlines

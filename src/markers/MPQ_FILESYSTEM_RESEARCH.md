@@ -59,16 +59,16 @@ Archives are stored in a **dynamic array** managed as a struct:
 Global archive array struct at 0x8826b4:
   +0x00 [0x8826b4]: capacity     (max slots)
   +0x04 [0x8826b8]: count        (current number of archives)
-  +0x08 [0x8826bc]: array_ptr    (SArchive** — pointer to array of SArchive pointers)
+  +0x08 [0x8826bc]: array_ptr    (SArchive** - pointer to array of SArchive pointers)
   +0x0C [0x8826c0]: growth_incr  (allocation growth increment)
 
 RTTI tag: ".PAVSArchive@@" at 0x82e248
 ```
 
 Managed by:
-- `GrowArchiveArray` (0x4045a0) — __thiscall, resizes the array
-- `ResizeArchiveArray` (0x4046f0) — sets initial capacity
-- `MPQ_CleanupAllArchives` (0x403c70) — iterates count→0 calling Archive_Close
+- `GrowArchiveArray` (0x4045a0) - __thiscall, resizes the array
+- `ResizeArchiveArray` (0x4046f0) - sets initial capacity
+- `MPQ_CleanupAllArchives` (0x403c70) - iterates count→0 calling Archive_Close
 
 ### SArchive Object (Minimal Wrapper)
 
@@ -114,18 +114,18 @@ From `InitializeArchiveStructure` (0x655bf0), the full MPQ handle (pointed to by
 | +0x290 | `[0xa4]` | Attributes offset |
 | +0x294 | `[0xa5]` | Hash table allocated buffer |
 
-The I/O vtable at `+0x140 [0x50]` is critical — it provides the read callbacks that Storm uses to access the archive data. Read calls go through `(*(code **)(*param_1[0x50] + 4))(...)`.
+The I/O vtable at `+0x140 [0x50]` is critical - it provides the read callbacks that Storm uses to access the archive data. Read calls go through `(*(code **)(*param_1[0x50] + 4))(...)`.
 
 ### Archive Registration (How MPQs Are Opened)
 
 ```
 MPQ_InitializeArchives (0x403740)
 │
-├─ ResizeArchiveArray(...)               — allocate the global array
+├─ ResizeArchiveArray(...)               - allocate the global array
 │
 ├─ For each base MPQ (model, texture, terrain, wmo, sound, misc, interface, fonts, dbc):
 │   └─ OpenMPQArchiveWithPaths(name, param2, index)  [0x403b00]
-│       ├─ FormatPath(buf, 0x104, pathIndex, name)    — tries "Data\name" then "..\Data\name"
+│       ├─ FormatPath(buf, 0x104, pathIndex, name)    - tries "Data\name" then "..\Data\name"
 │       └─ Archive_OpenUnified(path, ..., &PTR_008826bc[index])  [0x648dd0]
 │           └─ OpenFileWithValidation(path, ..., &archive)  [0x655690]
 │               └─ InitializeArchiveStructure(archive, ...) [0x655bf0]
@@ -189,7 +189,7 @@ struct IOObject {                          // 0x118 bytes total
 [4] +0x10: 0x66e1c0 = IOManagerDestructor
 [5] +0x14: 0x66e1e0 = IOManagerCleanup
 [6] +0x18: 0x66e200 = (unknown)
-[7] +0x1C: 0x7f800000 = (float NaN — padding/sentinel)
+[7] +0x1C: 0x7f800000 = (float NaN - padding/sentinel)
 [8] +0x20: 0x66e2d0 = ValidateIOOperation
 [9] +0x24: 0x66e310 = GetIOResult
 [10]+0x28: 0x66e340 = CancelIOOperation
@@ -235,7 +235,7 @@ The `SArchive` wrapper at the top level (8 bytes: `{type, handle}`) bridges thes
 
 Storm has no "register a provider" API. Every type code (0-4) is hardcoded to specific OS handle types. The I/O vtable exists but is deeply intertwined with async thread managers and buffer management (0x118 bytes of state). Creating a custom IO object is theoretically possible but requires replicating the async infrastructure.
 
-The most practical "virtual filesystem" approaches use **real OS handles** that Storm can consume natively — either through temp files or through MPQ archives that Storm opens and manages itself.
+The most practical "virtual filesystem" approaches use **real OS handles** that Storm can consume natively - either through temp files or through MPQ archives that Storm opens and manages itself.
 
 ---
 
@@ -245,11 +245,11 @@ The most practical "virtual filesystem" approaches use **real OS handles** that 
 
 Use Windows `CreateFile` with `FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE` to create **real OS file handles** backed primarily by the filesystem cache (RAM). Then hook only `openFileWithOptions` to redirect Storm to our temp files.
 
-Windows `FILE_ATTRIBUTE_TEMPORARY` tells the cache manager to avoid flushing to disk if possible — the data lives in RAM. `FILE_FLAG_DELETE_ON_CLOSE` auto-deletes the file when the last handle closes, even on crash.
+Windows `FILE_ATTRIBUTE_TEMPORARY` tells the cache manager to avoid flushing to disk if possible - the data lives in RAM. `FILE_FLAG_DELETE_ON_CLOSE` auto-deletes the file when the last handle closes, even on crash.
 
 ### Implementation
 
-1. **DLL init** — for each embedded asset:
+1. **DLL init** - for each embedded asset:
    ```c
    // Get temp directory
    GetTempPath(MAX_PATH, tempDir);
@@ -271,7 +271,7 @@ Windows `FILE_ATTRIBUTE_TEMPORARY` tells the cache manager to avoid flushing to 
    // Store mapping: "Spells\\WU_XYZ.m2" → tempPath
    ```
 
-2. **Hook `openFileWithOptions` (0x6477c0)** — single hook:
+2. **Hook `openFileWithOptions` (0x6477c0)** - single hook:
    ```
    openFileDetour(archive, path, flags, handle_out):
        if path matches our asset map:
@@ -280,18 +280,18 @@ Windows `FILE_ATTRIBUTE_TEMPORARY` tells the cache manager to avoid flushing to 
        return original(archive, path, flags, handle_out)
    ```
 
-3. **No other hooks needed** — Storm opens the temp file with `CreateFileA`, gets a real handle. All native I/O works:
+3. **No other hooks needed** - Storm opens the temp file with `CreateFileA`, gets a real handle. All native I/O works:
    - `GetFileSizeFromHandle` → type-0 dispatch → `fstat` on real handle ✓
    - `ReadFileFromMultipleSources` → type-0 dispatch → `fileReadWithLock` on real handle ✓
    - `processAsyncFileOperation` → reads from real handle via worker thread ✓
    - `CleanupFileHandleResources` → closes real handle ✓
    - `loadModelFromFileAsync` → async task reads real handle ✓
 
-4. **Cleanup** — on DLL unload, close our original handles. `FILE_FLAG_DELETE_ON_CLOSE` handles the rest. If the process crashes, Windows still cleans up temp files.
+4. **Cleanup** - on DLL unload, close our original handles. `FILE_FLAG_DELETE_ON_CLOSE` handles the rest. If the process crashes, Windows still cleans up temp files.
 
 ### Why This Works For Async
 
-The entire reason our current approach needs 6 hooks is that fake type-0 contexts with NULL handles fail when the async executor calls `fileReadWithLock` directly. With real temp file handles, the async executor reads from a real OS handle — no hooks needed on the read path at all.
+The entire reason our current approach needs 6 hooks is that fake type-0 contexts with NULL handles fail when the async executor calls `fileReadWithLock` directly. With real temp file handles, the async executor reads from a real OS handle - no hooks needed on the read path at all.
 
 ### Path Redirection Strategy
 
@@ -325,7 +325,7 @@ Files should go in the system temp directory (`GetTempPath`), NOT the game direc
 `FILE_ATTRIBUTE_TEMPORARY` is a hint to the Windows cache manager:
 - Data is kept in the filesystem cache (RAM) and written to disk lazily
 - For small files (~20 assets, totaling a few MB), Windows will almost certainly keep everything in cache
-- This is NOT a guarantee — under memory pressure, Windows may flush to disk
+- This is NOT a guarantee - under memory pressure, Windows may flush to disk
 - But for our use case (~2-3 MB total), the data effectively stays in RAM
 
 ### Key Addresses
@@ -343,10 +343,10 @@ OR:
 | `locateFileInDirectories` | 0x647e60 | __fastcall(6) | Return temp path as disk file |
 
 ### Pros
-- **Reduces from 6 hooks to 1** — the biggest win
-- **All async I/O works natively** — real OS handles, no fake contexts
+- **Reduces from 6 hooks to 1** - the biggest win
+- **All async I/O works natively** - real OS handles, no fake contexts
 - No fake file contexts, no critical section management, no refcount tracking
-- No MPQ building required — files are individual temp files
+- No MPQ building required - files are individual temp files
 - Auto-cleanup via `FILE_FLAG_DELETE_ON_CLOSE`
 - Temp files are invisible to the user (in system temp dir)
 - The `loadFileDetour` (0x648620) for addon files could remain unchanged
@@ -356,7 +356,7 @@ OR:
 - Requires `CreateFile`/`WriteFile` Win32 calls from Zig (straightforward via `@import("std").os.windows`)
 - ~20 temp files created at init (small overhead, ~2-3 MB total)
 - Temp file creation adds a few ms to DLL init
-- If DLL loads after `scanDirectoriesForFiles` (likely), the disk hash table won't have our files — must use path redirection hook rather than relying on native discovery
+- If DLL loads after `scanDirectoriesForFiles` (likely), the disk hash table won't have our files - must use path redirection hook rather than relying on native discovery
 
 ---
 
@@ -386,9 +386,9 @@ Build a real MPQ archive at compile time containing all embedded assets. Write i
 | Global array struct | 0x8826b4 | `{capacity, count, array_ptr, growth}` |
 
 ### Pros
-- **Eliminates ALL 6 Storm I/O hooks** — game reads MPQ natively
+- **Eliminates ALL 6 Storm I/O hooks** - game reads MPQ natively
 - Zero fake file contexts, zero async handling
-- Proven approach — this is how patch.MPQ works
+- Proven approach - this is how patch.MPQ works
 - The `loadFileDetour` (0x648620) for addon files could remain unchanged
 
 ### Cons
@@ -434,10 +434,10 @@ For disk-based MPQs, this vtable points to functions that call `ReadFile`/`SetFi
 #### B1: Fake the File Backing (Simpler)
 
 1. Embed MPQ in DLL via `@embedFile`
-2. Hook `openFileWithOptions` to intercept when Storm opens `"WeirdUtils.mpq"` — create a fake file context pointing to the embedded MPQ blob
+2. Hook `openFileWithOptions` to intercept when Storm opens `"WeirdUtils.mpq"` - create a fake file context pointing to the embedded MPQ blob
 3. Add **seek support** to the fake context (current implementation only does flat memcpy from offset 0)
-4. Call `Archive_OpenUnified("WeirdUtils.mpq", ...)` — Storm reads the MPQ header, hash table, block table through our hooked I/O
-5. For subsequent reads FROM the archive (when loading files within the MPQ), Storm seeks within the same archive file handle — our hook serves the right bytes
+4. Call `Archive_OpenUnified("WeirdUtils.mpq", ...)` - Storm reads the MPQ header, hash table, block table through our hooked I/O
+5. For subsequent reads FROM the archive (when loading files within the MPQ), Storm seeks within the same archive file handle - our hook serves the right bytes
 
 **Key difference from current approach**: Instead of matching ~20 individual paths and creating ~20 fake contexts, we serve **one** fake file (the MPQ itself). Storm handles all per-file hash lookup, decompression, and I/O natively.
 
@@ -448,8 +448,8 @@ For disk-based MPQs, this vtable points to functions that call `ReadFile`/`SetFi
 - File path matching reduces from ~20 paths to 1
 
 **What we might drop**:
-- `loadModelAsyncDetour` (0x71d4e0) — this hook exists because M2 async loading bypasses our read hook for type-0 fake contexts. But archive files go through Storm's type-4 read path, which reads from the archive handle. If the archive handle is our fake context with seek support, Storm's own async code should work.
-- `processAsyncDetour` (0x647350) — same reasoning; the async executor reads from the archive file context, which goes through our hooked `readFileDetour`.
+- `loadModelAsyncDetour` (0x71d4e0) - this hook exists because M2 async loading bypasses our read hook for type-0 fake contexts. But archive files go through Storm's type-4 read path, which reads from the archive handle. If the archive handle is our fake context with seek support, Storm's own async code should work.
+- `processAsyncDetour` (0x647350) - same reasoning; the async executor reads from the archive file context, which goes through our hooked `readFileDetour`.
 
 **Risk**: The async executor might call `fileReadWithLock` directly on the archive handle, bypassing `ReadFileFromMultipleSources`. This is the exact problem that forced hooks 4 and 6 in the current approach. Needs verification.
 
@@ -483,11 +483,11 @@ For disk-based MPQs, this vtable points to functions that call `ReadFile`/`SetFi
 
 ### Concept
 
-Instead of hooking individual I/O functions, hook `locateFileInDirectories` (0x647e60) — the single function that decides WHERE a file comes from (disk, hash cache, or archive). Make it return type=0 (disk) with a path that resolves to our embedded data.
+Instead of hooking individual I/O functions, hook `locateFileInDirectories` (0x647e60) - the single function that decides WHERE a file comes from (disk, hash cache, or archive). Make it return type=0 (disk) with a path that resolves to our embedded data.
 
 ### Why This Doesn't Quite Work
 
-`locateFileInDirectories` only decides the file *location* — it doesn't serve data. After it returns type=0, `openFileWithOptions` calls `openFileHandle` to actually open the disk file. If there's no real file on disk, this fails.
+`locateFileInDirectories` only decides the file *location* - it doesn't serve data. After it returns type=0, `openFileWithOptions` calls `openFileHandle` to actually open the disk file. If there's no real file on disk, this fails.
 
 However, this could work in combination with disk writes (see Approach A) or with a minimal I/O hook.
 
@@ -548,7 +548,7 @@ This works for **disk-based** loose files but not for in-memory embedded data. H
 
 | Target | Address | Patch |
 |--------|---------|-------|
-| `CheckFileExistence` | 0x654DD0 | Hook target — `__fastcall(ECX=filename, EDX=flags, [esp+4]=output)` |
+| `CheckFileExistence` | 0x654DD0 | Hook target - `__fastcall(ECX=filename, EDX=flags, [esp+4]=output)` |
 | Gate 1 (JZ) | 0x654b5c | `74 25 → 90 90` (NOP) |
 | Gate 2 (JNZ) | 0x654b6a | `75 17 → 90 90` (NOP) |
 | Glob pattern byte | 0x82edc2 | `3F → 2A` ('?' → '*') for multi-char patch names |
@@ -576,20 +576,20 @@ This works for **disk-based** loose files but not for in-memory embedded data. H
 ### Best Overall: Approach E (Windows Temp File Handles)
 
 **Reasoning**:
-1. **Reduces from 6 hooks to 1** — the single biggest complexity reduction possible
-2. **All async I/O works natively** — real OS handles eliminate the entire class of async-bypass bugs that forced hooks 4, 5, and 6
-3. **No MPQ building required** — avoids the entire hash table encryption / block table / header format complexity
-4. **No new RE work** — we already know `openFileWithOptions` (0x6477c0) intimately
-5. **Auto-cleanup** — `FILE_FLAG_DELETE_ON_CLOSE` handles cleanup even on crash
-6. **Low risk** — we're giving Storm exactly what it expects (real disk files), just in a temp location
-7. **Files live in RAM** — `FILE_ATTRIBUTE_TEMPORARY` keeps data in the filesystem cache for our small (~2-3 MB) asset set
+1. **Reduces from 6 hooks to 1** - the single biggest complexity reduction possible
+2. **All async I/O works natively** - real OS handles eliminate the entire class of async-bypass bugs that forced hooks 4, 5, and 6
+3. **No MPQ building required** - avoids the entire hash table encryption / block table / header format complexity
+4. **No new RE work** - we already know `openFileWithOptions` (0x6477c0) intimately
+5. **Auto-cleanup** - `FILE_FLAG_DELETE_ON_CLOSE` handles cleanup even on crash
+6. **Low risk** - we're giving Storm exactly what it expects (real disk files), just in a temp location
+7. **Files live in RAM** - `FILE_ATTRIBUTE_TEMPORARY` keeps data in the filesystem cache for our small (~2-3 MB) asset set
 
 **Next steps for Approach E**:
 1. Write a prototype: create temp files from embedded data at DLL init
 2. Hook `openFileWithOptions` to redirect matching paths to temp file paths
 3. Verify M2 model loading works end-to-end (including textures via async path)
 4. If successful, remove hooks 2-6 and the fake file context infrastructure
-5. Keep `loadFileDetour` (0x648620) for addon files — these use a different pipeline
+5. Keep `loadFileDetour` (0x648620) for addon files - these use a different pipeline
 
 ### Runner-Up: Approach A (Temp MPQ on Disk)
 
@@ -680,7 +680,7 @@ The customassets project's `CheckFileExistence` hook and glob pattern patch coul
 |--------|---------|-------------|
 | Archive array capacity | 0x8826b4 | Max archive slots |
 | Archive array count | 0x8826b8 | Current archive count |
-| Archive array pointer | 0x8826bc | `SArchive**` — array of pointers |
+| Archive array pointer | 0x8826bc | `SArchive**` - array of pointers |
 | Archive array growth | 0x8826c0 | Growth increment |
 | Disk hash table base | 0xc521e8 | File path → disk path hash table |
 | Disk hash table mask | 0xc521f0 | Hash mask (0xffffffff = disabled) |

@@ -1,17 +1,14 @@
-//! Custom minimap icons module.
+//! DPS log module.
 //!
-//! Adds distinct minimap icons for specific NPC types: flight masters,
-//! mailboxes, reagent vendors, class trainers, etc.
+//! Provides structured Lua objects for combat log events so addons can read
+//! parsed fields directly instead of re-parsing the combat log string.
 //!
-//! See: VanillaHelpers addon (https://github.com/nicholasgasior/VanillaHelpers)
-//! for reference on NPC type detection and minimap icon overlay patterns.
-//!
-//! TODO: Hook minimap icon rendering, classify NPCs by type, overlay custom icons.
+//! TODO: Hook combat log event dispatch, build Lua tables per event type.
 
 const con = @import("../console.zig");
 const mod_mutex = @import("../mutex.zig");
 
-pub const module_name: [*:0]const u8 = "minimapicons";
+pub const module_name: [*:0]const u8 = "dpslog";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -21,7 +18,7 @@ pub fn isActive() bool {
 }
 
 pub fn installHooks() void {
-    con.print("[minimapicons] Module loaded (stub)\n");
+    con.print("[dpslog] Module loaded (stub)\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;

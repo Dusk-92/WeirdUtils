@@ -66,7 +66,7 @@ pub fn pushnil(L: State) void {
 
 pub fn pushnumber(L: State, n: f64) void {
     // __thiscall: ECX=L, f64 on stack [EBP+8]/[EBP+0xc], ret 8.
-    // .never_tail: callee-cleanup pops stack args — tail-call would corrupt the stack.
+    // .never_tail: callee-cleanup pops stack args - tail-call would corrupt the stack.
     const f: *const fn (State, f64) callconv(.{ .x86_thiscall = .{} }) void = @ptrFromInt(0x6F3810);
     @call(.never_tail, f, .{ L, n });
 }
@@ -136,8 +136,7 @@ pub fn luaError(L: State, msg: [*:0]const u8) void {
         : [L] "r" (@intFromPtr(L)),
           [msg] "r" (@intFromPtr(msg)),
           [func] "r" (@as(u32, 0x6F4940)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 pub const LuaReg = extern struct {

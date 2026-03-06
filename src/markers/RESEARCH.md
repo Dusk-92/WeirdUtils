@@ -1,7 +1,7 @@
 # M2 Model Loading Research
 
 ## Root Cause (Confirmed)
-M2 model loading uses `openFileWithOptions` (0x6477c0) directly — it **never** goes through our hooked `LoadFileWithTextureResourceFallback` (0x648620). That's why embedded M2 files aren't served.
+M2 model loading uses `openFileWithOptions` (0x6477c0) directly - it **never** goes through our hooked `LoadFileWithTextureResourceFallback` (0x648620). That's why embedded M2 files aren't served.
 
 ## M2 Loading Call Chain
 ```
@@ -30,17 +30,17 @@ createModelAttachment (0x707350)
 | `CleanupFileHandleResources` (0x648730) | `__stdcall` | 1 | `RET 0x04` |
 | `loadModelFromFileAsync` (0x71d4e0) | `__thiscall` | ECX=this, 2 stack | `RET 0x08` |
 
-## GetFileSizeFromHandle (0x6487f0) — dispatches on context type
-- Type 0: `fstatFileHandle(ctx[1]+0x10)` — needs real file handle
-- Type 1: returns `ctx[5]` (value at +0x14) — **simplest, just returns a stored value**
+## GetFileSizeFromHandle (0x6487f0) - dispatches on context type
+- Type 0: `fstatFileHandle(ctx[1]+0x10)` - needs real file handle
+- Type 1: returns `ctx[5]` (value at +0x14) - **simplest, just returns a stored value**
 - Types 2/3: `GetAudioStreamPosition(ctx[0xf])`
 - Type 4: `getFileSize(ctx[0x10])`
 
-## ReadFileFromMultipleSources (0x648460) — dispatches on context type
-- Type 0: `fileReadWithLock(buffer, 1, size, ctx[1])` — needs real file handle
+## ReadFileFromMultipleSources (0x648460) - dispatches on context type
+- Type 0: `fileReadWithLock(buffer, 1, size, ctx[1])` - needs real file handle
 - Other types: use respective handle fields
 
-## initializeFileContext (0x647290) — __thiscall, ECX=ctx, 1 stack param (type)
+## initializeFileContext (0x647290) - __thiscall, ECX=ctx, 1 stack param (type)
 ```c
 TraverseListNodes((LPCRITICAL_SECTION)(this + 0x24));  // init critical section
 *(uint *)this = param_1;        // +0x00: type
@@ -57,7 +57,7 @@ TraverseListNodes((LPCRITICAL_SECTION)(this + 0x24));  // init critical section
 *(uint *)(this + 0x1C) = 0;
 ```
 
-## CleanupFileHandleResources (0x648730) — __stdcall, 1 param, RET 0x04
+## CleanupFileHandleResources (0x648730) - __stdcall, 1 param, RET 0x04
 ```c
 if (ctx + 0x04 != NULL) closeFileStreamSafely(ctx + 0x04);   // disk file handle
 if (ctx + 0x3C != 0)    Stream_CompareBuffers(ctx + 0x3C);   // stream
@@ -82,7 +82,7 @@ if (ctx + 0x40 != NULL) closeArchiveFile(ctx + 0x40);         // archive
 ```
 Queued via `AsyncTask_QueueForExecution` (0x443ae0). Executor reads from file handle into buffer, then calls completion callback.
 
-## loadResourceByPath (0x706a50) — __thiscall, ECX=resourceMgr
+## loadResourceByPath (0x706a50) - __thiscall, ECX=resourceMgr
 After `openFileWithOptions` succeeds:
 1. Allocates 0x164-byte model object via `M2_AllocateModelBuffer`
 2. `initializeModelObject(modelObj, resourceMgr)`
@@ -90,7 +90,7 @@ After `openFileWithOptions` succeeds:
 4. On success: copies normalized path into modelObj+0x20, sets up hash links
 5. On failure: `CleanupFileHandleResources`, free model object, return NULL
 
-## LoadFileWithTextureResourceFallback (0x648620) — our hooked function
+## LoadFileWithTextureResourceFallback (0x648620) - our hooked function
 Calls `openFileWithOptions(param_1, path, async_flag, &handle_out)`, then:
 1. `GetFileSizeFromHandle(handle, NULL)` → size
 2. `M2_AllocateModelBuffer(size + extra_alloc)` → buffer
@@ -119,7 +119,7 @@ Every file context type needs a **real file handle or archive handle** for the r
 
 ### Option 3: Hook openFileWithOptions only
 - Make it produce a context that works through existing read pipeline
-- **Hardest** — requires understanding all read paths for the chosen type
+- **Hardest** - requires understanding all read paths for the chosen type
 
 ## Implementation: In-Memory File Serving (chosen: Option 1 extended)
 
@@ -136,21 +136,21 @@ Every file context type needs a **real file handle or archive handle** for the r
 
 ### Fake File Context Layout
 Allocated via `allocateGameBuffer(0x60)`, zero-filled, then:
-- `initializeFileContext(ctx, 0)` — sets type=0, inits critsec at +0x24
+- `initializeFileContext(ctx, 0)` - sets type=0, inits critsec at +0x24
 - `+0x0C`: duplicated path string (game-allocated)
 - `+0x30`: embedded data pointer (custom field, points into DLL .rdata)
 - `+0x34`: embedded data size (custom field)
 - **Detection**: `type==0 && handle(+0x04)==NULL && *(ctx+0x30)!=0`
 - Return value from openFileWithOptions: 2 (non-zero = success)
 
-### processAsyncFileOperation (0x647350) — verified via Ghidra
+### processAsyncFileOperation (0x647350) - verified via Ghidra
 - `__fastcall(ECX=request)`, plain `RET` (c3)
 - Request: `+0x08`=file_ctx, `+0x0C`=dest_buf, `+0x10`=read_size, `+0x14`=seek/event struct
-- Event handle at `*(*(request+0x14)+4)` — signaled via `SetEvent`
+- Event handle at `*(*(request+0x14)+4)` - signaled via `SetEvent`
 - Cleanup epilogue: decrement `*(ctx+0x5c)`, `LeaveCriticalSection(ctx+0x24)`, signal event, conditional `CleanupFileHandleResources`
 - Close-after-read flag at `*(ctx+0x58)`
 
-### CleanupFileHandleResources (0x648730) — verified decompile
+### CleanupFileHandleResources (0x648730) - verified decompile
 ```c
 void CleanupFileHandleResources(int ctx) {
     if (ctx == 0) return;
@@ -160,21 +160,21 @@ void CleanupFileHandleResources(int ctx) {
     if (*(ctx+0x08)) { /* check+free sub-buffer */ FreeMemory(*(ctx+0x08)); }
     cleanupFileContext(ctx);     // destroy critsec
     FreeMemory(ctx);             // free 0x60 struct
-    // NOTE: does NOT free path at +0x0C — we must free it ourselves
+    // NOTE: does NOT free path at +0x0C - we must free it ourselves
 }
 ```
-FreeMemory (SMemFree) at **0x646430** — `__stdcall(ptr, src_str, flags)`.
+FreeMemory (SMemFree) at **0x646430** - `__stdcall(ptr, src_str, flags)`.
 
 ### Crash: Hook Install Order Matters
 **Symptom**: Crash on game load in `loadFileDetour` calling `file_hook.getTrampoline()`.
 The trampoline memory (VirtualAlloc'd) contained zeros instead of the saved prologue.
 
 **Analysis**:
-- Crash at `0x075D5E88` (trampoline memory) — bytes: `00 00 00 00`
+- Crash at `0x075D5E88` (trampoline memory) - bytes: `00 00 00 00`
 - Return address `0x04AA1542` in weirdutils.dll = `CALL *%eax` in `loadFileDetour`
 - `getTrampoline` (compiled at DLL+0x3250) reads `file_hook.trampoline` field from `.data` section at `0x1015c0d8`, checks non-NULL, calls through it
 
-**Root cause**: `LoadFileWithTextureResourceFallback` (0x648620) internally calls `openFileWithOptions` (0x6477c0). If `file_hook` is installed FIRST (copying the 0x648620 prologue to its trampoline), and THEN we patch 0x6477c0, the trampoline's execution context is disrupted. The `file_hook` trampoline runs the original 0x648620 prologue which eventually calls 0x6477c0 — but if 0x6477c0 was patched after the trampoline was built, there may be page-level or VirtualProtect interactions that corrupt the trampoline's allocated memory.
+**Root cause**: `LoadFileWithTextureResourceFallback` (0x648620) internally calls `openFileWithOptions` (0x6477c0). If `file_hook` is installed FIRST (copying the 0x648620 prologue to its trampoline), and THEN we patch 0x6477c0, the trampoline's execution context is disrupted. The `file_hook` trampoline runs the original 0x648620 prologue which eventually calls 0x6477c0 - but if 0x6477c0 was patched after the trampoline was built, there may be page-level or VirtualProtect interactions that corrupt the trampoline's allocated memory.
 
 **Fix**: Install Storm I/O hooks (`installFileHooks`) BEFORE `file_hook` at 0x648620. Remove in reverse order.
 
@@ -184,20 +184,20 @@ There are TWO independent async systems for file I/O:
 
 **1. High-level async task system** (used by M2 model + texture loading):
 - Queue: `AsyncTask_QueueForExecution` (0x443ae0)
-- Worker: `AsyncTaskWorkerThread` (0x443360) — calls **ReadFileFromMultipleSources** (our hook 3!)
-- Main thread: `ProcessAsyncTasksWithTimeLimit` (0x443E70) — calls completion callbacks
+- Worker: `AsyncTaskWorkerThread` (0x443360) - calls **ReadFileFromMultipleSources** (our hook 3!)
+- Main thread: `ProcessAsyncTasksWithTimeLimit` (0x443E70) - calls completion callbacks
 - Task structure: `[0]=file_ctx, [1]=buffer, [2]=size, [3]=callback_ctx, [4]=callback_fn`
 - For M2 models: callback = `onModelLoadComplete` (0x71d5e0), executor = `asyncFileReader` (0x71d610)
 - For textures: callback = `TextureLoadCallback` (0x44a500), queued from `LoadTextureFromPath` (0x44a310)
 
 **2. Low-level file async system** (NOT used for texture/M2 loading):
-- `processAsyncFileOperation` (0x647350) — calls **fileReadWithLock** (0x740c97) directly
+- `processAsyncFileOperation` (0x647350) - calls **fileReadWithLock** (0x740c97) directly
 - Request: `+0x08=file_ctx, +0x0C=dest_buf, +0x10=read_size, +0x14=seek/event`
 - Type-dispatched: type 0→fileReadWithLock, type 1→decompressFileData, type 2/3→stream, type 4→archive
 - Has close-after-read flag at ctx+0x58, refcount at ctx+0x5c
-- NOT installed as a hook — not needed since texture loading uses the high-level system
+- NOT installed as a hook - not needed since texture loading uses the high-level system
 
-### onModelLoadComplete (0x71d5e0) — Verified Decompile
+### onModelLoadComplete (0x71d5e0) - Verified Decompile
 ```c
 void __fastcall onModelLoadComplete(void *modelObject) {
     CleanupFileHandleResources(**(int **)(modelObject + 0xc));  // free file handle via task
@@ -208,7 +208,7 @@ void __fastcall onModelLoadComplete(void *modelObject) {
 ```
 **Critical**: cleanup file handle BEFORE processLoadedModelData. Our hook matches this order.
 
-### cleanupFileContext (0x6472d0) — Verified Decompile
+### cleanupFileContext (0x6472d0) - Verified Decompile
 ```c
 void __fastcall cleanupFileContext(int param_1) {
     if (*(param_1 + 0x1c)) { cleanupInflateContext(*(param_1+0x1c)); FreeMemory(*(param_1+0x1c)); }
@@ -220,7 +220,7 @@ void __fastcall cleanupFileContext(int param_1) {
 ```
 NOTE: cleanupFileContext DOES free +0x0C (path string). Do NOT free it manually.
 
-### TextureLoadCallback (0x44a500) — Verified Decompile
+### TextureLoadCallback (0x44a500) - Verified Decompile
 ```c
 void __fastcall TextureLoadCallback(int texture_obj) {
     puVar1 = ProcessTextureData(texture_obj);
@@ -233,7 +233,7 @@ void __fastcall TextureLoadCallback(int texture_obj) {
 ```
 Called by ProcessAsyncTasksWithTimeLimit on the main thread after worker completes.
 
-### LoadTextureFromPath (0x44a310) — Texture Async Task Setup
+### LoadTextureFromPath (0x44a310) - Texture Async Task Setup
 ```c
 puVar5 = openFileWithOptions(NULL, path, flags, &file_handle);  // hook 1 creates fake
 puVar7 = AllocateAsyncTaskObject();
@@ -251,7 +251,7 @@ AsyncTask_QueueForExecution(task);
 - Crash at EIP=0x00000000 after processLoadedModelData returns 1
 - Stack shows TextureLoadCallback (0x44A526 = after CALL CleanupFileHandleResources)
 - File context 0x36596088 on stack (was M2 ctx, freed, reused as BLP ctx)
-- EDX=0x36596080 (ctx-8), EBP=04AA3212 (in weirdutils.dll — corrupted frame ptr)
+- EDX=0x36596080 (ctx-8), EBP=04AA3212 (in weirdutils.dll - corrupted frame ptr)
 - Crash appears to be inside our cleanupFileHandleDetour during BLP context cleanup
 - BLP data IS served correctly (AsyncTaskWorkerThread → ReadFileFromMultipleSources → hook 3)
 - Investigation ongoing: possible stack corruption in callCleanupFileContext or freeGameBuffer
@@ -274,7 +274,7 @@ WorldFrameUpdate(this, deltaTime):
   if hitType == 2: HandleTargetSelection(this, &localResult)    // object hover
 ```
 
-### UpdateHitTest (0x481F00) — __fastcall(ECX=worldFrame)
+### UpdateHitTest (0x481F00) - __fastcall(ECX=worldFrame)
 Called on **click events** (not every frame). Performs the same raycast but stores
 the result persistently at `worldFrame + 0x350`:
 ```c
@@ -301,14 +301,14 @@ void __fastcall UpdateHitTest(void *worldFrame) {
 | +0x388 | 4 | f32 | Ray distance |
 
 ### AoE Targeting Reticle Globals (only during spell targeting)
-- `0x00B4B3A0` Vec3 — terrain position under cursor (written by HandleGroundTargeting)
-- `0x00B4B3B0` f32 — spell targeting radius
-- `0x0083DC2C` u32 — validity: 0=valid, 1=out-of-range, 3=updating
-- `0x00CECAC0` u16 — spell targeting state flags (0x20=terrain, 0x40=secondary)
+- `0x00B4B3A0` Vec3 - terrain position under cursor (written by HandleGroundTargeting)
+- `0x00B4B3B0` f32 - spell targeting radius
+- `0x0083DC2C` u32 - validity: 0=valid, 1=out-of-range, 3=updating
+- `0x00CECAC0` u16 - spell targeting state flags (0x20=terrain, 0x40=secondary)
 
 ### Click-to-Move Destination
-- `0x00C4D890` Vec3 — destination (only when CTM initiated)
-- `0x00C4D888` u32 — movement mode
+- `0x00C4D890` Vec3 - destination (only when CTM initiated)
+- `0x00C4D888` u32 - movement mode
 
 ### Key Functions
 | Address | Name | Convention | Params |
@@ -326,10 +326,10 @@ void __fastcall UpdateHitTest(void *worldFrame) {
 ### Approach for Markers
 ### HitTestPoint / WorldIntersectionTest Return Values
 `WorldIntersectionTest(rayStart, rayEnd, gameStateFlags, result)` returns:
-- `0` — no intersection (sky) — coords NOT written to result
-- `gameStateFlags & 1` — terrain hit — coords written. Returns 1 only during
+- `0` - no intersection (sky) - coords NOT written to result
+- `gameStateFlags & 1` - terrain hit - coords written. Returns 1 only during
   AoE targeting (bit 0 set), otherwise returns 0 even on valid terrain hit
-- `2` — object hit (closer than terrain)
+- `2` - object hit (closer than terrain)
 
 So hitType=0 is ambiguous: either "terrain hit in normal mode" or "no hit at all".
 To distinguish: zero the result coords before calling, then check if they were written.
@@ -337,7 +337,7 @@ To distinguish: zero the result coords before calling, then check if they were w
 ### Approach for Markers
 Call `UpdateHitTest(worldFrame)` to perform the raycast and store result at
 `worldFrame+0x350`. Zero intersection coords before the call, then check if
-they were populated. This is safe from Lua callbacks — `HitTestPoint`
+they were populated. This is safe from Lua callbacks - `HitTestPoint`
 saves/restores view matrices. The persistent result at `worldFrame+0x358` is
 normally only click-updated, but overwriting it is harmless.
 
@@ -553,19 +553,19 @@ cause the visual glitch. Need to identify which bone tracks use global sequences
 
 ---
 
-## World Teardown — Entity Cleanup Crash Investigation
+## World Teardown - Entity Cleanup Crash Investigation
 
 ### Crash Details
-- **Crash function**: 0x687220 — generic linked-list unlink operation
-  - First crash at 0x687243: `mov [edx], esi` — write to freed memory
-  - Second crash at 0x687221: `mov esi, [ecx]` — read from freed memory
-- **When**: Logout to character select, map transitions — NOT during normal gameplay
+- **Crash function**: 0x687220 - generic linked-list unlink operation
+  - First crash at 0x687243: `mov [edx], esi` - write to freed memory
+  - Second crash at 0x687221: `mov esi, [ecx]` - read from freed memory
+- **When**: Logout to character select, map transitions - NOT during normal gameplay
 - **Thread**: Background/worker thread (very short stack: WoW.exe → kernel32 → ntdll)
 - **Root cause**: WDOODADDEF heap teardown iterates linked list, hits freed or corrupt node
 
 ### Decompiled Crash Function (0x687220)
 ```c
-// Linked-list unlink — removes node from intrusive doubly-linked list
+// Linked-list unlink - removes node from intrusive doubly-linked list
 void __fastcall UnlinkFromList(int *param_1) {
     int prev = *param_1;        // param_1[0] = prev pointer
     if (prev != 0) {
@@ -597,7 +597,7 @@ void __fastcall UnlinkFromList(int *param_1) {
 
 ### World Teardown Chain (Ghidra-verified)
 ```
-CleanupWorldAndEntities (0x66fc40) — void(), no params, __stdcall
+CleanupWorldAndEntities (0x66fc40) - void(), no params, __stdcall
 ├── CleanupEntityList_ProcessAll()       ← iterates UNKNOWN list
 └── CleanupWorldAndReleaseResources (0x697ac0)
     ├── ClearWorldObjectsAndResetState (0x6a6710)  ← iterates linked list at PTR_00c96088
@@ -608,13 +608,13 @@ CleanupWorldAndEntities (0x66fc40) — void(), no params, __stdcall
 ```
 
 ### Callers of CleanupWorldAndEntities (0x66fc40)
-- `InitializeWorldScene` (0x401bc0) — **map change** (cleans old world before loading new)
-- `ShutdownClientSystems` (0x401ee0) — **full game exit**
+- `InitializeWorldScene` (0x401bc0) - **map change** (cleans old world before loading new)
+- `ShutdownClientSystems` (0x401ee0) - **full game exit**
 
 ### Callers of ClearWorldObjectsAndResetState (0x6a6710)
-- `LoadWorldMap` (0x6941f0) — map loading
-- `UpdateWorldAndGameObjects` (0x698390) — periodic world update (chunk unloading?)
-- `CleanupWorldAndReleaseResources` (0x697ac0) — full teardown
+- `LoadWorldMap` (0x6941f0) - map loading
+- `UpdateWorldAndGameObjects` (0x698390) - periodic world update (chunk unloading?)
+- `CleanupWorldAndReleaseResources` (0x697ac0) - full teardown
 - `SimpleWorldUpdate` (0x694920)
 
 ### Entity Type Dispatch in CleanupEntity_ProcessAttachments (0x670d50)
@@ -636,7 +636,7 @@ void __fastcall CleanupEntity_ProcessAttachments(entity) {
 ```
 - M2 entities (CreateWorldUnit → WDOODADDEF heap) have flag 0x40
 - WMO entities (CreateGameObject → WMAPOBJDEF heap) have flag 0x8
-- Ghidra names are misleading — `cleanupGameObject` handles M2/WDOODADDEF, `destroyWorldEnvironment` handles WMO/WMAPOBJDEF
+- Ghidra names are misleading - `cleanupGameObject` handles M2/WDOODADDEF, `destroyWorldEnvironment` handles WMO/WMAPOBJDEF
 
 ### CleanupEntity_ProcessAttachments Callers (ONLY 3 in entire binary)
 - `processCinematicExit` (0x6e4940)
@@ -645,10 +645,10 @@ void __fastcall CleanupEntity_ProcessAttachments(entity) {
 - **NOT called by CleanupEntityList_ProcessAll** or any teardown function
 
 ### WDOODADDEF Heap (0xCA7E20) References
-- `AllocateRenderableObject` (0x6a07f7) — allocates from heap
-- `CleanupVisualEffectAndRelease` (0x6a0916) — frees to heap
-- `InitializeWorldSystem` (0x691f4f) — initializes heap
-- `CleanupWorldSystem` (0x692241) — tears down heap
+- `AllocateRenderableObject` (0x6a07f7) - allocates from heap
+- `CleanupVisualEffectAndRelease` (0x6a0916) - frees to heap
+- `InitializeWorldSystem` (0x691f4f) - initializes heap
+- `CleanupWorldSystem` (0x692241) - tears down heap
   - Called by `ShutdownAllGameSystems` (0x66fb00)
 
 ### Other Key Addresses
@@ -656,9 +656,9 @@ void __fastcall CleanupEntity_ProcessAttachments(entity) {
 - `CleanupWorldSystem` (0x6920c0) → called by ShutdownAllGameSystems
 - `cleanupSecondaryResources` (0x6a6c70) → called from CleanupWorldAndEntities + CleanupWorldSystem
   - This calls `cleanupGameObject` (0x6a67a0) and `destroyWorldEnvironment` (0x6a6870) on entities
-- `gameQuit` (0x41f9b0) — fires on disconnect/quit (ref: UnitXP_SP3)
+- `gameQuit` (0x41f9b0) - fires on disconnect/quit (ref: UnitXP_SP3)
 
-### World Unit Hash Table (0xCA7DC0) — The Crash Structure
+### World Unit Hash Table (0xCA7DC0) - The Crash Structure
 
 The crash occurs during teardown of a **hash table at 0xCA7DC0** that tracks all world units
 (doodads created via `CreateWorldUnit`). Our entities ARE in this table.
@@ -682,7 +682,7 @@ The crash occurs during teardown of a **hash table at 0xCA7DC0** that tracks all
 - `FindOrCreateWorldUnit` (0x694e90): reads 0xCA7DC4, 0xCA7DDC
 - `complexListInitializerWithCleanup` (0x69f670): reads/writes ALL (init + teardown)
 
-### CreateWorldUnit (0x694980) — Entity Registration (Decompiled)
+### CreateWorldUnit (0x694980) - Entity Registration (Decompiled)
 
 `CreateWorldUnit` inserts entities into **three** linked lists:
 ```c
@@ -722,7 +722,7 @@ int *CreateWorldUnit(char *modelPath, float *pos, float facing, int param4) {
 
 **Critical**: Entity is in 3 lists. All 3 must be unlinked during cleanup.
 
-### CleanupVisualEffectAndRelease (0x6a0840) — What It Unlinks
+### CleanupVisualEffectAndRelease (0x6a0840) - What It Unlinks
 
 `CleanupVisualEffectAndRelease` unlinks from up to **three** linked lists:
 ```c
@@ -807,21 +807,21 @@ Only 3 CALLs visible in the function body: `FindSubstringInString`, `CreateGameO
 `ModelAttachment_CreateNode`. The M2 path (`CreateWorldUnit`) must be via tail-call or
 the decompiler inlined it.
 
-### CleanupWorldAndEntities (0x66fc40) — Full Chain (Decompiled)
+### CleanupWorldAndEntities (0x66fc40) - Full Chain (Decompiled)
 
 ```c
 void CleanupWorldAndEntities(void) {
-    CleanupEntityList_ProcessAll();       // 0x672c40 — iterates PTR_00c7b2dc (NOT hash table)
+    CleanupEntityList_ProcessAll();       // 0x672c40 - iterates PTR_00c7b2dc (NOT hash table)
     CleanupWorldAndReleaseResources();    // 0x697ac0
     PTR_00c7b748 = 0;
 }
 ```
 
-### CleanupEntityList_ProcessAll (0x672c40) — Decompiled
+### CleanupEntityList_ProcessAll (0x672c40) - Decompiled
 
 Iterates the linked list at `PTR_00c7b2dc` (NOT the hash table at 0xCA7DC0).
 For each entry, calls `CleanupObjectAttachments_FreeMemory` which ends with
-`DestroyWorldObjectAndRelease`. Our entities are NOT in `PTR_00c7b2dc` —
+`DestroyWorldObjectAndRelease`. Our entities are NOT in `PTR_00c7b2dc` -
 they're only registered in the hash table. So this function doesn't touch them.
 
 ```c
@@ -838,24 +838,24 @@ void CleanupEntityList_ProcessAll(void) {
 ```
 
 **PTR_00c7b2dc xrefs** (who manages this list):
-- `CleanupEntityList_ProcessAll` (0x672c40) — reads/iterates
-- `UpdateFadeEffects_ProcessTimers` (0x672efe) — reads
-- `DestroyFileMapping` (0x66f460) — reads + writes (teardown)
-- `SetFileAttributes` (0x66f440) — writes (initialization)
-- `CreateFadeEffect_EntityManagement` (0x672e76) — reads (entity insertion?)
+- `CleanupEntityList_ProcessAll` (0x672c40) - reads/iterates
+- `UpdateFadeEffects_ProcessTimers` (0x672efe) - reads
+- `DestroyFileMapping` (0x66f460) - reads + writes (teardown)
+- `SetFileAttributes` (0x66f440) - writes (initialization)
+- `CreateFadeEffect_EntityManagement` (0x672e76) - reads (entity insertion?)
 
 Our entities created via `CreateEntityInstance_WithAttachment` are NOT added to this
 list. The callers (`CastSpellByID_Extended`, `CreateGameObjectPathEffect`) probably add
 the returned entity to PTR_00c7b2dc themselves. We don't.
 
-### Vtable at 0x0081089c — Hash Table Entry Destructors
+### Vtable at 0x0081089c - Hash Table Entry Destructors
 
 ```
-[0] 0x006a1170 DestroyMapDoodadDefinition  — WDOODADDEF destructor
+[0] 0x006a1170 DestroyMapDoodadDefinition  - WDOODADDEF destructor
 [1] 0x006a11a0 LoadAndAddMapDoodadToList
 [2] 0x006a14d0 MapDoodadDestructor
 [3] 0x006a1260 CleanupMapDoodadContainer
-[4] 0x006a1320 DestroyMapObjectDefinition  — WMAPOBJDEF destructor
+[4] 0x006a1320 DestroyMapObjectDefinition  - WMAPOBJDEF destructor
 [5] 0x006a1350 LoadAndAddMapObjectToList
 [6] 0x006a1590 MapObjectDestructor
 [7] 0x006a1410 CleanupMapObjectContainer
@@ -869,9 +869,9 @@ void DestroyMapDoodadDefinition(undefined **param_1) {
 }
 ```
 This is a simple destructor: calls entity vtable[0](0) then frees via SMemFree.
-NOT the same as CleanupVisualEffectAndRelease — doesn't unlink from lists.
+NOT the same as CleanupVisualEffectAndRelease - doesn't unlink from lists.
 
-### hashTableTeardownLoop (0x69f740) — atexit Handler (Decompiled)
+### hashTableTeardownLoop (0x69f740) - atexit Handler (Decompiled)
 
 Registered via `validateMemoryOperation` (atexit) at 0x69f730. Runs during process exit.
 ```c
@@ -912,7 +912,7 @@ void hashTableTeardownLoop(void) {
 If an entity was freed (by our cleanup) but not unlinked from these lists, the teardown
 follows dangling pointers into freed heap memory.
 
-### cleanupGameObject (0x6a67a0) — Decompiled
+### cleanupGameObject (0x6a67a0) - Decompiled
 
 ```c
 void __fastcall cleanupGameObject(undefined **param_1) {
@@ -939,7 +939,7 @@ void __fastcall cleanupGameObject(undefined **param_1) {
 }
 ```
 
-### CleanupVisualEffectAndRelease (0x6a0840) — What It Actually Unlinks
+### CleanupVisualEffectAndRelease (0x6a0840) - What It Actually Unlinks
 
 ```c
 void __fastcall CleanupVisualEffectAndRelease(entity) {
@@ -963,7 +963,7 @@ void __fastcall CleanupVisualEffectAndRelease(entity) {
 **CONFIRMED**: `CleanupVisualEffectAndRelease` unlinks entity[4]/[5] (global list)
 and conditionally entity[0x2e-0x31]. It does NOT unlink from the **hash bucket list**.
 
-### ManageLinkedList (0x695ef0) — Intrusive List Insertion
+### ManageLinkedList (0x695ef0) - Intrusive List Insertion
 
 ```c
 void __thiscall ManageLinkedList(void *this, int *entity, int mode, int insert_point) {
@@ -1063,29 +1063,29 @@ So the 3 intrusive list node offsets within a WDOODADDEF entity are:
 After `ManageLinkedList` insertion, entity[0x2F] should always be non-zero
 (sentinel has bit 0 set = odd address).
 
-### InitializeRenderableObject (0x6a7d00) — Entity Initialization
+### InitializeRenderableObject (0x6a7d00) - Entity Initialization
 
 Called from `AllocateRenderableObject`. Zeroes most fields including:
-- entity[0x2E] = 0, entity[0x2F] = 0 (bucket list node — zeroed before insertion)
-- entity[0x30] = 0, entity[0x31] = 0 (global list node — zeroed before insertion)
+- entity[0x2E] = 0, entity[0x2F] = 0 (bucket list node - zeroed before insertion)
+- entity[0x30] = 0, entity[0x31] = 0 (global list node - zeroed before insertion)
 - entity[2] |= 0x40 (sets the M2/WDOODADDEF flag)
 - entity[0] = vtable PTR_DestroyRenderableObject_00810a74
 
-### Callers of CreateEntityInstance_WithAttachment — What They Do After
+### Callers of CreateEntityInstance_WithAttachment - What They Do After
 
 Only 3 callers in entire binary:
 
-1. **`CreateGameObjectPathEffect` (0x5f8030)** — `__thiscall` on a game object
+1. **`CreateGameObjectPathEffect` (0x5f8030)** - `__thiscall` on a game object
    - Does NOT save the return value! Fire-and-forget.
-   - Passes `(path, pos, facing, 0, 0, param_1, param_2)` — param_6/7 are parent refs
+   - Passes `(path, pos, facing, 0, 0, param_1, param_2)` - param_6/7 are parent refs
 
-2. **`CastSpellByID_Extended` (0x6e4b60)** — spell casting
+2. **`CastSpellByID_Extended` (0x6e4b60)** - spell casting
    - Stores in global `PTR_00ceca8c`
    - Calls `SetEntityFlag_ToggleBit(entity, 0)` = sets `entity[0xD] |= 1`
    - Cleaned up by `processCinematicExit` → `CleanupEntity_ProcessAttachments(PTR_00ceca8c)`
-   - Passes `(path, pos, 0.0, 0, 0, 0, 0)` — update_now=0!
+   - Passes `(path, pos, 0.0, 0, 0, 0, 0)` - update_now=0!
 
-3. **Unknown (0x6e5a6e)** — likely another spell effect
+3. **Unknown (0x6e5a6e)** - likely another spell effect
 
 **Key differences from our call**:
 - Both native callers pass `update_now=0` (param_5). We pass `update_now=1`.
@@ -1098,7 +1098,7 @@ Only 3 callers in entire binary:
 Map doodads use `FindOrCreateWorldUnit` (0x694e90) called from `AttachDoodadObjects` (0x695b1e).
 These are separate creation paths that both register in the hash table but through different code.
 
-### CleanupWorldAndReleaseResources (0x697ac0) — Full Chain
+### CleanupWorldAndReleaseResources (0x697ac0) - Full Chain
 
 ```c
 void CleanupWorldAndReleaseResources(void) {
@@ -1119,7 +1119,7 @@ atexit teardown at 0x691830 (separate from hash table teardown). Base offset is 
 
 Disabled ALL our cleanup (no CleanupEntity_ProcessAttachments, no world_cleanup_hook,
 no removeHooks cleanup). Created 5 markers, replaced with 5 more, closed game.
-**Still crashed.** This means the crash is NOT caused by our cleanup — the game's
+**Still crashed.** This means the crash is NOT caused by our cleanup - the game's
 own atexit handler can't handle our entities even when they're fully intact.
 
 The WDOODADDEF heap is destroyed by `CleanupWorldSystem` (called from
@@ -1138,22 +1138,22 @@ and are NOT registered in any cleanup tracking list. They're cleaned up explicit
 map change/exit, it would have the same crash problem as our entities.
 
 The game avoids this because spells always end before map transitions. But we don't
-have that guarantee — our markers persist across frames until explicitly cleared.
+have that guarantee - our markers persist across frames until explicitly cleared.
 
 ### TODO
-- [x] Decompile 0x672c40 (CleanupEntityList_ProcessAll) — iterates PTR_00c7b2dc, not hash table
-- [x] Decompile hashTableTeardownLoop (0x69f740) — atexit handler, iterates all hash entries
-- [x] Check vtable at 0x0081089c — DestroyMapDoodadDefinition, simple free
-- [x] Decompile ContainerLookup (0x687960) — converts between list spaces
-- [x] Decompile cleanupGameObject + CleanupVisualEffectAndRelease — handles all 3 lists IF entity[0x2F]!=0
-- [x] Decompile ManageLinkedList (0x695ef0) — intrusive list with base offset
+- [x] Decompile 0x672c40 (CleanupEntityList_ProcessAll) - iterates PTR_00c7b2dc, not hash table
+- [x] Decompile hashTableTeardownLoop (0x69f740) - atexit handler, iterates all hash entries
+- [x] Check vtable at 0x0081089c - DestroyMapDoodadDefinition, simple free
+- [x] Decompile ContainerLookup (0x687960) - converts between list spaces
+- [x] Decompile cleanupGameObject + CleanupVisualEffectAndRelease - handles all 3 lists IF entity[0x2F]!=0
+- [x] Decompile ManageLinkedList (0x695ef0) - intrusive list with base offset
 - [x] Confirm bucket base offset = 0xB8 from InitializeHashTable
-- [x] TEST: no-cleanup build still crashes — crash is NOT from our cleanup
-- [x] Decompile native callers — neither registers in extra lists
+- [x] TEST: no-cleanup build still crashes - crash is NOT from our cleanup
+- [x] Decompile native callers - neither registers in extra lists
 - [x] **Investigate spell-spawned game objects (e.g. mailbox summon) as reference**
-  - Spell entities are NOT "persistent game objects" — they're client-side visual effects only
+  - Spell entities are NOT "persistent game objects" - they're client-side visual effects only
   - `processCinematicExit` (0x6e4940) explicitly cleans them: `CleanupEntity_ProcessAttachments(entity); entity = NULL;`
-  - Called before every new spell cast — spell entities NEVER survive to teardown
+  - Called before every new spell cast - spell entities NEVER survive to teardown
   - If a spell entity survived to atexit, it would crash too (same bug as ours)
 - [x] Check what `ClearWorldObjectsAndResetState` (PTR_00c96088) contains
   - PTR_00c96088 is a **terrain chunk list**, NOT a WDOODADDEF entity list
@@ -1161,12 +1161,12 @@ have that guarantee — our markers persist across frames until explicitly clear
   - `LoadWorldTerrainChunk` writes to PTR_00c96084 (the list head)
   - Map doodads are attached to parent chunks via `ModelAttachment_CreateNode` in `AttachDoodadObjects`
   - `destroyPrimaryGameObject` (0x6a69f0) destroys the parent chunk, which walks attachment children
-  - We CANNOT participate in this list — it's for terrain chunks, not standalone entities
+  - We CANNOT participate in this list - it's for terrain chunks, not standalone entities
 - [x] Determine proper entity lifecycle for persistent world objects
   - **There is no native path for standalone persistent WDOODADDEF entities**
   - All native callers either: (a) attach to parent chunks, or (b) explicitly clean up before teardown
   - Correct approach: explicit cleanup via `CleanupEntity_ProcessAttachments` before teardown
-  - Hook point: `CleanupWorldAndEntities` (0x66fc40) PRE-hook — fires for exit, logout, AND map change
+  - Hook point: `CleanupWorldAndEntities` (0x66fc40) PRE-hook - fires for exit, logout, AND map change
 
 ## Entity Lifecycle Solution (Confirmed)
 
@@ -1201,7 +1201,7 @@ Hook `CleanupWorldAndEntities` (0x66fc40). Before calling the original:
 1. Call `CleanupEntity_ProcessAttachments` on all active marker entities
 2. Call `CleanupEntity_ProcessAttachments` on all despawning entities
 3. Null all entity pointers / reset state
-4. Call original — hash table no longer contains our entries → no crash
+4. Call original - hash table no longer contains our entries → no crash
 
 This handles ALL scenarios: game exit, logout, map change.
 
@@ -1215,7 +1215,7 @@ void __fastcall destroyPrimaryGameObject(undefined **param_1) {
 }
 ```
 
-#### processCinematicExit (0x6e4940) — Spell Entity Cleanup
+#### processCinematicExit (0x6e4940) - Spell Entity Cleanup
 ```c
 // After handling cinematic/targeting state...
 if (PTR_00ceca8c != NULL) {
@@ -1224,7 +1224,7 @@ if (PTR_00ceca8c != NULL) {
 }
 ```
 
-#### CreateEntityInstance_WithAttachment (0x6707c0) — M2 Path
+#### CreateEntityInstance_WithAttachment (0x6707c0) - M2 Path
 ```c
 int * __fastcall CreateEntityInstance_WithAttachment(
     char *modelPath, float *pos, float facing, int flags, int updateNow, int p6, int p7) {
@@ -1242,18 +1242,18 @@ int * __fastcall CreateEntityInstance_WithAttachment(
 }
 ```
 
-#### hashTableTeardownLoop (0x69f740) — The Crash Site
+#### hashTableTeardownLoop (0x69f740) - The Crash Site
 ```c
 void hashTableTeardownLoop(void) {
     if ((DAT_00ca7cf0 & 1) == 0) {
         DAT_00ca7cf0 |= 1;
         _DAT_00ca7dc0 = &PTR_DestroyMapDoodadDefinition_0081089c;
-        // Walk global list — crashes here if entries point to freed heap
+        // Walk global list - crashes here if entries point to freed heap
         while (PTR_00ca7dcc is valid) {
             piVar2 = ValidateLinkedList(&PTR_00ca7dc4, PTR_00ca7dcc);
             CalculateDistance3D(piVar2);  // reads from freed entity memory
         }
-        // Walk each hash bucket — also crashes
+        // Walk each hash bucket - also crashes
         for each bucket in PTR_00ca7ddc {
             while (bucket entry is valid) {
                 piVar2 = ValidateLinkedList(bucket, entry);
@@ -1288,32 +1288,32 @@ void ClearWorldObjectsAndResetState(void) {
 
 **Every native M2 entity created via `CreateEntityInstance_WithAttachment` is explicitly cleaned up
 by a parent.** The atexit handler (hashTableTeardownLoop) is a safety net for the hash table data
-structure — it should NEVER encounter live entities in normal operation.
+structure - it should NEVER encounter live entities in normal operation.
 
 #### All 3 callers of CreateEntityInstance_WithAttachment:
 
-1. **CastSpellByID_Extended (0x6e4b60)** — spell targeting reticle
+1. **CastSpellByID_Extended (0x6e4b60)** - spell targeting reticle
    - Stores entity in global `PTR_00ceca8c`
    - Cleaned up by `processCinematicExit` before every new spell cast
    - Also cleaned up by `executeSpellOrItem` (0x6e54f0)
 
-2. **CreateGameObjectPathEffect (0x5f8030)** — game object visual effect
+2. **CreateGameObjectPathEffect (0x5f8030)** - game object visual effect
    - Called by `CreatePathObjectByUnitType` (0x5f4970)
    - Return value saved at parent+0x10 (despite Ghidra typing it as void)
    - Cleaned up by `DestroyPathObjectIfPresent` (0x5f4950) → `CleanupEntity_ProcessAttachments`
    - Parent is a spell effect object (SpellEffectWithPath class at ~0x5f4800)
    - `SpellEffectWithPathDestructor` (0x5f48d0) destroys parent during spell teardown
 
-3. **Unknown caller (0x6e5a6e)** — likely in `executeSpellOrItem` (0x6e54f0)
+3. **Unknown caller (0x6e5a6e)** - likely in `executeSpellOrItem` (0x6e54f0)
    - Same pattern as #1
 
 #### All 3 callers of CleanupEntity_ProcessAttachments (0x670d50):
-- `processCinematicExit` (0x6e4940) — spell cleanup
-- `executeSpellOrItem` (0x6e54f0) — spell/item cleanup
-- `DestroyPathObjectIfPresent` (0x5f4950) — path effect cleanup
+- `processCinematicExit` (0x6e4940) - spell cleanup
+- `executeSpellOrItem` (0x6e54f0) - spell/item cleanup
+- `DestroyPathObjectIfPresent` (0x5f4950) - path effect cleanup
 
 #### CleanupVisualEffectAndRelease has only ONE caller:
-- `cleanupGameObject` (0x6a67a0) — the M2/WDOODADDEF cleanup function
+- `cleanupGameObject` (0x6a67a0) - the M2/WDOODADDEF cleanup function
 
 So the full cleanup chain is always:
 ```
@@ -1332,7 +1332,7 @@ Parent destroyed
 |------|--------|----------|-----------------|------|
 | PTR_00c96088 | 0xC | Terrain chunk wrappers → doodad parents | destroyPrimaryGameObject | various |
 | PTR_00c9e358 | via PTR_00c9e350 | WMO entity wrappers (from CreateEntityInstance_WithAttachment WMO path) | destroyWorldEnvironment | WMAPOBJDEF |
-| PTR_00c962bc | 0xC | **Empty in 1.12.1** — no insertion code found, only init+atexit | cleanupGameObject (conditional) | WDOODADDEF |
+| PTR_00c962bc | 0xC | **Empty in 1.12.1** - no insertion code found, only init+atexit | cleanupGameObject (conditional) | WDOODADDEF |
 | PTR_00ca8044 | via PTR_00ca803c | Map manager objects | CleanupAndReleaseMemoryBlock | PTR_00ca7e10 (4th heap) |
 | PTR_00c7b2dc | 0xC | WENTITY fade effect wrappers | CleanupObjectAttachments_FreeMemory → DestroyWorldObjectAndRelease | WENTITY |
 

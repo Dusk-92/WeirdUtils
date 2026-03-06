@@ -41,7 +41,7 @@ pub const OutlineEntry = struct {
 };
 
 // =============================================================================
-// Outline colours — D3DCOLOR ARGB format (0xAARRGGBB)
+// Outline colours - D3DCOLOR ARGB format (0xAARRGGBB)
 // =============================================================================
 
 /// Dead player / corpse outline (cyan).
@@ -53,14 +53,14 @@ pub const COLOR_TARGET: u32 = 0xFFFFC800;
 /// Raid mark colours, indexed 0-8. Index 0 = fallback cyan.
 pub const RAID_MARK_COLORS = [9]u32{
     0xFF00FFFF, // 0: fallback
-    0xFFFFFF00, // 1: Star — Yellow
-    0xFFFF8000, // 2: Circle — Orange
-    0xFFCC44FF, // 3: Diamond — Purple
-    0xFF00FF00, // 4: Triangle — Green
-    0xFFC0C0FF, // 5: Moon — Silver/Pale Blue
-    0xFF4040FF, // 6: Square — Blue
-    0xFFFF2828, // 7: Cross — Soft Red
-    0xFFFFF5DC, // 8: Skull — Bone White
+    0xFFFFFF00, // 1: Star - Yellow
+    0xFFFF8000, // 2: Circle - Orange
+    0xFFCC44FF, // 3: Diamond - Purple
+    0xFF00FF00, // 4: Triangle - Green
+    0xFFC0C0FF, // 5: Moon - Silver/Pale Blue
+    0xFF4040FF, // 6: Square - Blue
+    0xFFFF2828, // 7: Cross - Soft Red
+    0xFFFFF5DC, // 8: Skull - Bone White
 };
 
 // =============================================================================

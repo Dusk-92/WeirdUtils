@@ -1,4 +1,4 @@
-# WoW 1.12.1 Calling Conventions — Ghidra Verified
+# WoW 1.12.1 Calling Conventions - Ghidra Verified
 
 All conventions verified against WoW.exe 1.12.1 build 5875 via Ghidra decompilation and raw byte analysis.
 
@@ -6,17 +6,17 @@ All conventions verified against WoW.exe 1.12.1 build 5875 via Ghidra decompilat
 
 | # | Address | Function | Convention | Params | Prologue | RET | Status |
 |---|---------|----------|------------|--------|----------|-----|--------|
-| 1 | `0x0070b360` | CM2SceneRenderDraw | `__thiscall` | ECX=this, stack: viewMatrix, batchData, batchIndices, batchCount | `55 8B EC 81 EC 80 00 00 00` (9B) | — | CORRECT |
-| 2 | `0x00710b90` | CM2Model_ManageRenderListNode | `__thiscall` | ECX=model, stack: addToList | `55 8B EC 8B 45 08` (6B) | — | CORRECT |
-| 3 | `0x0070cb30` | CM2Scene_DrawBatchProjected | `__fastcall` | ECX=renderContext | `55 8B EC 83 EC 10` (6B) | — | CORRECT |
+| 1 | `0x0070b360` | CM2SceneRenderDraw | `__thiscall` | ECX=this, stack: viewMatrix, batchData, batchIndices, batchCount | `55 8B EC 81 EC 80 00 00 00` (9B) | - | CORRECT |
+| 2 | `0x00710b90` | CM2Model_ManageRenderListNode | `__thiscall` | ECX=model, stack: addToList | `55 8B EC 8B 45 08` (6B) | - | CORRECT |
+| 3 | `0x0070cb30` | CM2Scene_DrawBatchProjected | `__fastcall` | ECX=renderContext | `55 8B EC 83 EC 10` (6B) | - | CORRECT |
 
 ## Game Function Wrappers (outline/wow.zig)
 
 | # | Address | Function | Convention | Params | Prologue | RET | Status |
 |---|---------|----------|------------|--------|----------|-----|--------|
-| 4 | `0x00515970` | Script_UnitGUID | `__fastcall` | ECX=unitIdStr → EAX:EDX (64-bit) | `55 8B EC 51 56 68 90 00 00 00` | — | CORRECT |
-| 5 | `0x00464870` | GetObjectByGUID | **`__stdcall`** | **stack: guidLow, guidHigh → EAX** | `55 8B EC 8B 45 08 8B 4D 0C` | **RET 8** | **FIXED** — was incorrectly using `hook.fastcall` |
-| 6 | `0x006061E0` | CGUnit_C::UnitReaction | `__thiscall` | ECX=localPlayer, stack: unit → EAX (reaction int) | `53 8B DC 83 EC 08 83 E4 F8` | — | CORRECT |
+| 4 | `0x00515970` | Script_UnitGUID | `__fastcall` | ECX=unitIdStr → EAX:EDX (64-bit) | `55 8B EC 51 56 68 90 00 00 00` | - | CORRECT |
+| 5 | `0x00464870` | GetObjectByGUID | **`__stdcall`** | **stack: guidLow, guidHigh → EAX** | `55 8B EC 8B 45 08 8B 4D 0C` | **RET 8** | **FIXED** - was incorrectly using `hook.fastcall` |
+| 6 | `0x006061E0` | CGUnit_C::UnitReaction | `__thiscall` | ECX=localPlayer, stack: unit → EAX (reaction int) | `53 8B DC 83 EC 08 83 E4 F8` | - | CORRECT |
 
 ### GetObjectByGUID Detail
 
@@ -36,11 +36,11 @@ E8 ...      CALL FindObjectByGUID
 C2 08 00    RET 8                 ; callee cleans 8 bytes
 ```
 
-The C++ reference declared this as `__fastcall(uint64_t)`. Under MSVC, `uint64_t` (8 bytes) is too large for a single 32-bit register, so `__fastcall` passes it on the stack — making it behave like `__stdcall`. The Zig code split it into two `u32` args and passed them in ECX/EDX via `hook.fastcall`, which was wrong.
+The C++ reference declared this as `__fastcall(uint64_t)`. Under MSVC, `uint64_t` (8 bytes) is too large for a single 32-bit register, so `__fastcall` passes it on the stack - making it behave like `__stdcall`. The Zig code split it into two `u32` args and passed them in ECX/EDX via `hook.fastcall`, which was wrong.
 
 The transmog addon (`transmogfix/src/main.zig:134`) and interact module (`weirdutils/src/interact.zig:50`) already had the correct push-to-stack implementation.
 
-## Dead Overlay Functions (not yet ported — for future reference)
+## Dead Overlay Functions (not yet ported - for future reference)
 
 | # | Address | Function | Convention | Params | Status |
 |---|---------|----------|------------|--------|--------|
@@ -55,23 +55,23 @@ All WoW 1.12.1 Lua C API functions use `__fastcall` with L (lua_State*) in ECX.
 
 | # | Address | Function | Convention | Params | RET | Status |
 |---|---------|----------|------------|--------|-----|--------|
-| 11 | `0x00704120` | FrameScript::Register | `__fastcall` | ECX=name, EDX=funcAddr | — | CORRECT |
+| 11 | `0x00704120` | FrameScript::Register | `__fastcall` | ECX=name, EDX=funcAddr | - | CORRECT |
 | 12 | `0x006F3070` | lua_gettop | `__fastcall` | ECX=L → int | RET | CORRECT |
-| 13 | `0x006F3080` | lua_settop | `__fastcall` | ECX=L, EDX=index | — | CORRECT |
-| 14 | `0x006F3350` | lua_pushvalue | `__fastcall` | ECX=L, EDX=index | — | CORRECT |
+| 13 | `0x006F3080` | lua_settop | `__fastcall` | ECX=L, EDX=index | - | CORRECT |
+| 14 | `0x006F3350` | lua_pushvalue | `__fastcall` | ECX=L, EDX=index | - | CORRECT |
 | 15 | `0x006F3400` | lua_type | `__fastcall` | ECX=L, EDX=index → int | RET | CORRECT |
 | 16 | `0x006F3510` | lua_isstring | `__fastcall` | ECX=L, EDX=index → int | RET | CORRECT |
-| 17 | `0x006F3690` | lua_tostring | `__fastcall` | ECX=L, EDX=index → char* | — | CORRECT |
-| 18 | `0x006F39F0` | lua_pushboolean | `__fastcall` | ECX=L, EDX=bool | — | CORRECT |
-| 19 | `0x006F3890` | lua_pushstring | `__fastcall` | ECX=L, EDX=string | — | CORRECT |
+| 17 | `0x006F3690` | lua_tostring | `__fastcall` | ECX=L, EDX=index → char* | - | CORRECT |
+| 18 | `0x006F39F0` | lua_pushboolean | `__fastcall` | ECX=L, EDX=bool | - | CORRECT |
+| 19 | `0x006F3890` | lua_pushstring | `__fastcall` | ECX=L, EDX=string | - | CORRECT |
 | 20 | `0x006F3810` | lua_pushnumber | `__fastcall` | ECX=L, stack: f64 (8 bytes) | RET 8 | CORRECT |
-| 21 | `0x006F3920` | lua_pushcclosure | `__fastcall` | ECX=L, EDX=func, stack: nupvalues | — | **FIXED** — was 0x6F3B80 (wrong addr) |
-| 22 | `0x006F4940` | luaL_error | `__cdecl` | stack: L, fmt, ... | — | CORRECT |
-| 23 | `0x006F4DC0` | luaL_openlib | `__fastcall` | ECX=L, EDX=libname, stack: funcs, nup | — | CORRECT |
+| 21 | `0x006F3920` | lua_pushcclosure | `__fastcall` | ECX=L, EDX=func, stack: nupvalues | - | **FIXED** - was 0x6F3B80 (wrong addr) |
+| 22 | `0x006F4940` | luaL_error | `__cdecl` | stack: L, fmt, ... | - | CORRECT |
+| 23 | `0x006F4DC0` | luaL_openlib | `__fastcall` | ECX=L, EDX=libname, stack: funcs, nup | - | CORRECT |
 
 ### lua_pushcclosure Detail
 
-Ghidra search found `lua_pushcclosure @ 006f3920`. No function exists at the old address `0x6F3B80` — it falls mid-body of another function. The wrapper was unused (never called from current code) so no crash occurred.
+Ghidra search found `lua_pushcclosure @ 006f3920`. No function exists at the old address `0x6F3B80` - it falls mid-body of another function. The wrapper was unused (never called from current code) so no crash occurred.
 
 ### lua_pushnumber Detail
 
@@ -81,14 +81,14 @@ Takes a `double` (8 bytes) which is too large for EDX, so it goes on the stack p
 
 | # | Address | Function | Convention | Params | Prologue | RET | Status |
 |---|---------|----------|------------|--------|----------|-----|--------|
-| 24 | `0x0042a320` | ValidateFunctionPointer | `__fastcall` | ECX=addr | `55 8B EC 83 EC 40` (6B) | — | CORRECT (empty detour) |
+| 24 | `0x0042a320` | ValidateFunctionPointer | `__fastcall` | ECX=addr | `55 8B EC 83 EC 40` (6B) | - | CORRECT (empty detour) |
 | 25 | `0x00648620` | LoadFileWithTextureResourceFallback | `__stdcall` | 7 stack params | `55 8B EC 8B 4D 1C` (6B) | RET 0x1C | CORRECT |
-| 26 | `0x00490250` | FrameScript_RegisterAllSystemCommands | `void(void)` | none | `56 E8 ...` (6B) | — | CORRECT (fixup at offset 1) |
-| 27 | `0x0051F600` | LoadAddonsRecursively | `__fastcall` | ECX=error_handler | `53 8B 1D ...` (7B) | — | CORRECT |
+| 26 | `0x00490250` | FrameScript_RegisterAllSystemCommands | `void(void)` | none | `56 E8 ...` (6B) | - | CORRECT (fixup at offset 1) |
+| 27 | `0x0051F600` | LoadAddonsRecursively | `__fastcall` | ECX=error_handler | `53 8B 1D ...` (7B) | - | CORRECT |
 | 28 | `0x006EDB90` | loadFileListWithIncludes | `__fastcall` | ECX=path, EDX=md5ctx, stack: error_handler | `55 8B EC 6A FF ...` | RET 4 | CORRECT |
 | 29 | `0x004B6F70` | LoadUIBindingsFromFile | `__thiscall` | ECX=binding_mgr, stack: path, md5ctx, callback | `55 8B EC 81 EC 1C 04 00 00` | RET 0x0C | CORRECT |
-| 30 | `0x0046a400` | GameEngine_MainInitialize | `void(void)` | none | `55 8B EC 83 EC 28` (6B) | — | CORRECT |
-| 31 | `0x00490BD0` | World_HandlePlayerLogin | `void(void)` | none | `56 E8 ...` (6B) | — | CORRECT (fixup at offset 1) |
+| 30 | `0x0046a400` | GameEngine_MainInitialize | `void(void)` | none | `55 8B EC 83 EC 28` (6B) | - | CORRECT |
+| 31 | `0x00490BD0` | World_HandlePlayerLogin | `void(void)` | none | `56 E8 ...` (6B) | - | CORRECT (fixup at offset 1) |
 
 ### Note on #31
 

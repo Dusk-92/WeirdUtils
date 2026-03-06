@@ -12,31 +12,31 @@ interaction helpers, and an embedded addon with Lua API + keybindings.
 | **Screenshot** | Hooks CTgaFile::Write for screenshot capture. |
 | **Interact** | Nearest NPC/object interaction, bulk looting with queue processing. |
 | **Markers** | World-space raid markers (5 colors) using M2 model entities. Proximity respawn, group sync, animated spawn/despawn. Lua API + slash commands (`/wm`, `/cwm`). |
-| **Framecrash** | Anchor vtable guards — prevents crashes from dangling relativeTo pointers and NULL frame refs. |
+| **Framecrash** | Anchor vtable guards - prevents crashes from dangling relativeTo pointers and NULL frame refs. |
 | **Combatlog** | Combat log fixes. |
 | **Minimap Icons** | Minimap icon fixes. |
 | **Transmogfix** | Coalesces transmog durability update packets to prevent death frame drops. |
 | **Data Assets** | Loose file loading, permissive MPQ glob patterns, pre-indexed file hash set. |
 | **Healtextfix** | Heal text display fix. |
-| **Embedded Addon** | Virtual addons loaded from DLL memory — .toc, .lua, .xml, .m2, .blp served via file I/O hooks (LoadFile + Storm layer). No on-disk addon folder needed. |
+| **Embedded Addon** | Virtual addons loaded from DLL memory - .toc, .lua, .xml, .m2, .blp served via file I/O hooks (LoadFile + Storm layer). No on-disk addon folder needed. |
 | **Lua Protection Bypass** | Stubs the Lua callback address validator to allow C function registration. |
 
 ## Consolidation Plan
 
 WeirdUtils replaces the standalone utility DLLs in the parent directory. All
-development happens here — shared code, shared hooking infrastructure, one build
+development happens here - shared code, shared hooking infrastructure, one build
 system. The standalone DLLs are being retired.
 
 | Standalone DLL | Purpose | Integration Status |
 |---|---|---|
 | `../assetfix` | Loose file loading, permissive MPQ glob patterns, pre-indexed file hash set | Not started |
-| `../transmogfix` | Death frame drop fix — coalesces transmog durability update packets | Not started |
+| `../transmogfix` | Death frame drop fix - coalesces transmog durability update packets | Not started |
 | `../interact` | Nearest interact + bulk loot | Partially integrated |
 
 ### Compile-Time Feature Gating
 
 Each module is gated behind a build flag. The same codebase produces both the
-all-in-one DLL and individual feature DLLs — just different compile flags.
+all-in-one DLL and individual feature DLLs - just different compile flags.
 Users can pick the full package or grab only the features they want.
 
 ```zig
@@ -48,21 +48,21 @@ const enable_outline = b.option(bool, "outline", "Enable outline rendering") ore
 ```
 
 ```sh
-# Full build — all features in one DLL
+# Full build - all features in one DLL
 zig build
 
-# Single-feature builds — one DLL per feature for individual distribution
+# Single-feature builds - one DLL per feature for individual distribution
 zig build -Dcustomassets=true -Dtransmogfix=false -Dinteract=false -Doutline=false
 zig build -Dcustomassets=false -Dtransmogfix=true -Dinteract=false -Doutline=false
 # etc.
 ```
 
 Release artifacts:
-- `weirdutils.dll` — everything
-- `customassets.dll` — just asset/MPQ fixes
-- `transmogfix.dll` — just transmog coalesce
-- `interact.dll` — just interact/loot helpers
-- `outline.dll` — just outline rendering
+- `weirdutils.dll` - everything
+- `customassets.dll` - just asset/MPQ fixes
+- `transmogfix.dll` - just transmog coalesce
+- `interact.dll` - just interact/loot helpers
+- `outline.dll` - just outline rendering
 
 All built from this repo, all sharing the same hook library and codebase.
 
@@ -70,7 +70,7 @@ All built from this repo, all sharing the same hook library and codebase.
 
 A user might load the full DLL alongside one of the smaller single-feature DLLs
 (e.g. they use `weirdutils.dll` for everything but also have `customassets.dll` from
-before they switched). Each feature module claims a **named mutex** on load — if
+before they switched). Each feature module claims a **named mutex** on load - if
 it's already held, that module skips hook installation. This way any combination
 of DLLs coexists safely with no duplicate hooks.
 
@@ -78,11 +78,11 @@ of DLLs coexists safely with no duplicate hooks.
 // Each module creates a process-specific named mutex on init
 const mutex = CreateMutexA(null, 1, "Local\\WeirdUtils_CustomAssetsHook_{pid}");
 if (GetLastError() == ERROR_ALREADY_EXISTS) {
-    // Another DLL already owns this feature's hooks — skip
+    // Another DLL already owns this feature's hooks - skip
     CloseHandle(mutex);
     return;
 }
-// First to load wins — install hooks
+// First to load wins - install hooks
 ```
 
 This is per-feature, not per-DLL. The full DLL claims one mutex per enabled
@@ -109,7 +109,7 @@ Implementation will require:
 
 This repo is private (source not published to avoid empowering bad actors).
 Distribution uses a separate **public release repo** that contains only a
-user-facing README and binary releases — no source code.
+user-facing README and binary releases - no source code.
 
 - **This repo** (private): all source, development, docs
 - **Public repo** (e.g. `WeirdUtils`): README with feature descriptions +
@@ -169,10 +169,10 @@ Host: Linux (Arch), game runs via Wine/DXVK.
 
 Hooks are installed in a specific sequence to handle dependencies:
 
-1. **DLL_PROCESS_ATTACH** — Lua protection bypass, file I/O hook, LoadScriptFunctions,
+1. **DLL_PROCESS_ATTACH** - Lua protection bypass, file I/O hook, LoadScriptFunctions,
    LoadAddonsRecursively, interact hooks, GameEngine_MainInitialize, CGGameUI_Shutdown
-2. **GameEngine_MainInitialize** (one-shot) — screenshot hook, outline model hooks
-3. **First model hook callback** (deferred) — D3D9 vtable hooks (EndScene, DIP, Reset)
+2. **GameEngine_MainInitialize** (one-shot) - screenshot hook, outline model hooks
+3. **First model hook callback** (deferred) - D3D9 vtable hooks (EndScene, DIP, Reset)
 
 D3D9 hooks are deferred because creating a dummy device during engine init
 corrupts the d3d9 proxy's state.

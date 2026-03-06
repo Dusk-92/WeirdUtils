@@ -179,7 +179,7 @@ fn luaPrintError(L: *anyopaque, msg: [*:0]const u8) void {
 }
 
 // =============================================================================
-// InteractNearest — find closest interactable within 5 yards, right-click it
+// InteractNearest - find closest interactable within 5 yards, right-click it
 // =============================================================================
 
 pub fn interactNearest(L: *anyopaque) callconv(.c) u32 {
@@ -269,13 +269,21 @@ pub fn interactNearest(L: *anyopaque) callconv(.c) u32 {
 }
 
 // =============================================================================
-// LootAllCorpses — queue nearby lootable corpses, loot them sequentially
+// LootAllCorpses - queue nearby lootable corpses, loot them sequentially
 // =============================================================================
 
 const MAX_LOOT_QUEUE: usize = 100;
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "interact";
+
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 var loot_queue: [MAX_LOOT_QUEUE]u64 = .{0} ** MAX_LOOT_QUEUE;
 var loot_queue_count: usize = 0;
@@ -318,7 +326,7 @@ fn processLootQueue() void {
     const loot_guid_hi = hook.readMem(u32, Offsets.LOOT_GUID_HI);
 
     if (loot_guid_lo != 0 or loot_guid_hi != 0) {
-        // Loot window is open — wait for auto-loot to finish.
+        // Loot window is open - wait for auto-loot to finish.
         // If items remain after timeout (e.g. unique items already owned),
         // skip to next corpse.
         if (elapsed > 1500) {
@@ -327,7 +335,7 @@ fn processLootQueue() void {
         return;
     }
 
-    // Loot GUID is zero — loot closed or server hasn't responded yet
+    // Loot GUID is zero - loot closed or server hasn't responded yet
     if (elapsed < loot_next_delay) return;
 
     interactNextCorpse();
@@ -404,38 +412,19 @@ fn hookSceneEnd(device: u32) callconv(tc) void {
 pub fn installHooks() void {
     con.print("[interact] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_InteractHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return;
 
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[interact] Another DLL owns hooks (mutex taken), skipping\n");
-        return;
-    }
-    g_is_hook_owner = true;
-
-    // SceneEnd — per-frame loot queue processing
+    // SceneEnd - per-frame loot queue processing
     _ = scene_end_hook.attach(Offsets.ADDR_SceneEnd, &hookSceneEnd);
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         scene_end_hook.detach();
-    }
-
-    if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

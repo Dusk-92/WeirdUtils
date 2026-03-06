@@ -126,7 +126,7 @@ const CachedDraw = struct {
     num_verts: u32 = 0,
     start_idx: u32 = 0,
     prim_count: u32 = 0,
-    // GPU state (AddRef'd COM objects — released after replay)
+    // GPU state (AddRef'd COM objects - released after replay)
     vb: ?*anyopaque = null,
     vb_offset: u32 = 0,
     vb_stride: u32 = 0,
@@ -136,7 +136,7 @@ const CachedDraw = struct {
     // Per-model outline info
     color: u32 = 0,
     category: types.ModelCategory = .none,
-    // VS constants (bone matrices, world/view/proj) — copied by value
+    // VS constants (bone matrices, world/view/proj) - copied by value
     vs_consts: [MAX_VS_CONST_REGS][4]f32 = undefined,
 };
 
@@ -197,8 +197,7 @@ fn deviceSetPtrOrNull(dev: *anyopaque, idx: usize, ptr: ?*anyopaque) void {
             :
             : [self] "r" (@intFromPtr(dev)),
               [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-        );
+            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     }
 }
 
@@ -251,8 +250,7 @@ fn deviceSetTexture(dev: *anyopaque, stage: u32, tex: ?*anyopaque) void {
             : [self] "r" (@intFromPtr(dev)),
               [stage] "r" (stage),
               [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-        );
+            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     }
 }
 
@@ -302,8 +300,7 @@ fn deviceSetStreamSource(dev: *anyopaque, stream: u32, vb: ?*anyopaque, offset: 
             : [self] "r" (@intFromPtr(dev)),
               [a] "r" (&args),
               [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-        );
+            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     }
 }
 
@@ -337,8 +334,7 @@ fn deviceSetIndices(dev: *anyopaque, ib: ?*anyopaque) void {
             :
             : [self] "r" (@intFromPtr(dev)),
               [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-        );
+            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     }
 }
 
@@ -397,7 +393,7 @@ fn argbToFloat4(argb: u32) [4]f32 {
 // Terrain depth snapshot
 // =============================================================================
 
-// (Terrain DS snapshot removed — DXVK does not support StretchRect for
+// (Terrain DS snapshot removed - DXVK does not support StretchRect for
 //  depth-stencil surfaces. Terrain occlusion is achieved via stencil marks
 //  written during the DIP hook, when the game's DS already has terrain depth.)
 
@@ -420,38 +416,55 @@ fn ensureResources(device: *anyopaque) void {
     resource_height = vp.Height;
 
     // Silhouette RT (A8R8G8B8)
-    if (deviceCreateTexture(device, vp.Width, vp.Height, 1,
-        types.D3DUSAGE_RENDERTARGET, types.D3DFMT_A8R8G8B8, types.D3DPOOL_DEFAULT,
-        &rt_silhouette_tex) < 0) { releaseResources(); return; }
+    if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_A8R8G8B8, types.D3DPOOL_DEFAULT, &rt_silhouette_tex) < 0) {
+        releaseResources();
+        return;
+    }
     rt_silhouette_surf = textureGetSurfaceLevel(rt_silhouette_tex.?);
-    if (rt_silhouette_surf == null) { releaseResources(); return; }
+    if (rt_silhouette_surf == null) {
+        releaseResources();
+        return;
+    }
 
     // JFA A RT (G16R16F)
-    if (deviceCreateTexture(device, vp.Width, vp.Height, 1,
-        types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT,
-        &rt_jfa_a_tex) < 0) { releaseResources(); return; }
+    if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT, &rt_jfa_a_tex) < 0) {
+        releaseResources();
+        return;
+    }
     rt_jfa_a_surf = textureGetSurfaceLevel(rt_jfa_a_tex.?);
-    if (rt_jfa_a_surf == null) { releaseResources(); return; }
+    if (rt_jfa_a_surf == null) {
+        releaseResources();
+        return;
+    }
 
     // JFA B RT (G16R16F)
-    if (deviceCreateTexture(device, vp.Width, vp.Height, 1,
-        types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT,
-        &rt_jfa_b_tex) < 0) { releaseResources(); return; }
+    if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT, &rt_jfa_b_tex) < 0) {
+        releaseResources();
+        return;
+    }
     rt_jfa_b_surf = textureGetSurfaceLevel(rt_jfa_b_tex.?);
-    if (rt_jfa_b_surf == null) { releaseResources(); return; }
-
+    if (rt_jfa_b_surf == null) {
+        releaseResources();
+        return;
+    }
 }
 
 fn releaseResources() void {
     inline for (.{
         &rt_silhouette_surf, &rt_jfa_a_surf, &rt_jfa_b_surf,
     }) |surf_ptr| {
-        if (surf_ptr.*) |s| { comRelease(s); surf_ptr.* = null; }
+        if (surf_ptr.*) |s| {
+            comRelease(s);
+            surf_ptr.* = null;
+        }
     }
     inline for (.{
         &rt_silhouette_tex, &rt_jfa_a_tex, &rt_jfa_b_tex,
     }) |tex_ptr| {
-        if (tex_ptr.*) |t| { comRelease(t); tex_ptr.* = null; }
+        if (tex_ptr.*) |t| {
+            comRelease(t);
+            tex_ptr.* = null;
+        }
     }
     resource_width = 0;
     resource_height = 0;
@@ -461,7 +474,7 @@ fn releaseResources() void {
 // Shader source strings
 // =============================================================================
 
-/// Flat colour pixel shader — outputs PS constant c0.
+/// Flat colour pixel shader - outputs PS constant c0.
 const ps_flat_src = "ps_3_0\nmov oC0, c0\n";
 
 /// JFA init: sample silhouette, output own UV as seed or sentinel (-1,-1).
@@ -491,7 +504,7 @@ const jfa_prop_src =
     "def c9, 1.0, 1.0, 0.0, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
-    // Self sample — initialize best seed and distance
+    // Self sample - initialize best seed and distance
     "texld r0, v0, s0\n" ++
     "sub r2.xy, v0.xy, r0.xy\n" ++
     "dp2add r9.x, r2, r2, c1.x\n" ++ // best dist²
@@ -672,7 +685,10 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 
 fn releaseShaders() void {
     inline for (.{ &outline_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
-        if (ps.*) |p| { comRelease(p); ps.* = null; }
+        if (ps.*) |p| {
+            comRelease(p);
+            ps.* = null;
+        }
     }
     shaders_attempted = false;
 }
@@ -731,7 +747,7 @@ fn hkEndScene(device: *anyopaque) callconv(sc) i32 {
 }
 
 // =============================================================================
-// Reset hook — force D24S8 depth/stencil format, release resources
+// Reset hook - force D24S8 depth/stencil format, release resources
 // =============================================================================
 
 fn hkReset(device: *anyopaque, pp: *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 {
@@ -754,7 +770,7 @@ fn hkReset(device: *anyopaque, pp: *types.D3DPRESENT_PARAMETERS) callconv(sc) i3
 }
 
 // =============================================================================
-// DrawIndexedPrimitive hook — cache outline draws for EndScene replay
+// DrawIndexedPrimitive hook - cache outline draws for EndScene replay
 // =============================================================================
 // When an outline target is being drawn, we cache the draw parameters and
 // current GPU state (VB, IB, vertex decl, VS, VS constants) so they can be
@@ -808,7 +824,7 @@ fn hkDIP(
 
             // Capture current GPU state (AddRef COM objects to keep them alive)
             deviceGetStreamSource(device, 0, &draw.vb, &draw.vb_offset, &draw.vb_stride);
-            // GetStreamSource AddRef's the VB — we keep the ref until replay
+            // GetStreamSource AddRef's the VB - we keep the ref until replay
             draw.ib = deviceGetIndices(device);
             // GetIndices AddRef's the IB
             draw.vertex_decl = deviceGetPtr(device, types.VT.GetVertexDeclaration);
@@ -832,7 +848,7 @@ fn hkDIP(
         const s_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
         const s_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
         const s_ref = deviceGetRS(device, types.D3DRS.STENCILREF);
-        // (STENCILWRITEMASK not saved — intentionally set to 0 on restore)
+        // (STENCILWRITEMASK not saved - intentionally set to 0 on restore)
         const s_pass = deviceGetRS(device, types.D3DRS.STENCILPASS);
         const s_fail = deviceGetRS(device, types.D3DRS.STENCILFAIL);
         const s_zfail = deviceGetRS(device, types.D3DRS.STENCILZFAIL);
@@ -856,7 +872,7 @@ fn hkDIP(
         deviceSetRS(device, types.D3DRS.STENCILPASS, s_pass);
         deviceSetRS(device, types.D3DRS.STENCILFAIL, s_fail);
         deviceSetRS(device, types.D3DRS.STENCILZFAIL, s_zfail);
-        // Write mask 0 instead of restoring original — prevents any
+        // Write mask 0 instead of restoring original - prevents any
         // subsequent DIP from overwriting our stencil=1 marks.
         // Restored properly in EndScene before the JFA pipeline.
         deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
@@ -871,10 +887,22 @@ fn hkDIP(
 fn clearCachedDraws() void {
     for (0..cached_draw_count) |i| {
         var draw = &cached_draws[i];
-        if (draw.vb) |obj| { comRelease(obj); draw.vb = null; }
-        if (draw.ib) |obj| { comRelease(obj); draw.ib = null; }
-        if (draw.vertex_decl) |obj| { comRelease(obj); draw.vertex_decl = null; }
-        if (draw.vertex_shader) |obj| { comRelease(obj); draw.vertex_shader = null; }
+        if (draw.vb) |obj| {
+            comRelease(obj);
+            draw.vb = null;
+        }
+        if (draw.ib) |obj| {
+            comRelease(obj);
+            draw.ib = null;
+        }
+        if (draw.vertex_decl) |obj| {
+            comRelease(obj);
+            draw.vertex_decl = null;
+        }
+        if (draw.vertex_shader) |obj| {
+            comRelease(obj);
+            draw.vertex_shader = null;
+        }
     }
     cached_draw_count = 0;
 }
@@ -898,7 +926,7 @@ fn runJfaPipeline(device: *anyopaque) void {
     // Save ALL state that replay + JFA will modify (manual, no state blocks)
     // =====================================================================
 
-    // COM objects (Get* AddRefs — must Release after restore)
+    // COM objects (Get* AddRefs - must Release after restore)
     const saved_rt0 = deviceGetRenderTarget(device, 0);
     const saved_ps = deviceGetPtr(device, types.VT.GetPixelShader);
     const saved_vs = deviceGetPtr(device, types.VT.GetVertexShader);
@@ -969,7 +997,7 @@ fn runJfaPipeline(device: *anyopaque) void {
         deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
         clearRenderTarget(device, 0x00000000);
 
-        // Keep game's DS bound — it has stencil marks from DIP hook where
+        // Keep game's DS bound - it has stencil marks from DIP hook where
         // outline targets passed the terrain depth test (stencil=1 = visible).
         // Don't write depth or stencil during replay.
         deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
@@ -1006,8 +1034,7 @@ fn runJfaPipeline(device: *anyopaque) void {
                 deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_KEEP);
             }
 
-            _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx,
-                draw.num_verts, draw.start_idx, draw.prim_count);
+            _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
         }
 
         clearCachedDraws();
@@ -1048,89 +1075,88 @@ fn runJfaPipeline(device: *anyopaque) void {
             const quad = buildFullscreenQuad(vp.Width, vp.Height);
             deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), @sizeOf(QuadVertex));
         }
-        // Skip JFA — jump straight to state restore
+        // Skip JFA - jump straight to state restore
     } else {
 
-    // =====================================================================
-    // Phase 2: JFA pipeline (silhouette → outline composite)
-    // =====================================================================
+        // =====================================================================
+        // Phase 2: JFA pipeline (silhouette → outline composite)
+        // =====================================================================
 
-    deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
-    deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
-    deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
-    deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
-    deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
-    deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
-    deviceSetRS(device, types.D3DRS.CULLMODE, types.D3DCULL_NONE);
-    deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
-    deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
+        deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
+        deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
+        deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
+        deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+        deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
+        deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
+        deviceSetRS(device, types.D3DRS.CULLMODE, types.D3DCULL_NONE);
+        deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
+        deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
 
-    deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
-    deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
-    deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
-    deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
-    deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
-    deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
-    deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
-    deviceSetSamplerState(device, 1, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
-    deviceSetSamplerState(device, 1, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
-    deviceSetSamplerState(device, 1, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
+        deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 1, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
+        deviceSetSamplerState(device, 1, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
+        deviceSetSamplerState(device, 1, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
 
-    const quad = buildFullscreenQuad(vp.Width, vp.Height);
-    const qstride: u32 = @sizeOf(QuadVertex);
-    const fw = @as(f32, @floatFromInt(@max(vp.Width, 1)));
-    const fh = @as(f32, @floatFromInt(@max(vp.Height, 1)));
+        const quad = buildFullscreenQuad(vp.Width, vp.Height);
+        const qstride: u32 = @sizeOf(QuadVertex);
+        const fw = @as(f32, @floatFromInt(@max(vp.Width, 1)));
+        const fh = @as(f32, @floatFromInt(@max(vp.Height, 1)));
 
-    // Pass 1: JFA Init (silhouette → JFA_A)
-    deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-    deviceSetTexture(device, 0, rt_silhouette_tex);
-    deviceSetPtr(device, types.VT.SetPixelShader, jfa_init_ps.?);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+        // Pass 1: JFA Init (silhouette → JFA_A)
+        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
+        deviceSetTexture(device, 0, rt_silhouette_tex);
+        deviceSetPtr(device, types.VT.SetPixelShader, jfa_init_ps.?);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // JFA Propagation: steps [8, 4, 2, 1] ping-ponging between A and B.
-    deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
-    var c0: [4]f32 = undefined;
+        // JFA Propagation: steps [8, 4, 2, 1] ping-ponging between A and B.
+        deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
+        var c0: [4]f32 = undefined;
 
-    // step=8 (JFA_A → JFA_B)
-    deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
-    deviceSetTexture(device, 0, rt_jfa_a_tex);
-    c0 = .{ 8.0 / fw, 8.0 / fh, 0.0, 0.0 };
-    deviceSetPSConstF(device, 0, &c0);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+        // step=8 (JFA_A → JFA_B)
+        deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
+        deviceSetTexture(device, 0, rt_jfa_a_tex);
+        c0 = .{ 8.0 / fw, 8.0 / fh, 0.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // step=4 (JFA_B → JFA_A)
-    deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-    deviceSetTexture(device, 0, rt_jfa_b_tex);
-    c0 = .{ 4.0 / fw, 4.0 / fh, 0.0, 0.0 };
-    deviceSetPSConstF(device, 0, &c0);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+        // step=4 (JFA_B → JFA_A)
+        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
+        deviceSetTexture(device, 0, rt_jfa_b_tex);
+        c0 = .{ 4.0 / fw, 4.0 / fh, 0.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // step=2 (JFA_A → JFA_B)
-    deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
-    deviceSetTexture(device, 0, rt_jfa_a_tex);
-    c0 = .{ 2.0 / fw, 2.0 / fh, 0.0, 0.0 };
-    deviceSetPSConstF(device, 0, &c0);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+        // step=2 (JFA_A → JFA_B)
+        deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
+        deviceSetTexture(device, 0, rt_jfa_a_tex);
+        c0 = .{ 2.0 / fw, 2.0 / fh, 0.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // step=1 (JFA_B → JFA_A)
-    deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-    deviceSetTexture(device, 0, rt_jfa_b_tex);
-    c0 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
-    deviceSetPSConstF(device, 0, &c0);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
+        // step=1 (JFA_B → JFA_A)
+        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
+        deviceSetTexture(device, 0, rt_jfa_b_tex);
+        c0 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
-    // Pass 4: Decode + Composite (JFA_A + silhouette → backbuffer)
-    if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
-    deviceSetTexture(device, 0, rt_jfa_a_tex);
-    deviceSetTexture(device, 1, rt_silhouette_tex);
-    c0 = [4]f32{ fw, fh, 4.0, 0.0 };
-    deviceSetPSConstF(device, 0, &c0);
-    deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
-    deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
-    deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
-    deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
-    deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
+        // Pass 4: Decode + Composite (JFA_A + silhouette → backbuffer)
+        if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
+        deviceSetTexture(device, 0, rt_jfa_a_tex);
+        deviceSetTexture(device, 1, rt_silhouette_tex);
+        c0 = [4]f32{ fw, fh, 4.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
+        deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
+        deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
+        deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
+        deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
     } // end else (normal JFA path)
 
     // =====================================================================
@@ -1174,7 +1200,10 @@ fn runJfaPipeline(device: *anyopaque) void {
     deviceSetVSConstF(device, 0, &saved_vs_consts, MAX_VS_CONST_REGS);
 
     // COM objects (restore binding then release our ref)
-    if (saved_rt0) |rt| { deviceSetRenderTarget(device, 0, rt); comRelease(rt); } // RT0
+    if (saved_rt0) |rt| {
+        deviceSetRenderTarget(device, 0, rt);
+        comRelease(rt);
+    } // RT0
     deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, saved_ds); // DS
     if (saved_ds) |ds| comRelease(ds);
     deviceSetPtrOrNull(device, types.VT.SetPixelShader, saved_ps); // PS

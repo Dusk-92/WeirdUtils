@@ -61,7 +61,7 @@ var tga_hook: hook.Detour(TgaWriteFn) = .{};
 var screenshot_dir: [260]u8 = undefined;
 var screenshot_dir_len: usize = 0;
 var screenshot_counter: u8 = 0;
-var last_screenshot_time: u64 = 0; // packed YMDHMS — resets counter on new second
+var last_screenshot_time: u64 = 0; // packed YMDHMS - resets counter on new second
 
 // =============================================================================
 // Ring buffer queue (max 8 pending screenshots)
@@ -83,8 +83,16 @@ var queue_tail: usize = 0;
 var queue_count: usize = 0;
 var mutex: std.atomic.Mutex = .unlocked;
 var worker_running: bool = false;
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "screenshot";
+
 var g_mutex: ?HANDLE = null;
 var g_is_hook_owner: bool = false;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 fn enqueue(shot: PendingScreenshot) bool {
     if (queue_count >= MAX_PENDING) return false;
@@ -103,7 +111,7 @@ fn dequeue() ?PendingScreenshot {
 }
 
 // =============================================================================
-// Directory extraction — capture path prefix from game's first TGA filename
+// Directory extraction - capture path prefix from game's first TGA filename
 // =============================================================================
 
 fn extractDir(filename_ptr: u32) void {
@@ -120,7 +128,7 @@ fn extractDir(filename_ptr: u32) void {
 }
 
 // =============================================================================
-// Call original CTgaFile::Write — __thiscall(self_ECX, filename_stack) ret 4
+// Call original CTgaFile::Write - __thiscall(self_ECX, filename_stack) ret 4
 // =============================================================================
 
 fn callOriginal(self: u32, filename: u32) i32 {
@@ -133,7 +141,6 @@ fn callOriginal(self: u32, filename: u32) i32 {
 // =============================================================================
 
 fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
-
     if (!enabled) return callOriginal(self, filename);
 
     // Validate TGA header fields
@@ -182,7 +189,7 @@ fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
 }
 
 // =============================================================================
-// Worker thread — dequeues shots, converts BGR→RGB, writes PNG
+// Worker thread - dequeues shots, converts BGR→RGB, writes PNG
 // =============================================================================
 
 fn workerThread() void {
@@ -220,7 +227,7 @@ fn processScreenshot(shot: PendingScreenshot) void {
     var st: SYSTEMTIME = undefined;
     GetLocalTime(&st);
 
-    // Pack timestamp into a single comparable value — reset counter on new second
+    // Pack timestamp into a single comparable value - reset counter on new second
     const now: u64 = @as(u64, st.wYear) << 32 | @as(u64, st.wMonth) << 24 |
         @as(u64, st.wDay) << 16 | @as(u64, st.wHour) << 10 |
         @as(u64, st.wMinute) << 4 | @as(u64, st.wSecond);
@@ -288,8 +295,7 @@ fn luaPushNumber(L_ptr: usize, n: f64) void {
           [lo] "r" (raw[0]),
           [hi] "r" (raw[1]),
           [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -303,7 +309,7 @@ fn luaPushNumber(L_ptr: usize, n: f64) void {
 pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
     const L_ptr = @intFromPtr(L);
 
-    // lua_gettop(L) — __fastcall(L_ECX), EDX unused
+    // lua_gettop(L) - __fastcall(L_ECX), EDX unused
     const nargs = hook.fastcall(i32, 0x6F3070, L_ptr, @as(u32, 0));
 
     if (nargs == 0) {
@@ -314,7 +320,7 @@ pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
         return 2;
     }
 
-    // lua_tostring(L, 1) — __fastcall(L_ECX, index_EDX)
+    // lua_tostring(L, 1) - __fastcall(L_ECX, index_EDX)
     const raw_str = hook.fastcall(usize, 0x6F3690, L_ptr, @as(i32, 1));
     if (raw_str != 0) {
         const str: [*:0]const u8 = @ptrFromInt(raw_str);
@@ -326,7 +332,7 @@ pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
             enabled = false;
         } else if (std.mem.eql(u8, arg, "quality")) {
             if (nargs >= 2) {
-                // lua_tonumber(L, 2) — __fastcall(L_ECX, index_EDX), returns f64 in ST(0)
+                // lua_tonumber(L, 2) - __fastcall(L_ECX, index_EDX), returns f64 in ST(0)
                 const level = hook.fastcall(f64, 0x6F3620, L_ptr, @as(i32, 2));
                 compression_level = std.math.clamp(@as(i32, @intFromFloat(level)), 0, 9);
             }
@@ -343,22 +349,10 @@ pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
 pub fn installHook() void {
     con.print("[screenshot] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_ScreenshotHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
-
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[screenshot] Another DLL owns hooks (mutex taken), skipping\n");
-        return;
-    }
-    g_is_hook_owner = true;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return;
 
     // CTgaFile::Write at 0x5a4810
     // __thiscall(self, filename) ret 4
@@ -374,14 +368,7 @@ pub fn installHook() void {
 pub fn removeHook() void {
     if (g_is_hook_owner) {
         tga_hook.detach();
-    }
-
-    if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

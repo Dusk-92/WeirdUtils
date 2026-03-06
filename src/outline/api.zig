@@ -11,15 +11,16 @@ const model_hook = @import("model_hook.zig");
 const d3d9_hook = @import("d3d9_hook.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
-extern "kernel32" fn ReleaseMutex(hMutex: *anyopaque) callconv(WINAPI) i32;
-extern "kernel32" fn CloseHandle(hObject: *anyopaque) callconv(WINAPI) i32;
-extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
-extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
-const ERROR_ALREADY_EXISTS: u32 = 183;
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "outline";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 /// Install model hooks immediately. D3D9 hooks are deferred until the first
 /// model hook fires (i.e. the game is actively rendering), because creating a
@@ -28,29 +29,17 @@ var g_is_hook_owner: bool = false;
 pub fn init() bool {
     con.print("[outline] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_OutlineHook_{d}", .{GetCurrentProcessId()}) catch return false;
-    mutex_name_buf[mutex_name.len] = 0;
-
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return false;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[outline] Another DLL owns hooks (mutex taken), skipping\n");
-        return true;
-    }
-    g_is_hook_owner = true;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return true;
 
     if (!model_hook.installHooks()) return false;
     return true;
 }
 
 /// Called from the first model hook callback, once rendering is active.
-/// Safe to create the dummy D3D9 device now — the game's real device is
+/// Safe to create the dummy D3D9 device now - the game's real device is
 /// fully initialised and the proxy's state is stable.
 pub fn initD3D9Deferred() void {
     _ = d3d9_hook.installHooks();
@@ -61,14 +50,7 @@ pub fn cleanup() void {
     if (g_is_hook_owner) {
         d3d9_hook.removeHooks();
         model_hook.removeHooks();
-    }
-
-    if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

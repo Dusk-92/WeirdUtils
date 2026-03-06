@@ -1,12 +1,12 @@
 //! WoW model rendering pipeline hooks.
 //!
 //! Hooks three WoW functions to integrate outline rendering:
-//!  - CM2SceneRenderDraw  — reorders batches so outline targets render last.
-//!  - CM2Model_ManageRenderListNode — classifies models on render-list add.
-//!  - CM2Scene_DrawBatchProjected — flags the DIP hook for outline rendering.
+//!  - CM2SceneRenderDraw  - reorders batches so outline targets render last.
+//!  - CM2Model_ManageRenderListNode - classifies models on render-list add.
+//!  - CM2Scene_DrawBatchProjected - flags the DIP hook for outline rendering.
 //!
 //! Calling conventions:
-//!  - RenderDraw & ManageRender use callconv(.x86_thiscall) — direct native detours.
+//!  - RenderDraw & ManageRender use callconv(.x86_thiscall) - direct native detours.
 //!  - DrawBatchProj uses a callconv(.naked) entry point because Zig 0.15 has a
 //!    codegen bug with callconv(.x86_fastcall) that generates wrong ret instructions
 //!    for functions with ≤2 register params.  The naked wrapper bridges to a cdecl
@@ -64,12 +64,12 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // CM2SceneRenderDraw hook
 // =============================================================================
 // __thiscall(this, viewMatrix, batchData, batchIndices, batchCount)
-// Native thiscall detour — no thunk needed.
+// Native thiscall detour - no thunk needed.
 //
 // Reorders batch indices into 3 groups:
-//   1. Game objects/doodads — render first, write depth so outlines respect them
-//   2. Outline targets — render second, DIP hook writes stencil against depth
-//   3. Other players, gear, NPCs — render last, draw over targets normally
+//   1. Game objects/doodads - render first, write depth so outlines respect them
+//   2. Outline targets - render second, DIP hook writes stencil against depth
+//   3. Other players, gear, NPCs - render last, draw over targets normally
 //
 // This gives outlines that are occluded by world/WMO/game objects but show
 // through other players and gear (since those aren't in depth when stencil
@@ -145,7 +145,7 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
 // CM2Model_ManageRenderListNode hook
 // =============================================================================
 // __thiscall(model_ECX, addToList_stack)
-// Native thiscall detour — no thunk needed.
+// Native thiscall detour - no thunk needed.
 
 fn manageRenderDetour(model: u32, add_to_list: u32) callconv(tc) void {
     // Classify the model when it's being ADDED to the render list
@@ -180,7 +180,7 @@ fn drawBatchProjDetour(ctx: u32) callconv(tc) void {
     const entry = if (model_ptr != 0) tracker.findOutlineEntry(model_ptr) else null;
 
     if (entry != null) {
-        // This batch is an outline target — signal the DIP hook
+        // This batch is an outline target - signal the DIP hook
         rendering_outline = true;
         current_model = model_ptr;
 

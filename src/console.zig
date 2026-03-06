@@ -1,4 +1,4 @@
-//! Debug console — compiles out entirely in non-Debug builds.
+//! Debug console - compiles out entirely in non-Debug builds.
 //!
 //! Usage from any module:
 //!   const con = @import("../console.zig");   // or appropriate relative path

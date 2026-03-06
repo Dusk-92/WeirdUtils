@@ -5,7 +5,7 @@
 ## How the remote repo works
 
 This project is developed entirely locally. The remote repo is **only** a
-distribution point for releases — no source code is pushed.
+distribution point for releases - no source code is pushed.
 
 The remote `main` branch contains a single file: `README.md` (built from the
 local `DLL_README.md`). This must be set up once when creating the repo:
@@ -50,7 +50,7 @@ zig build --help 2>&1 | grep 'Enable'
 ### Combined DLL
 
 Build `weirdutils.dll` with only the modules for this release. Explicitly
-disable everything not being included — defaults may enable modules you don't
+disable everything not being included - defaults may enable modules you don't
 want:
 
 ```sh
@@ -68,7 +68,7 @@ zig build -Doptimize=ReleaseSmall \
 zig build all-variants -Doptimize=ReleaseSmall
 ```
 
-This builds all variants — you only attach the ones for this release.
+This builds all variants - you only attach the ones for this release.
 
 ### Output locations
 
@@ -86,7 +86,7 @@ ls -lh zig-out/bin/weirdutils.dll zig-out/variants/*.dll
 ## 2. Update the remote README
 
 The remote README should match the features in this release. Start from
-`DLL_README.md` and remove the sections for modules not being released —
+`DLL_README.md` and remove the sections for modules not being released -
 keep the header, install instructions, and included feature sections exactly
 as they are.
 

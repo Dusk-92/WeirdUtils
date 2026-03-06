@@ -154,10 +154,18 @@ const CachedPlayerState = struct {
 
 var g_cache: CachedPlayerState = .{};
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "transmogfix";
+
 var g_enabled: bool = true;
 var g_initialized: bool = false;
 var g_is_hook_owner: bool = false;
 var g_mutex: ?*anyopaque = null;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 // =============================================================================
 // Hooks
@@ -409,7 +417,7 @@ fn processTimeouts(now: u32) void {
                 found_count += 1;
                 const elapsed = now -% g_other_pending[i].timestamp;
                 if (elapsed >= OTHER_PLAYER_TIMEOUT_MS) {
-                    // Re-resolve the GUID to a live object pointer — the cached
+                    // Re-resolve the GUID to a live object pointer - the cached
                     // unit_ptr may be stale if the player despawned since capture.
                     const unit = getObjectByGUID(g_other_pending[i].guid);
                     con.fmt("[other] TIMEOUT slot={d:2} guid=0x{X:0>16} {d}ms unit=0x{X:0>8}\n", .{ g_other_pending[i].slot, g_other_pending[i].guid, elapsed, unit });
@@ -458,7 +466,7 @@ fn processTimeouts(now: u32) void {
             if (display_table != 0) {
                 const box_model_data = hook.readMem(u32, display_table + DISPLAY_ID_BOX * 4);
                 if (box_model_data != 0) {
-                    // Set cached ModelData to BOX model — forces ShouldUpdateDisplayInfo = true
+                    // Set cached ModelData to BOX model - forces ShouldUpdateDisplayInfo = true
                     const dest: *u32 = @ptrFromInt(unit + UNIT_CACHED_MODELDATA_OFFSET);
                     dest.* = box_model_data;
 
@@ -502,7 +510,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                     _ = cachePlayerState();
                 }
                 if (val == 0 and g_cached_visible_item[slot] != 0) {
-                    // CLEAR detected — check if INV_SLOT is already empty (real unequip)
+                    // CLEAR detected - check if INV_SLOT is already empty (real unequip)
                     if (g_cache.valid and g_cache.equipped_guids[slot] == 0) {
                         g_cached_visible_item[slot] = 0;
                         return callOriginalSetBlock(obj, index, value);
@@ -518,7 +526,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                     return 1; // Block the clear
                 } else if (val != 0 and g_local_pending[slot].active) {
                     if (val == g_local_pending[slot].original_visible_item) {
-                        // RESTORE with same value — transmog pattern confirmed
+                        // RESTORE with same value - transmog pattern confirmed
 
                         if (g_local_pending[slot].has_durability) {
                             const dur = g_local_pending[slot].captured_durability;
@@ -526,7 +534,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                                 writeItemDurabilityDirect(slot, dur);
                                 con.fmt("[local] APPLY dur    slot={d:2} dur={d}\n", .{ slot, dur });
                             } else {
-                                // Don't block — broken items need visual update
+                                // Don't block - broken items need visual update
                                 con.fmt("[local] PASS broken  slot={d:2}\n", .{slot});
                                 g_local_pending[slot].active = false;
                                 g_local_pending[slot].has_durability = false;
@@ -543,7 +551,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                         con.fmt("[local] BLOCK restore slot={d:2} item=0x{X:0>8} -- coalesced!\n", .{ slot, val });
                         return 1; // Block the restore
                     } else {
-                        // Different item value — real gear change
+                        // Different item value - real gear change
                         g_local_pending[slot].active = false;
                         g_local_pending[slot].has_durability = false;
                         g_local_pending_count -= 1;
@@ -581,7 +589,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                         }
                     } else if (idx >= 0 and g_other_pending[@intCast(idx)].active) {
                         const ui: u32 = @intCast(idx);
-                        // Restore — check timeout and same item
+                        // Restore - check timeout and same item
                         const elapsed = now -% g_other_pending[ui].timestamp;
                         const current_val = readUnitVisibleItem(obj, slot);
                         if (elapsed < OTHER_PLAYER_TIMEOUT_MS and val == current_val) {
@@ -599,7 +607,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
         }
     }
 
-    // DURABILITY writes — capture for pending local player slots
+    // DURABILITY writes - capture for pending local player slots
     if (g_enabled and index == ITEM_FIELD_DURABILITY) {
         const slot = findSlotForItemObject(obj);
         if (slot >= 0) {
@@ -609,12 +617,12 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
                 g_local_pending[s].has_durability = true;
                 g_local_pending[s].timestamp = GetTickCount();
                 con.fmt("[local] CATCH dur    slot={d:2} dur={d}\n", .{ s, val });
-                return 1; // Block — captured
+                return 1; // Block - captured
             }
         }
     }
 
-    // INV_SLOT writes — detect gear changes and update cache
+    // INV_SLOT writes - detect gear changes and update cache
     if (index >= PLAYER_FIELD_INV_SLOT_HEAD and
         index < PLAYER_FIELD_INV_SLOT_HEAD + 48)
     {
@@ -777,24 +785,14 @@ fn hookSceneEnd(device: u32) callconv(tc) void {
 pub fn installHooks() void {
     con.print("[transmogfix] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    // muted name scheme not quite the same because this dll exists in the wild and we want to match it
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\TransmogCoalesceHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
-
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
+    // Legacy mutex name - this DLL existed in the wild before the naming convention
+    const result = mod_mutex.acquireLegacy("TransmogCoalesceHook", module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) {
         g_initialized = true;
-        con.print("[transmogfix] Another DLL owns hooks (mutex taken), skipping\n");
         return;
     }
-    g_is_hook_owner = true;
 
     // Initialize state (already zero-initialized by Zig defaults)
     g_local_pending = [1]LocalPending{.{}} ** 19;
@@ -830,14 +828,7 @@ pub fn removeHooks() void {
         scene_end_hook.detach();
         refresh_hook.detach();
         set_block_hook.detach();
-    }
-
-    if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
 
     g_initialized = false;

@@ -56,7 +56,7 @@ Also review the CLI Ghidra skill:
 
 ## Execution Plan
 
-## Phase 1 — Identify canonical native registration path
+## Phase 1 - Identify canonical native registration path
 
 ### Task 1.1: Recover true iterator and linkage semantics
 - Disassemble around `0x00683F80` (and nearby helpers) in detail.
@@ -80,7 +80,7 @@ Also review the CLI Ghidra skill:
 
 ---
 
-## Phase 2 — Build proper registration wrapper in markers module
+## Phase 2 - Build proper registration wrapper in markers module
 
 ### Task 2.1: Implement native-path wrapper
 - Add a wrapper that uses discovered native creator/registration APIs.
@@ -101,7 +101,7 @@ Also review the CLI Ghidra skill:
 
 ---
 
-## Phase 3 — Validation protocol (must pass)
+## Phase 3 - Validation protocol (must pass)
 
 Run and capture logs for:
 

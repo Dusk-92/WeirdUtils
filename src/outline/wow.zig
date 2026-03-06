@@ -20,7 +20,7 @@ extern "kernel32" fn IsBadReadPtr(
     ucb: usize,
 ) callconv(WINAPI) i32;
 
-/// Quick sanity check — reject null, low-address, and kernel-space pointers.
+/// Quick sanity check - reject null, low-address, and kernel-space pointers.
 pub fn isValidPtr(addr: u32) bool {
     return addr >= 0x10000 and addr < 0x7F000000;
 }
@@ -118,7 +118,7 @@ pub fn resolveModelOwner(model: u32) u32 {
     // Need to read up to model+0x3C0+4
     if (!isReadablePtr(model, o.MODEL_OWNER_CALLBACK + 4)) return 0;
 
-    // Try callback owner first — more reliable for units
+    // Try callback owner first - more reliable for units
     const candidate_cb = hook.readMem(u32, model + o.MODEL_OWNER_CALLBACK);
     if (candidate_cb != 0 and isReadablePtr(candidate_cb, 0x40)) {
         const guid_lo = hook.readMem(u32, candidate_cb + o.OBJECT_GUID_OFFSET);
@@ -149,14 +149,13 @@ pub fn unitGUID(unit_id: [*:0]const u8) u64 {
           [_] "={edx}" (hi),
         : [_] "{ecx}" (@intFromPtr(unit_id)),
           [func] "r" (@as(u32, o.FN_UNIT_GUID)),
-        : .{ .memory = true, .cc = true }
-    );
+        : .{ .memory = true, .cc = true });
     return (@as(u64, hi) << 32) | lo;
 }
 
 /// Resolve a GUID → object pointer via the object manager hash table.
 /// Ghidra-verified: __stdcall(guidLow, guidHigh) with RET 8.
-/// NOT __fastcall — params are read from stack, not registers.
+/// NOT __fastcall - params are read from stack, not registers.
 pub fn getObjectByGUID(guid: u64) u32 {
     if (guid == 0) return 0;
     const lo: u32 = @truncate(guid);
@@ -169,8 +168,7 @@ pub fn getObjectByGUID(guid: u64) u32 {
         : [lo] "r" (lo),
           [hi] "r" (hi),
           [func] "r" (@as(u32, o.FN_GET_OBJECT_BY_GUID)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 /// Get the local player's object pointer.
@@ -197,8 +195,7 @@ pub fn isUnitFriendly(unit: u32, local_player: u32) bool {
         : [_] "{ecx}" (local_player),
           [unit] "r" (unit),
           [func] "r" (@as(u32, o.FN_UNIT_REACTION)),
-        : .{ .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .edx = true, .memory = true, .cc = true });
     return reaction >= 4;
 }
 

@@ -1,12 +1,12 @@
-# Outline Rendering Design — Requirements & Approach Analysis
+# Outline Rendering Design - Requirements & Approach Analysis
 
 ## Date: 2026-02-24
 
 ## Requirements (Exact)
 
 1. **Walls, terrain, game objects (doors, pillars)**: MUST occlude outlines
-2. **Players and NPCs**: MUST NOT occlude outlines — outlines are specifically for making enemies easier to see in combat, so they must always show over other units
-3. **Dead friendly players**: Outlines visible through EVERYTHING (including walls) — for finding corpses to resurrect
+2. **Players and NPCs**: MUST NOT occlude outlines - outlines are specifically for making enemies easier to see in combat, so they must always show over other units
+3. **Dead friendly players**: Outlines visible through EVERYTHING (including walls) - for finding corpses to resurrect
 
 Any architectural approach is acceptable. The existing 3-pass stencil code is proof-of-concept, not a constraint. Efficiency and cleanliness matter more than preserving existing code.
 
@@ -18,7 +18,7 @@ The depth buffer doesn't distinguish "wall pixel" from "player pixel." After a f
 - If you skip depth testing → players don't occlude (✓) but walls also don't occlude (✗)
 - If you composite in EndScene after all rendering → outlines are on top of everything, including walls (✗)
 
-**You need depth information from BEFORE players/NPCs have rendered, but AFTER terrain/WMOs have rendered.** This is only available at a specific point during the frame — when M2 model batches begin processing.
+**You need depth information from BEFORE players/NPCs have rendered, but AFTER terrain/WMOs have rendered.** This is only available at a specific point during the frame - when M2 model batches begin processing.
 
 ## Approach Analysis
 
@@ -46,7 +46,7 @@ The depth buffer doesn't distinguish "wall pixel" from "player pixel." After a f
 - Without batch reordering, player depth may already be present → players occlude mask pixels
 - With batch reordering, the mask captures the right silhouette, but compositing in EndScene draws OVER walls that rendered later
 
-The composite happens at the wrong time — after everything has rendered, including walls that should occlude.
+The composite happens at the wrong time - after everything has rendered, including walls that should occlude.
 
 **Could work if combined with batch reordering** and a depth-aware composite, but this reintroduces the batch reordering requirement and adds render target + fullscreen quad overhead on top.
 
@@ -61,16 +61,16 @@ Copy the depth buffer at the start of M2 rendering (after terrain/WMOs, before p
 Same core idea as Approach A but optimized:
 
 1. **Pass 1 (stencil + outline):** Set stencil to mark body. Draw the expanded outline geometry with custom VS, using stencil to exclude body pixels. Write `STENCIL_BIT_OUTLINE` where outline draws.
-2. **Pass 2 (normal):** Draw model normally (game's original state). This is the draw that would have happened anyway — just done after the outline.
+2. **Pass 2 (normal):** Draw model normally (game's original state). This is the draw that would have happened anyway - just done after the outline.
 
-Wait — this is still 3 DIP calls (stencil mark needs the normal geometry first). The passes can't easily be collapsed because the stencil mark (body silhouette) must exist before the outline can exclude it.
+Wait - this is still 3 DIP calls (stencil mark needs the normal geometry first). The passes can't easily be collapsed because the stencil mark (body silhouette) must exist before the outline can exclude it.
 
 ### Approach E: Inverted Hull with Game's Depth (Refined Stencil)
 
 Same 3-pass stencil, but:
 - **Use the game's own VS for pass 1 and 3** (no custom shader needed for stencil mark + normal draw)
-- **Custom VS only for pass 2** (outline expansion) — this is the only pass that needs modified geometry
-- **Minimize state changes** — only save/restore what we actually modify
+- **Custom VS only for pass 2** (outline expansion) - this is the only pass that needs modified geometry
+- **Minimize state changes** - only save/restore what we actually modify
 - **Skip vertex declaration swap** if the game's declaration is compatible with our VS
 
 This is what the current code already does, just cleaned up.
@@ -109,12 +109,12 @@ The Reset hook releases shaders. Ensure `shaders_attempted` is reset so they're 
 
 ### 6. Consider vs_3_0 upgrade
 
-The current VS uses vs_2_0. The game supports ps_3_0 (confirmed 0xFFFF0300), so vs_3_0 is available. Benefits: better precision for screen-space normal calculation, no instruction count limit. However vs_2_0 works and is simpler — this is optional.
+The current VS uses vs_2_0. The game supports ps_3_0 (confirmed 0xFFFF0300), so vs_3_0 is available. Benefits: better precision for screen-space normal calculation, no instruction count limit. However vs_2_0 works and is simpler - this is optional.
 
 ## Implementation Order
 
-1. Update `types.zig` — add any missing D3D9 constants
-2. Update `d3d9_hook.zig` — add ZWRITEENABLE, DEPTHBIAS, stride check
-3. Verify `model_hook.zig` — batch reordering and stencil flags are correct
+1. Update `types.zig` - add any missing D3D9 constants
+2. Update `d3d9_hook.zig` - add ZWRITEENABLE, DEPTHBIAS, stride check
+3. Verify `model_hook.zig` - batch reordering and stencil flags are correct
 4. Build and verify compilation
 5. Test (login screen → in-game with live targets)

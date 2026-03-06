@@ -1,5 +1,28 @@
 const std = @import("std");
 
+const ModuleDesc = struct {
+    name: []const u8,
+    desc: []const u8,
+    default: bool = true,
+};
+
+/// Single source of truth for all modules. Adding a module here is enough
+/// to wire up the build option, build_options passthrough, and DLL variant.
+const module_list = [_]ModuleDesc{
+    .{ .name = "screenshot", .desc = "Enable screenshot module" },
+    .{ .name = "interact", .desc = "Enable interact module" },
+    .{ .name = "outline", .desc = "Enable outline module", .default = false },
+    .{ .name = "worldmarkers", .desc = "Enable world markers module" },
+    .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
+    .{ .name = "logsessions", .desc = "Enable log session rotation" },
+    .{ .name = "minimapicons", .desc = "Enable custom minimap icons" },
+    .{ .name = "transmogfix", .desc = "Enable transmog update coalescing" },
+    .{ .name = "customassets", .desc = "Enable loose file loading & permissive patch glob" },
+    .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
+    .{ .name = "bigcursor", .desc = "Enable big cursor module" },
+    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
@@ -9,31 +32,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Build options for conditional module compilation
-    const enable_screenshot = b.option(bool, "screenshot", "Enable screenshot module") orelse true;
-    const enable_interact = b.option(bool, "interact", "Enable interact module") orelse true;
-    const enable_outline = b.option(bool, "outline", "Enable outline module") orelse true;
-    const enable_worldmarkers = b.option(bool, "worldmarkers", "Enable world markers module") orelse true;
-    const enable_framecrash = b.option(bool, "framecrash", "Enable framecrash fix") orelse false;
-    const enable_logsessions = b.option(bool, "logsessions", "Enable log session rotation") orelse true;
-    const enable_minimapicons = b.option(bool, "minimapicons", "Enable custom minimap icons") orelse true;
-    const enable_transmogfix = b.option(bool, "transmogfix", "Enable transmog update coalescing") orelse true;
-    const enable_customassets = b.option(bool, "customassets", "Enable loose file loading & permissive patch glob") orelse true;
-    const enable_healtextfix = b.option(bool, "healtextfix", "Enable SuperWoW heal text fix") orelse true;
-    const enable_bigcursor = b.option(bool, "bigcursor", "Enable big cursor module") orelse true;
-
-    // Create build options module
     const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_screenshot", enable_screenshot);
-    build_options.addOption(bool, "enable_interact", enable_interact);
-    build_options.addOption(bool, "enable_outline", enable_outline);
-    build_options.addOption(bool, "enable_worldmarkers", enable_worldmarkers);
-    build_options.addOption(bool, "enable_framecrash", enable_framecrash);
-    build_options.addOption(bool, "enable_logsessions", enable_logsessions);
-    build_options.addOption(bool, "enable_minimapicons", enable_minimapicons);
-    build_options.addOption(bool, "enable_transmogfix", enable_transmogfix);
-    build_options.addOption(bool, "enable_customassets", enable_customassets);
-    build_options.addOption(bool, "enable_healtextfix", enable_healtextfix);
-    build_options.addOption(bool, "enable_bigcursor", enable_bigcursor);
+    inline for (module_list) |mod| {
+        build_options.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
+    }
     const build_options_module = build_options.createModule();
 
     const zhook_dep = b.dependency("zhook", .{
@@ -55,42 +57,19 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-
     b.installArtifact(lib);
 
     // Convenience step to build all single-module variants
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
-    // Helper to create a single-module build
-    const Variant = struct { name: []const u8, screenshot: bool, interact: bool, outline: bool, worldmarkers: bool, framecrash: bool, logsessions: bool, minimapicons: bool, transmogfix: bool, customassets: bool, healtextfix: bool, bigcursor: bool };
-    inline for (&[_]Variant{
-        .{ .name = "screenshot", .screenshot = true, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "interact", .screenshot = false, .interact = true, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "outline", .screenshot = false, .interact = false, .outline = true, .worldmarkers = false, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "worldmarkers", .screenshot = false, .interact = false, .outline = false, .worldmarkers = true, .framecrash = true, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "framecrash", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = false, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "logsessions", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .logsessions = true, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "minimapicons", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = true, .logsessions = false, .minimapicons = true, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "transmogfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .logsessions = false, .minimapicons = false, .transmogfix = true, .customassets = false, .healtextfix = false, .bigcursor = false },
-        .{ .name = "customassets", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .logsessions = false, .minimapicons = false, .transmogfix = false, .customassets = true, .healtextfix = false, .bigcursor = false },
-        .{ .name = "healtextfix", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .logsessions = false, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = true, .bigcursor = false },
-        .{ .name = "bigcursor", .screenshot = false, .interact = false, .outline = false, .worldmarkers = false, .framecrash = false, .logsessions = false, .minimapicons = false, .transmogfix = false, .customassets = false, .healtextfix = false, .bigcursor = true },
-    }) |variant| {
+    inline for (module_list) |variant_mod| {
         const opts = b.addOptions();
-        opts.addOption(bool, "enable_screenshot", variant.screenshot);
-        opts.addOption(bool, "enable_interact", variant.interact);
-        opts.addOption(bool, "enable_outline", variant.outline);
-        opts.addOption(bool, "enable_worldmarkers", variant.worldmarkers);
-        opts.addOption(bool, "enable_framecrash", variant.framecrash);
-        opts.addOption(bool, "enable_logsessions", variant.logsessions);
-        opts.addOption(bool, "enable_minimapicons", variant.minimapicons);
-        opts.addOption(bool, "enable_transmogfix", variant.transmogfix);
-        opts.addOption(bool, "enable_customassets", variant.customassets);
-        opts.addOption(bool, "enable_healtextfix", variant.healtextfix);
-        opts.addOption(bool, "enable_bigcursor", variant.bigcursor);
+        inline for (module_list) |m| {
+            opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
+        }
 
         const variant_lib = b.addLibrary(.{
-            .name = variant.name,
+            .name = variant_mod.name,
             .linkage = .dynamic,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),

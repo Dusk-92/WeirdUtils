@@ -1,5 +1,5 @@
 //! Minimal PNG encoder with deflate compression.
-//! No large struct literals or lookup tables — entire module adds ~2KB to .rdata.
+//! No large struct literals or lookup tables - entire module adds ~2KB to .rdata.
 //! Supports store blocks (level 0) and fixed-Huffman encoding (levels 1-9).
 
 const std = @import("std");
@@ -72,7 +72,7 @@ pub fn encode(
 }
 
 // =============================================================================
-// Stream wrapper — tracks CRC and Adler inline
+// Stream wrapper - tracks CRC and Adler inline
 // =============================================================================
 
 fn Stream(comptime Ctx: type) type {
@@ -140,7 +140,7 @@ fn Stream(comptime Ctx: type) type {
 }
 
 // =============================================================================
-// Store blocks (level 0) — no compression, byte-aligned
+// Store blocks (level 0) - no compression, byte-aligned
 // =============================================================================
 
 fn writeIdatStore(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
@@ -204,7 +204,7 @@ fn writeIdatStore(s: anytype, pixels: [*]const u8, w: u32, h: u32) void {
 }
 
 // =============================================================================
-// Fixed Huffman + LZ77 — RFC 1951 §3.2.6 fixed codes with back-references
+// Fixed Huffman + LZ77 - RFC 1951 §3.2.6 fixed codes with back-references
 //
 // Sub filter makes adjacent pixel differences small (often zero in flat areas).
 // LZ77 with hash-table matching finds repeated byte sequences within a 32KB
@@ -339,7 +339,7 @@ fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32, level:
     };
     defer std.heap.page_allocator.free(out_buf);
 
-    // Hash chains for LZ77 matching — chain depth = 2 * level (stb approach)
+    // Hash chains for LZ77 matching - chain depth = 2 * level (stb approach)
     const ZHASH: u32 = 16384;
     const chain_depth: u32 = @as(u32, level) * 2;
     const chain_mem = std.heap.page_allocator.alloc(u32, ZHASH * chain_depth) catch {
@@ -425,7 +425,7 @@ fn writeIdatFixedHuffman(s: anytype, pixels: [*]const u8, w: u32, h: u32, level:
                     const prev2 = chain_mem[base2 + j];
                     if ((i + 1) -% prev2 <= WINDOW) {
                         if (countMatch(filtered[0..raw_size], prev2, i + 1) > best_len) {
-                            best_dist = 0; // cancel — next position is better
+                            best_dist = 0; // cancel - next position is better
                             break;
                         }
                     }

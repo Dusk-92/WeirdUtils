@@ -15,6 +15,7 @@ const build_opts = struct {
     const customassets = @import("build_options").enable_customassets;
     const healtextfix = @import("build_options").enable_healtextfix;
     const bigcursor = @import("build_options").enable_bigcursor;
+    const dpslog = @import("build_options").enable_dpslog;
 };
 
 // Conditional module imports
@@ -29,6 +30,7 @@ const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix
 const customassets = if (build_opts.customassets) @import("customassets/customassets.zig") else struct {};
 const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
 const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") else struct {};
+const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
@@ -43,7 +45,7 @@ var protection_hook: hook.Detour(fn () callconv(sc) void) = .{};
 fn luaProtectionDetour() callconv(sc) void {}
 
 // =============================================================================
-// Lua C API wrappers (WoW 1.12.1 — all __fastcall, L in ECX)
+// Lua C API wrappers (WoW 1.12.1 - all __fastcall, L in ECX)
 // =============================================================================
 
 pub const lua = @import("lua.zig");
@@ -67,8 +69,7 @@ fn allocateGameBuffer(size: u32) ?[*]u8 {
         : [size] "r" (size),
           [src] "r" (@intFromPtr(@as([*:0]const u8, "weirdutils"))),
           [func] "r" (@as(u32, 0x6462E0)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -89,8 +90,7 @@ fn weirdUtilsVersion(L: lua.State) callconv(.c) u32 {
         :
         : [_] "{ecx}" (@intFromPtr(L)),
           [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     return 1;
 }
 
@@ -114,6 +114,10 @@ fn registerLuaFunctions() void {
         registerFunction("GetCombatLogPath", @intFromPtr(&logsessions.luaGetCombatLogPath));
         registerFunction("GetChatLogPath", @intFromPtr(&logsessions.luaGetChatLogPath));
     }
+    if (build_opts.bigcursor) {
+        registerFunction("SetCursorScale", @intFromPtr(&bigcursor.luaSetCursorScale));
+        registerFunction("GetCursorScale", @intFromPtr(&bigcursor.luaGetCursorScale));
+    }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
@@ -125,7 +129,6 @@ fn registerLuaFunctions() void {
             .{ .name = "SetMarkerDef", .func = @intFromPtr(&markers.luaSetMarkerDef) },
             .{ .name = "ClearMarkerDef", .func = @intFromPtr(&markers.luaClearMarkerDef) },
             .{ .name = "GetMarkerDef", .func = @intFromPtr(&markers.luaGetMarkerDef) },
-
             .{ .name = null, .func = 0 }, // sentinel
         };
         lua.openlib(lua.getContext(), "WorldMarkers", &lib, 0);
@@ -343,7 +346,7 @@ fn isFakeFileContext(ctx_addr: u32) bool {
         hook.readMem(u32, ctx_addr + 0x30) != 0; // embedded ptr set
 }
 
-/// Call initializeFileContext (0x647290) — __thiscall(ECX=ctx, type)
+/// Call initializeFileContext (0x647290) - __thiscall(ECX=ctx, type)
 fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
     asm volatile (
         \\push %[ftype]
@@ -352,22 +355,20 @@ fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
         : [_] "{ecx}" (@intFromPtr(ctx)),
           [ftype] "r" (file_type),
           [func] "r" (@as(u32, 0x647290)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
-/// Call cleanupFileContext (0x6472d0) — __thiscall(ECX=ctx)
+/// Call cleanupFileContext (0x6472d0) - __thiscall(ECX=ctx)
 fn callCleanupFileContext(ctx: [*]u8) void {
     asm volatile (
         \\call *%[func]
         :
         : [_] "{ecx}" (@intFromPtr(ctx)),
           [func] "r" (@as(u32, 0x6472d0)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
-/// Free a buffer via FreeMemory/SMemFree (0x646430) — __stdcall(ptr, src, flags)
+/// Free a buffer via FreeMemory/SMemFree (0x646430) - __stdcall(ptr, src, flags)
 fn freeGameBuffer(ptr: [*]u8) void {
     asm volatile (
         \\push $0xffffffff
@@ -378,8 +379,7 @@ fn freeGameBuffer(ptr: [*]u8) void {
         : [ptr] "r" (@intFromPtr(ptr)),
           [src] "r" (@intFromPtr(@as([*:0]const u8, "weirdutils"))),
           [func] "r" (@as(u32, 0x646430)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // --- Hook 1: openFileWithOptions (0x6477c0) ---
@@ -522,7 +522,7 @@ fn processAsyncDetour(param1: u32) callconv(fc) void {
         return;
     }
 
-    // Not our fake — call original
+    // Not our fake - call original
     process_async_hook.callOriginal(.{param1});
 }
 
@@ -540,7 +540,7 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
         }
     }
 
-    // Always use original CleanupFileHandleResources — it handles fake contexts correctly
+    // Always use original CleanupFileHandleResources - it handles fake contexts correctly
     // (NULL-safe checks on +0x04/+0x3C/+0x40/+0x08, then cleanupFileContext + FreeMemory).
     cleanup_file_handle_hook.callOriginal(.{file_ctx});
 
@@ -552,7 +552,7 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
 fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) callconv(tc) u32 {
 
     // file_handle IS the file context address directly (Ghidra shows pointer* but
-    // the assembly pushes it directly to GetFileSizeFromHandle — no dereference)
+    // the assembly pushes it directly to GetFileSizeFromHandle - no dereference)
     if (isFakeFileContext(file_handle)) {
         con.fmt("[file] loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
         const data_ptr = hook.readMem(u32, file_handle + 0x30);
@@ -570,7 +570,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         // Store size in model first (original does this before allocation)
         @as(*align(1) u32, @ptrFromInt(model + 0x134)).* = data_size;
 
-        // Allocate buffer via setCullMode (0x71f9a0) — same as original path
+        // Allocate buffer via setCullMode (0x71f9a0) - same as original path
         // setCullMode is __fastcall(ECX=size), returns buffer pointer
         const buffer_addr = hook.fastcall(u32, 0x71f9a0, data_size, 0);
         if (buffer_addr == 0) {
@@ -588,7 +588,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         @memcpy(buffer[0..data_size], src[0..data_size]);
         con.print("[file]   memcpy done\n");
 
-        // No async task — set task pointer to NULL
+        // No async task - set task pointer to NULL
         @as(*align(1) u32, @ptrFromInt(model + 0x0c)).* = 0;
         con.print("[file]   task=0 set\n");
 
@@ -611,13 +611,13 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
             hook.readMem(u32, model + 0x138),
         });
 
-        // Call processLoadedModelData directly — __fastcall(ECX=model)
+        // Call processLoadedModelData directly - __fastcall(ECX=model)
         con.fmt("[file]   calling processLoadedModelData(0x{x})...\n", .{model});
         const result = hook.fastcall(u32, 0x71d640, model, 0);
         con.print("[file]   processLoadedModelData returned\n");
         con.fmt("[file]   result=0x{x}\n", .{result});
 
-        // Dump model fields after processLoadedModelData — check if texture async task was created
+        // Dump model fields after processLoadedModelData - check if texture async task was created
         con.print("[file]   POST dump:\n");
         con.fmt("[file]   POST model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
             hook.readMem(u32, model + 0x0c),
@@ -631,7 +631,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         return 1;
     }
 
-    // Not our fake — call original
+    // Not our fake - call original
     return model_load_hook.callOriginal(.{ model, file_handle, should_use_callback });
 }
 
@@ -744,8 +744,7 @@ fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_
           [_] "{edx}" (@intFromPtr(md5ctx)),
           [eh] "r" (error_handler),
           [func] "r" (@as(u32, 0x6EDB90)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u32) void {
@@ -761,8 +760,7 @@ fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u3
           [path] "r" (@intFromPtr(path)),
           [md5] "r" (@intFromPtr(md5ctx)),
           [cb] "r" (callback),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true }
-    );
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -783,11 +781,14 @@ fn engineInitDetour() callconv(sc) void {
     if (build_opts.healtextfix) {
         healtextfix.lateInit();
     }
+    if (build_opts.bigcursor) {
+        bigcursor.lateInit();
+    }
 }
 
 // =============================================================================
 // Hook: World_HandleLogoutCleanup (0x491180)
-// Fires on real character logout/disconnect only — NOT on /reload or map change.
+// Fires on real character logout/disconnect only - NOT on /reload or map change.
 // =============================================================================
 
 var logout_hook: hook.Detour(fn () callconv(sc) void) = .{};
@@ -795,11 +796,11 @@ var logout_hook: hook.Detour(fn () callconv(sc) void) = .{};
 fn logoutDetour() callconv(sc) void {
     con.print("[weirdutils] World_HandleLogoutCleanup -- player logout\n");
 
-    // Reset per-session state — only on real logout/disconnect, not /reload.
+    // Reset per-session state - only on real logout/disconnect, not /reload.
     if (build_opts.worldmarkers) markers.onShutdown();
     if (build_opts.logsessions) logsessions.onShutdown();
 
-    // Clean up world objects BEFORE game teardown — modules with
+    // Clean up world objects BEFORE game teardown - modules with
     // remove_on_shutdown must destroy while game systems are alive.
     comptime var i = modules.len;
     inline while (i > 0) {
@@ -820,13 +821,15 @@ fn logoutDetour() callconv(sc) void {
 var shutdown_hook: hook.Detour(fn () callconv(sc) void) = .{};
 
 // =============================================================================
-// Module lifecycle — single table drives install, shutdown, and uninstall.
+// Module lifecycle - single table drives install, shutdown, and uninstall.
 // Adding a module here guarantees all three phases are handled.
 // =============================================================================
 
 const ModuleHooks = struct {
+    name: ?[*:0]const u8 = null,
     install: ?*const fn () void = null,
     remove: ?*const fn () void = null,
+    is_active: ?*const fn () bool = null,
     /// If true, remove is also called during CGGameUI_Shutdown (before game
     /// teardown), not just during DLL unload. Use for modules that create
     /// world objects which must be destroyed while game systems are alive.
@@ -836,23 +839,24 @@ const ModuleHooks = struct {
 /// Order matters: modules are installed top-to-bottom, removed bottom-to-top.
 /// Modules with remove_on_shutdown run their remove during shutdownDetour too.
 const modules = [_]ModuleHooks{
-    if (build_opts.customassets) .{ .install = customassets.installHooks, .remove = customassets.removeHooks } else .{},
-    if (build_opts.framecrash) .{ .install = framecrash.installHooks, .remove = framecrash.removeHooks } else .{},
-    if (build_opts.logsessions) .{ .install = logsessions.installHooks, .remove = logsessions.removeHooks } else .{},
-    if (build_opts.transmogfix) .{ .install = transmogfix.installHooks, .remove = transmogfix.removeHooks } else .{},
-    if (build_opts.minimapicons) .{ .install = minimapicons.installHooks, .remove = minimapicons.removeHooks } else .{},
-    if (build_opts.healtextfix) .{ .install = healtextfix.installHooks, .remove = healtextfix.removeHooks } else .{},
-    if (build_opts.bigcursor) .{ .install = bigcursor.installHooks, .remove = bigcursor.removeHooks } else .{},
-    if (build_opts.worldmarkers) .{ .install = markers.installHooks, .remove = markers.removeHooks } else .{},
-    if (build_opts.interact) .{ .install = interact.installHooks, .remove = interact.removeHooks } else .{},
-    if (build_opts.outline) .{ .remove = outline.cleanup } else .{},
-    if (build_opts.screenshot) .{ .remove = screenshot.removeHook } else .{},
+    if (build_opts.customassets) .{ .name = customassets.module_name, .install = customassets.installHooks, .remove = customassets.removeHooks, .is_active = customassets.isActive } else .{},
+    if (build_opts.framecrash) .{ .name = framecrash.module_name, .install = framecrash.installHooks, .remove = framecrash.removeHooks, .is_active = framecrash.isActive } else .{},
+    if (build_opts.logsessions) .{ .name = logsessions.module_name, .install = logsessions.installHooks, .remove = logsessions.removeHooks, .is_active = logsessions.isActive } else .{},
+    if (build_opts.transmogfix) .{ .name = transmogfix.module_name, .install = transmogfix.installHooks, .remove = transmogfix.removeHooks, .is_active = transmogfix.isActive } else .{},
+    if (build_opts.minimapicons) .{ .name = minimapicons.module_name, .install = minimapicons.installHooks, .remove = minimapicons.removeHooks, .is_active = minimapicons.isActive } else .{},
+    if (build_opts.healtextfix) .{ .name = healtextfix.module_name, .install = healtextfix.installHooks, .remove = healtextfix.removeHooks, .is_active = healtextfix.isActive } else .{},
+    if (build_opts.bigcursor) .{ .name = bigcursor.module_name, .install = bigcursor.installHooks, .remove = bigcursor.removeHooks, .is_active = bigcursor.isActive } else .{},
+    if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
+    if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
+    if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
+    if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
+    if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(sc) void {
     con.print("[weirdutils] CGGameUI_Shutdown\n");
     // Per-session resets and remove_on_shutdown cleanup live in logoutDetour
-    // (World_HandleLogoutCleanup) — fires on real logout/disconnect only, not /reload.
+    // (World_HandleLogoutCleanup) - fires on real logout/disconnect only, not /reload.
     shutdown_hook.callOriginal(.{});
 }
 
@@ -896,6 +900,89 @@ fn uninstall() void {
     removeFileHooks();
     protection_hook.detach();
     con.deinit();
+}
+
+// =============================================================================
+// Runtime Module Control API - exported for other DLLs
+// =============================================================================
+
+fn asciiEqlIgnoreCase(a: [*:0]const u8, b: [*:0]const u8) bool {
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        const ca = a[i];
+        const cb = b[i];
+        if (ca == 0 and cb == 0) return true;
+        if (ca == 0 or cb == 0) return false;
+        const la = if (ca >= 'A' and ca <= 'Z') ca + 32 else ca;
+        const lb = if (cb >= 'A' and cb <= 'Z') cb + 32 else cb;
+        if (la != lb) return false;
+    }
+}
+
+/// Returns 1 if the named module is compiled in AND currently active, 0 otherwise.
+fn isModuleActive(name: [*:0]const u8) callconv(.c) i32 {
+    inline for (modules) |m| {
+        if (m.name) |mod_name| {
+            if (asciiEqlIgnoreCase(name, mod_name)) {
+                if (m.is_active) |active_fn| {
+                    return if (active_fn()) 1 else 0;
+                }
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+/// Disables the named module by calling its remove function.
+/// Returns 1 if found and removed, 0 if not found or not compiled in.
+fn disableModule(name: [*:0]const u8) callconv(.c) i32 {
+    inline for (modules) |m| {
+        if (m.name) |mod_name| {
+            if (asciiEqlIgnoreCase(name, mod_name)) {
+                if (m.remove) |rm| {
+                    rm();
+                    return 1;
+                }
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+
+/// Disables all modules in reverse order, then detaches core hooks.
+/// Returns the number of modules that were disabled.
+fn disableAll() callconv(.c) i32 {
+    var count: i32 = 0;
+
+    // Remove modules in reverse order
+    comptime var i = modules.len;
+    inline while (i > 0) {
+        i -= 1;
+        if (modules[i].remove) |rm| {
+            rm();
+            count += 1;
+        }
+    }
+
+    // Detach core hooks
+    shutdown_hook.detach();
+    logout_hook.detach();
+    engine_init_hook.detach();
+    load_addons_hook.detach();
+    lsf_hook.detach();
+    file_hook.detach();
+    removeFileHooks();
+    protection_hook.detach();
+
+    return count;
+}
+
+comptime {
+    @export(&isModuleActive, .{ .name = "WeirdUtils_IsModuleActive" });
+    @export(&disableModule, .{ .name = "WeirdUtils_DisableModule" });
+    @export(&disableAll, .{ .name = "WeirdUtils_DisableAll" });
 }
 
 // =============================================================================

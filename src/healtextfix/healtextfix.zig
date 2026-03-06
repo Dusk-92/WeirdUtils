@@ -18,18 +18,18 @@
 //!
 //! Patches applied to SuperWoWhook.dll in memory:
 //!
-//!   1. 0x3006 (2 bytes) — Skip duplicate heal text in handler
+//!   1. 0x3006 (2 bytes) - Skip duplicate heal text in handler
 //!      The handler at RVA 0x3BF0 creates floating text, then calls through
 //!      to the original wow.exe function (which also creates text = duplicate).
 //!      Patch MOV ECX,[EDI] -> JMP +0x7A to skip to the call-through at 0x3C82.
 //!      Old: 8B 0F
 //!      New: EB 7A
 //!
-//!   2. 0x306E (4 bytes) — Redirect HoT text handler pointer
+//!   2. 0x306E (4 bytes) - Redirect HoT text handler pointer
 //!      Old: 9C D8 C4 00
 //!      New: 06 7C 44 00
 //!
-//!   3. 0x3123 (4 bytes) — Redirect HoT text handler pointer (second site)
+//!   3. 0x3123 (4 bytes) - Redirect HoT text handler pointer (second site)
 //!      Old: 9C D8 C4 00
 //!      New: 06 7C 44 00
 //!
@@ -125,7 +125,17 @@ fn fileOffsetToVA(base: [*]const u8, file_offset: u32) ?[*]u8 {
     return null;
 }
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "healtextfix";
+
+var g_mutex: ?*anyopaque = null;
+var g_is_hook_owner: bool = false;
 var g_applied_set: ?*const PatchSet = null;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 /// Scan the DLL's mapped memory for SUPERWOW_VERSION="..." and extract the version string.
 fn detectVersion(base: [*]const u8) ?[]const u8 {
@@ -142,12 +152,17 @@ fn detectVersion(base: [*]const u8) ?[]const u8 {
 }
 
 pub fn installHooks() void {
-    con.print("[healtextfix] Module loaded (stub)\n");
+    con.print("[healtextfix] Module loaded\n");
+
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
 }
 
-/// Called from engineInitDetour (GameEngine_MainInitialize hook) — late enough
+/// Called from engineInitDetour (GameEngine_MainInitialize hook) - late enough
 /// that SuperWoWhook.dll should be loaded if present.
 pub fn lateInit() void {
+    if (!g_is_hook_owner) return;
     const superwow_base = GetModuleHandleA("SuperWoWhook.dll");
     if (superwow_base == null) {
         con.print("[healtextfix] SuperWoWhook.dll not found, skipping\n");
@@ -223,7 +238,13 @@ pub fn lateInit() void {
 }
 
 pub fn removeHooks() void {
-    const set = g_applied_set orelse return;
+    if (!g_is_hook_owner) return;
+
+    const set = g_applied_set orelse {
+        mod_mutex.release(&g_mutex);
+        g_is_hook_owner = false;
+        return;
+    };
 
     const superwow_base = GetModuleHandleA("SuperWoWhook.dll");
     if (superwow_base == null) return;
@@ -251,5 +272,7 @@ pub fn removeHooks() void {
     }
 
     g_applied_set = null;
+    mod_mutex.release(&g_mutex);
+    g_is_hook_owner = false;
     con.print("[healtextfix] All patches restored\n");
 }

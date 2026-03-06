@@ -15,7 +15,7 @@ const hook = @import("zhook");
 const con = @import("../console.zig");
 
 // =============================================================================
-// Windows API (project-specific — not in hook lib)
+// Windows API (project-specific - not in hook lib)
 // =============================================================================
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -276,29 +276,25 @@ fn revertLooseFilePatches() void {
 // Init / Cleanup
 // =============================================================================
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "customassets";
+
 var installed: bool = false;
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
+
 pub fn installHooks() void {
     con.print("[customassets] Module loaded\n");
 
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_CustomAssetsHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
-
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[customassets] Another DLL owns hooks (mutex taken), skipping\n");
-        return;
-    }
-    g_is_hook_owner = true;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return;
 
     applyGlobPatch();
     applyLooseFilePatches();
@@ -317,11 +313,7 @@ pub fn removeHooks() void {
     }
 
     if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

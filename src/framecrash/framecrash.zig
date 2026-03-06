@@ -35,8 +35,16 @@ extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
 extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 
+const mod_mutex = @import("../mutex.zig");
+
+pub const module_name: [*:0]const u8 = "framecrash";
+
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 // =============================================================================
 // Anchor vtable layout (20-byte object allocated in SetPoint / SetAnimationOrder)
@@ -44,14 +52,14 @@ var g_is_hook_owner: bool = false;
 //   +0x00  vtable ptr  → 0x0081c44c (.rdata)
 //   +0x04  x offset    (float)
 //   +0x08  y offset    (float)
-//   +0x0C  relativeTo  (raw frame pointer — the dangerous one)
+//   +0x0C  relativeTo  (raw frame pointer - the dangerous one)
 //   +0x10  relPoint    (uint, anchor point enum on the relativeTo frame)
 //
 // vtable at 0x0081c44c:
-//   [0] +0x00  GetAnimationOrder (0x767d80) — destructor/cleanup
-//   [1] +0x04  luaGetWidth       (0x7a2f90) — reads [this+0xC]+0x3C
-//   [2] +0x08  luaGetHeight      (0x7a3070) — reads [this+0xC]+0x3C
-//   [3] +0x0C  GetRelativeTo     (0x767d70) — returns *(this+0x0C)
+//   [0] +0x00  GetAnimationOrder (0x767d80) - destructor/cleanup
+//   [1] +0x04  luaGetWidth       (0x7a2f90) - reads [this+0xC]+0x3C
+//   [2] +0x08  luaGetHeight      (0x7a3070) - reads [this+0xC]+0x3C
+//   [3] +0x0C  GetRelativeTo     (0x767d70) - returns *(this+0x0C)
 // =============================================================================
 
 const ANCHOR_VTABLE_ADDR: usize = 0x0081c44c;
@@ -93,7 +101,7 @@ var cleanup_hook: hook.Detour(CleanupFn) = .{};
 // Second destruction path: destroyUIElement (0x7645a0)
 //
 // Called from cleanupGraphicsResources (UI teardown/reload) via the strata loop.
-// Frees frames WITHOUT calling cleanup_linked_list_structures — just unlinks from
+// Frees frames WITHOUT calling cleanup_linked_list_structures - just unlinks from
 // lists, cleans up sub-regions, and calls FreeMemory. The dependency list at
 // frame+0x34 is never walked, so other frames' anchors are left dangling.
 //
@@ -121,12 +129,12 @@ const ProcessUIFn = fn (u32, u32) callconv(tc) u32;
 var process_ui_hook: hook.Detour(ProcessUIFn) = .{};
 
 // =============================================================================
-// Priority 1: Hook PauseAnimationGroup (0x767ee0) — dependency registration
+// Priority 1: Hook PauseAnimationGroup (0x767ee0) - dependency registration
 //
 // Records every dependency registration so we can later determine whether a
 // stale relativeTo pointer was ever registered through PauseAnimationGroup.
 // If PauseAnimationGroup was never called for an address, the dependency was
-// never created — pointing to a race condition or unknown creation path.
+// never created - pointing to a race condition or unknown creation path.
 //
 // Signature: void __thiscall PauseAnimationGroup(ECX=relativeTo_frame, owner_frame, bitmask)
 // Prologue: 55 8B EC 53 8B D9 (6 bytes, no rel32)
@@ -139,7 +147,7 @@ const PauseAnimFn = fn (u32, u32, u32) callconv(tc) void;
 var pause_anim_hook: hook.Detour(PauseAnimFn) = .{};
 
 // =============================================================================
-// Priority 2: Hook SetAnimationOrder (0x767c70) — anchor creation validation
+// Priority 2: Hook SetAnimationOrder (0x767c70) - anchor creation validation
 //
 // Validates the relativeTo param with IsBadReadPtr BEFORE the original runs.
 // If relativeTo is already freed when the anchor is created, the dependency
@@ -158,7 +166,7 @@ const SetAnimFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(tc) void;
 var set_anim_hook: hook.Detour(SetAnimFn) = .{};
 
 // =============================================================================
-// Dependency registration ring buffer — track PauseAnimationGroup calls
+// Dependency registration ring buffer - track PauseAnimationGroup calls
 //
 // When vtable hooks detect a stale pointer, we look up this buffer to answer:
 // "was PauseAnimationGroup ever called for this address?"
@@ -227,7 +235,7 @@ fn getRegisteredName(relativeTo: u32) []const u8 {
 }
 
 // =============================================================================
-// Destruction history ring buffer — correlate stale pointers with frame names
+// Destruction history ring buffer - correlate stale pointers with frame names
 // =============================================================================
 
 const HISTORY_SIZE = 1024;
@@ -273,7 +281,7 @@ fn fmtStaleInfo(relativeTo: u32) struct { name: []const u8, saw_destroy: bool } 
     return .{ .name = fmtFrameName(relativeTo), .saw_destroy = false };
 }
 
-// logRegistrationStatus and dumpStaleContext removed — verbose diagnostic logging
+// logRegistrationStatus and dumpStaleContext removed - verbose diagnostic logging
 // superseded by HEAL/FIX/RACE messages. Ring buffers still used by tryFixStaleRelativeTo.
 
 /// Detour for cleanup_linked_list_structures. Runs before the original to
@@ -298,7 +306,7 @@ fn destroyUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
     return destroy_ui_hook.callOriginal(.{ frame, free_flag });
 }
 
-/// Detour for ProcessUIUpdateEvent — third destruction path, called via vtable.
+/// Detour for ProcessUIUpdateEvent - third destruction path, called via vtable.
 fn processUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
     recordDestruction(frame);
     if (IsBadReadPtr(@ptrFromInt(frame + 0x24), 4) == 0) {
@@ -309,18 +317,18 @@ fn processUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
     return process_ui_hook.callOriginal(.{ frame, free_flag });
 }
 
-/// Detour for PauseAnimationGroup — records every dependency registration.
+/// Detour for PauseAnimationGroup - records every dependency registration.
 /// This tells us whether a stale relativeTo was ever registered through the
 /// normal dependency tracking system.
 /// Signature: void __thiscall PauseAnimationGroup(ECX=relativeTo_frame, owner_frame, bitmask)
 fn pauseAnimDetour(relativeTo_frame: u32, owner_frame: u32, bitmask: u32) callconv(tc) void {
-    // Silently record — queried later by vtable hooks via logRegistrationStatus()
+    // Silently record - queried later by vtable hooks via logRegistrationStatus()
     recordRegistration(relativeTo_frame, owner_frame, bitmask);
 
     pause_anim_hook.callOriginal(.{ relativeTo_frame, owner_frame, bitmask });
 }
 
-/// Detour for SetAnimationOrder — validates relativeTo param before anchor creation.
+/// Detour for SetAnimationOrder - validates relativeTo param before anchor creation.
 /// Float params (xOfs, yOfs) are passed as raw u32 bit patterns on the stack.
 fn setAnimOrderDetour(frame: u32, point_enum: u32, relativeTo: u32, rel_point: u32, x_ofs: u32, y_ofs: u32, param_6: u32) callconv(tc) void {
     var fixed_relativeTo = relativeTo;
@@ -373,7 +381,7 @@ fn countReverseDependencies(dying_frame: u32) u32 {
 /// Walk the PauseAnimationGroup dependency list on the dying frame and NULL out
 /// the relativeTo field in any anchors from other frames that reference it.
 ///
-/// Safety: purely defensive — does NOT call destructors, free nodes, or modify
+/// Safety: purely defensive - does NOT call destructors, free nodes, or modify
 /// the dying frame's list pointers. The original cleanup_linked_list_structures
 /// handles its own data structures.
 fn cleanupReverseDependencies(dying_frame: u32) void {
@@ -411,12 +419,12 @@ fn cleanupReverseDependencies(dying_frame: u32) void {
                 const relativeTo: u32 = readAligned(anchor + 0x0C);
                 if (relativeTo != dying_frame) continue;
 
-                // Verify vtable matches the known anchor vtable — reject garbage objects
+                // Verify vtable matches the known anchor vtable - reject garbage objects
                 const vtable: u32 = readAligned(anchor);
                 if (vtable != ANCHOR_VTABLE_ADDR) continue;
 
                 // NULL the relativeTo pointer so it can't dangle.
-                // Don't call destructors or free the anchor — that risks cascading
+                // Don't call destructors or free the anchor - that risks cascading
                 // side effects and is unnecessary. A NULL relativeTo is handled
                 // gracefully by all code paths (luaGetPoint, GetWidth, GetHeight).
                 const field: *align(1) u32 = @ptrFromInt(anchor + 0x0C);
@@ -457,7 +465,7 @@ fn getFrameName(layout_frame: u32) ?[*:0]const u8 {
     return @ptrFromInt(name_ptr);
 }
 
-/// Format a frame name for logging — returns "FrameName" or "(unnamed)".
+/// Format a frame name for logging - returns "FrameName" or "(unnamed)".
 fn fmtFrameName(layout_frame: u32) []const u8 {
     if (getFrameName(layout_frame)) |name| {
         return std.mem.span(name);
@@ -509,13 +517,13 @@ fn tryFixStaleRelativeTo(anchor: u32, stale: u32) bool {
 //
 // Three vtable slots must be hooked because they independently read anchor+0x0C
 // (relativeTo) without going through each other:
-//   [1] GetWidth  — reads [this+0xC]+0x3C, crashes if relativeTo is NULL/dangling
-//   [2] GetHeight — same pattern as GetWidth
-//   [3] GetRelativeTo — returns *(this+0x0C), caller dereferences it
+//   [1] GetWidth  - reads [this+0xC]+0x3C, crashes if relativeTo is NULL/dangling
+//   [2] GetHeight - same pattern as GetWidth
+//   [3] GetRelativeTo - returns *(this+0x0C), caller dereferences it
 //
 // GetRelativeTo NULLs the pointer on detection (self-heal). GetWidth/GetHeight
 // must independently handle both NULL and dangling relativeTo by returning the
-// sentinel value from [0x00cf550c] — the value SetFrameHitTestMode compares
+// sentinel value from [0x00cf550c] - the value SetFrameHitTestMode compares
 // against to detect "no dimension available".
 // =============================================================================
 
@@ -550,10 +558,10 @@ fn getRelativeToHook(this: u32) callconv(tc) u32 {
     if (!isRelativeToValid(result)) {
         // Try to substitute live UIParent before NULLing
         if (tryFixStaleRelativeTo(this, result)) {
-            // Re-call original — it now reads the fixed pointer
+            // Re-call original - it now reads the fixed pointer
             return orig(this);
         }
-        // No substitute available — NULL it out
+        // No substitute available - NULL it out
         const field: *align(1) u32 = @ptrFromInt(this + 0x0C);
         field.* = 0;
         return 0;
@@ -564,14 +572,14 @@ fn getRelativeToHook(this: u32) callconv(tc) u32 {
 
 /// Hook for vtable[1] GetWidth. Checks anchor+0x0C before calling original.
 /// Returns sentinel if relativeTo is NULL or dangling.
-/// Signature: f32 __thiscall GetWidth(this, u32 param) — callee cleans 1 stack arg.
+/// Signature: f32 __thiscall GetWidth(this, u32 param) - callee cleans 1 stack arg.
 fn getWidthHook(this: u32, param: u32) callconv(tc) f32 {
     const relativeTo: u32 = readAligned(this + 0x0C);
     if (!isRelativeToValid(relativeTo)) {
         if (relativeTo != 0) {
             // Try to substitute live UIParent instead of NULLing
             if (tryFixStaleRelativeTo(this, relativeTo)) {
-                // Fixed — call original with the healed pointer
+                // Fixed - call original with the healed pointer
                 const orig: *const fn (u32, u32) callconv(tc) f32 = @ptrFromInt(orig_get_width);
                 return orig(this, param);
             }
@@ -586,7 +594,7 @@ fn getWidthHook(this: u32, param: u32) callconv(tc) f32 {
 }
 
 /// Hook for vtable[2] GetHeight. Same pattern as GetWidth.
-/// Signature: f32 __thiscall GetHeight(this, u32 param) — callee cleans 1 stack arg.
+/// Signature: f32 __thiscall GetHeight(this, u32 param) - callee cleans 1 stack arg.
 fn getHeightHook(this: u32, param: u32) callconv(tc) f32 {
     const relativeTo: u32 = readAligned(this + 0x0C);
     if (!isRelativeToValid(relativeTo)) {
@@ -625,22 +633,10 @@ fn restoreVtableSlot(slot_addr: usize, saved: *usize) void {
 }
 
 pub fn installHooks() void {
-    // Multi-DLL safety: only one instance per process should hook
-    var mutex_name_buf: [64]u8 = undefined;
-    const mutex_name = std.fmt.bufPrint(&mutex_name_buf, "Local\\WeirdUtils_FramecrashHook_{d}", .{GetCurrentProcessId()}) catch return;
-    mutex_name_buf[mutex_name.len] = 0;
-
-    g_mutex = CreateMutexA(null, 1, @ptrCast(mutex_name_buf[0..mutex_name.len :0]));
-    if (g_mutex == null) return;
-
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        _ = CloseHandle(g_mutex.?);
-        g_mutex = null;
-        g_is_hook_owner = false;
-        con.print("[framecrash] Another DLL owns hooks (mutex taken), skipping\n");
-        return;
-    }
-    g_is_hook_owner = true;
+    const result = mod_mutex.acquire(module_name);
+    g_mutex = result.handle;
+    g_is_hook_owner = result.is_owner;
+    if (!g_is_hook_owner) return;
 
     // Root cause fix #1: detour cleanup_linked_list_structures to clean up
     // reverse anchor references before the frame is destroyed.
@@ -650,7 +646,7 @@ pub fn installHooks() void {
         con.print("[framecrash] Frame cleanup detour installed\n");
     }
 
-    // Root cause fix #2: detour destroyUIElement — the second destruction path
+    // Root cause fix #2: detour destroyUIElement - the second destruction path
     // used by cleanupGraphicsResources during UI teardown/reload. This path
     // frees frames without walking the dependency list.
     if (destroy_ui_hook.attach(DESTROY_UI_TARGET, &destroyUIDetour) != .ok) {
@@ -659,7 +655,7 @@ pub fn installHooks() void {
         con.print("[framecrash] destroyUIElement detour installed\n");
     }
 
-    // Root cause fix #3: detour ProcessUIUpdateEvent — virtual function that
+    // Root cause fix #3: detour ProcessUIUpdateEvent - virtual function that
     // calls CleanupUIElement + FreeMemory without layout cleanup.
     if (process_ui_hook.attach(PROCESS_UI_TARGET, &processUIDetour) != .ok) {
         con.print("[framecrash] ERROR: Failed to install ProcessUIUpdateEvent detour\n");
@@ -717,11 +713,7 @@ pub fn removeHooks() void {
     }
 
     if (g_is_hook_owner) {
-        if (g_mutex) |m| {
-            _ = ReleaseMutex(m);
-            _ = CloseHandle(m);
-            g_mutex = null;
-        }
+        mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
 }

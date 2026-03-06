@@ -251,15 +251,15 @@ On DLL init, scan `Logs\` directory for `WoWCombatLog_*.txt` files:
 ## Resolved Questions
 
 - [x] Section at 0x00843610: `.data` (RW) -- no VirtualProtect needed
-- [x] Player name: use `GetObjectName` (0x6264E0) — __fastcall(ECX=guid_ptr) → char*.
-      RetrieveNPCDataFromCache (0x55f080) does NOT return char* in EAX — it returns
+- [x] Player name: use `GetObjectName` (0x6264E0) - __fastcall(ECX=guid_ptr) → char*.
+      RetrieveNPCDataFromCache (0x55f080) does NOT return char* in EAX - it returns
       name bytes. The actual pointer is written to the output buffer param.
       GetObjectName is simpler and verified by c_overlay reference.
 - [x] Original string too short for timestamped name -- must use pointer redirect
 - [x] **ESI clobber crash (ACCESS_VIOLATION at 0x6F61AF)**: luaCallFunction stores
       luaState in ESI and the C function pointer in EDI, dispatches via `CALL EDI`,
       then reads `[ESI+0x8]`. Our detour's compiled code (Debug build) did NOT push
-      ESI/EDI/EBX in its prologue — Zig only saves callee-saved registers it
+      ESI/EDI/EBX in its prologue - Zig only saves callee-saved registers it
       allocates directly, but subcalls (callOriginal wrapper, inline asm game calls)
       can clobber them without the compiler knowing. **All game functions verified
       to preserve ESI/EDI/EBX**: GetPlayerGUID (0x468550, doesn't touch them),

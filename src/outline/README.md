@@ -8,9 +8,9 @@ that runs entirely in EndScene, composited on top of the final backbuffer.
 
 The outline system has three main phases per frame:
 
-1. **Object scan** (EndScene start) — identify which game objects should be outlined
-2. **DIP hook** (during game rendering) — cache draw calls and write stencil marks
-3. **JFA pipeline** (EndScene, after game rendering) — produce and composite outlines
+1. **Object scan** (EndScene start) - identify which game objects should be outlined
+2. **DIP hook** (during game rendering) - cache draw calls and write stencil marks
+3. **JFA pipeline** (EndScene, after game rendering) - produce and composite outlines
 
 ## Files
 
@@ -44,17 +44,17 @@ state to determine outline visibility.
 `CM2SceneRenderDraw` receives a flat array of M2 batch indices. The hook partitions
 them into 3 groups before calling the original function:
 
-- **Group 1 — depth-priority models**: game object M2s and the local player's M2s.
+- **Group 1 - depth-priority models**: game object M2s and the local player's M2s.
   These render first so their depth is in the buffer when stencil marks are written.
   The local player occludes outlines (they're the camera reference point).
   If the local player IS an outline target, their models go in group 2 instead
   (the outline check takes priority in the partition logic).
 
-- **Group 2 — outline targets**: models belonging to tracked entities (current target,
+- **Group 2 - outline targets**: models belonging to tracked entities (current target,
   raid-marked units, dead friendly players). The DIP hook intercepts these draws to
   cache parameters and write stencil=1 where they pass the depth test.
 
-- **Group 3 — everything else**: other players, their gear, NPCs, creatures.
+- **Group 3 - everything else**: other players, their gear, NPCs, creatures.
   These render last. Their depth is NOT in the buffer when stencil marks are written,
   so outlines show through them. The outline composites on top in EndScene regardless.
 
@@ -73,14 +73,14 @@ them into 3 groups before calling the original function:
 The DIP hook writes stencil marks during outline target rendering (group 2):
 
 - `STENCILFUNC = ALWAYS`, `STENCILPASS = REPLACE`, `STENCILREF = 1`
-- `STENCILZFAIL = KEEP` — pixels behind depth-tested geometry keep stencil=0
+- `STENCILZFAIL = KEEP` - pixels behind depth-tested geometry keep stencil=0
 - After each outline DIP, `STENCILWRITEMASK` is set to 0 to protect marks from
   subsequent draws (group 3 models could otherwise overwrite them)
 - Exception: dead players skip stencil entirely (`STENCILENABLE = 0`) so their
   outlines are visible through walls for corpse finding
 
 EndScene Phase 1 uses `STENCILFUNC = EQUAL`, `STENCILREF = 1` to gate the
-silhouette replay — only pixels marked as visible get silhouette color.
+silhouette replay - only pixels marked as visible get silhouette color.
 
 Stencil is cleared to 0 after Phase 1 to avoid affecting the next frame.
 
@@ -89,16 +89,16 @@ Stencil is cleared to 0 after Phase 1 to avoid affecting the next frame.
 After Phase 1 produces the silhouette RT (A8R8G8B8), the JFA pipeline generates
 outlines via distance field:
 
-1. **JFA Init** — seed the distance field from the silhouette. Pixels with
+1. **JFA Init** - seed the distance field from the silhouette. Pixels with
    silhouette content (alpha >= 0.002) output their own UV as a seed.
    Empty pixels output sentinel (-1, -1) which is outside UV space [0,1]
    so it never wins distance comparisons.
 
-2. **JFA Propagation** — 4 passes at step sizes [8, 4, 2, 1], ping-ponging
+2. **JFA Propagation** - 4 passes at step sizes [8, 4, 2, 1], ping-ponging
    between two G16R16F render targets. Each pass does a 9-tap sample
    (self + 8 neighbors at step distance) and keeps the nearest seed UV.
 
-3. **JFA Decode + Composite** — compute pixel-space distance from each pixel
+3. **JFA Decode + Composite** - compute pixel-space distance from each pixel
    to its nearest seed. If distance < outline width AND the pixel is outside
    the silhouette interior, output the outline color with alpha blending.
 
@@ -121,7 +121,7 @@ Width is encoded as `alpha = pixels / 4.0` in the silhouette, decoded as
 | `rt_jfa_a_tex` | G16R16F | JFA ping buffer (seed UV coordinates) |
 | `rt_jfa_b_tex` | G16R16F | JFA pong buffer |
 
-## DIP Hook — Draw Caching
+## DIP Hook - Draw Caching
 
 The DIP hook does NOT draw silhouettes inline (that corrupts WoW's GxDevice
 internal render state). Instead it:
@@ -147,7 +147,7 @@ Each frame, `scanObjects()` iterates the WoW object manager and collects:
 When `CM2Model_ManageRenderListNode` fires for each model being added to the
 render list, `classifyModel()` reads the model's owner back-pointers
 (`model+0x28` direct, `model+0x3C0` callback) and matches them against the
-collected object pointers. No pointer dereferencing of unknown memory — just
+collected object pointers. No pointer dereferencing of unknown memory - just
 value comparison against the validated set from the object manager.
 
 ## Outline Categories
@@ -162,7 +162,7 @@ value comparison against the validated set from the object manager.
 
 1. `api.init()` installs model hooks immediately (ManageRenderListNode,
    DrawBatchProjected, CM2SceneRenderDraw)
-2. D3D9 hooks are **deferred** until the first model hook fires — creating a
+2. D3D9 hooks are **deferred** until the first model hook fires - creating a
    dummy D3D9 device during engine init corrupts the proxy's state
 3. `api.initD3D9Deferred()` patches the D3D9 vtable (EndScene, DIP, Reset)
 4. Reset hook forces D24S8 depth/stencil format (8 stencil bits required)
@@ -189,7 +189,7 @@ OutlineCommand("off")     -- disable outlines
 
 - **Local player outline (planned)**: a Gaussian blur outline mode for the local
   player to improve visibility in combat when surrounded by mobs. Separate from
-  the JFA pipeline — will use blur difference (blur silhouette, subtract original,
+  the JFA pipeline - will use blur difference (blur silhouette, subtract original,
   threshold) for a softer glow effect and only apply to other players.
 
 - **Death tracking needs improvement**: currently uses `UNIT_FLAG_DEAD` which is
@@ -197,10 +197,10 @@ OutlineCommand("off")     -- disable outlines
   - Dead players should be outlined (works now)
   - Released bodies (corpse objects) should also be outlined (partially works via `.corpse`
     type, but needs verification that released-but-not-skeleton corpses are caught)
-  - Feign Death must NOT trigger the dead outline — feign death sets the dead flag
+  - Feign Death must NOT trigger the dead outline - feign death sets the dead flag
     but the player is alive. Need to check for the feign death aura/buff or use a
     more specific death condition
-  - The local player should never get a death outline on themselves — the purpose
+  - The local player should never get a death outline on themselves - the purpose
     of the death outline is to help the player find and resurrect others, not to
     highlight their own corpse
   - Marker outlines should not persist on units after they die
