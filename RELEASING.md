@@ -101,7 +101,11 @@ git push origin main
 ## 3. Write the release notes
 
 Use this template - fill in the sections that apply, delete the rest.
-Use `-` (not em dash) anywhere a dash would be used:
+Use `-` (not em dash) anywhere a dash would be used.
+
+Always include an **Included** section listing every module in this release,
+not just what changed. Users downloading a release should see the full list
+of what they're getting:
 
 ```markdown
 ## What's New
@@ -112,8 +116,9 @@ Use `-` (not em dash) anywhere a dash would be used:
 
 - ...
 
-## Module Changes
+## Included
 
+- **Module Name** - one-line description
 - ...
 
 ## Notes
