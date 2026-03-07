@@ -139,6 +139,16 @@ local function showDenyMessage()
     end
 end
 
+local failLastTime = 0
+local FAIL_COOLDOWN = 2
+
+local function showFailMessage()
+    local now = GetTime()
+    if now - failLastTime < FAIL_COOLDOWN then return end
+    failLastTime = now
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00Unable to create World Marker at that location.|r")
+end
+
 -- =============================================================================
 -- Wrap DLL functions to broadcast on group placement/clear
 -- =============================================================================
@@ -148,6 +158,10 @@ function WorldMarker(index, ...)
     local ok = RawWorldMarker(index, unpack(arg))
     if not ok then
         showDenyMessage()
+        return
+    end
+    if ok < 0 then
+        showFailMessage()
         return
     end
     denyCount = 0

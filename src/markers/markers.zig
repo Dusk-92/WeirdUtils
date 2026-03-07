@@ -526,24 +526,26 @@ fn clearAllMarkers() void {
 // =============================================================================
 
 /// Lua: local ok = WorldMarker(index [, x, y, z | "unitId"])
-///   Returns 1 on success, nil on permission denied.
+///   Returns 1 on success, nil on permission denied, -1 on placement failure.
 pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
     if (!canSetMarkers()) {
         con.print("[worldmarkers] WorldMarker: no permission\n");
-        return 0; // nil - addon shows user message
+        return 0; // nil - addon shows permission message
     }
 
     const nargs = lua.gettop(L);
 
     if (nargs < 1 or !lua.isnumber(L, 1)) {
         con.print("[worldmarkers] WorldMarker: expected index (1-5)\n");
-        return 0;
+        lua.pushnumber(L, -1.0);
+        return 1;
     }
 
     const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) {
         con.print("[worldmarkers] WorldMarker: index must be 1-5\n");
-        return 0;
+        lua.pushnumber(L, -1.0);
+        return 1;
     }
     const index: usize = @intCast(raw_index - 1);
 
@@ -555,17 +557,20 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
     } else if (nargs >= 2 and lua.isstring(L, 2)) {
         const unit_id = lua.tostring(L, 2) orelse {
             con.print("[worldmarkers] WorldMarker: invalid unit string\n");
-            return 0;
+            lua.pushnumber(L, -1.0);
+            return 1;
         };
         const pos = resolveUnitPosition(unit_id) orelse {
             con.fmt("[worldmarkers] WorldMarker: unit '{s}' not found\n", .{std.mem.span(unit_id)});
-            return 0;
+            lua.pushnumber(L, -1.0);
+            return 1;
         };
         _ = placeMarker(index, pos);
     } else {
         const pos = getCursorTerrainPosition() orelse {
             con.print("[worldmarkers] no terrain under cursor\n");
-            return 0;
+            lua.pushnumber(L, -1.0);
+            return 1;
         };
         _ = placeMarker(index, pos);
     }
