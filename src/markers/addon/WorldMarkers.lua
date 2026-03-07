@@ -156,14 +156,8 @@ end
 local RawWorldMarker = WorldMarker
 function WorldMarker(index, ...)
     local x, y, z, areaId = RawWorldMarker(index, unpack(arg))
-    if x == nil then
-        showDenyMessage()
-        return
-    end
-    if x < 0 and (y == nil) then
-        showFailMessage()
-        return
-    end
+    if x == nil then return end
+    if x < 0 and (y == nil) then return x end
     denyCount = 0
     local ch = getChannel()
     if ch then
@@ -175,10 +169,7 @@ end
 local RawClearWorldMarker = ClearWorldMarker
 function ClearWorldMarker(index)
     local ok = RawClearWorldMarker(index)
-    if not ok then
-        showDenyMessage()
-        return
-    end
+    if not ok then return end
     denyCount = 0
     local ch = getChannel()
     if ch then
@@ -188,6 +179,29 @@ function ClearWorldMarker(index)
             broadcastClearAll()
         end
     end
+    return ok
+end
+
+-- =============================================================================
+-- UI wrappers — used by slash commands and keybindings, show error messages
+-- =============================================================================
+
+function WorldMarkers.UI_WorldMarker(index, ...)
+    local x, y, z, areaId = WorldMarker(index, unpack(arg))
+    if x == nil then
+        showDenyMessage()
+    elseif x < 0 and (y == nil) then
+        showFailMessage()
+    end
+    return x, y, z, areaId
+end
+
+function WorldMarkers.UI_ClearWorldMarker(index)
+    local ok = ClearWorldMarker(index)
+    if not ok then
+        showDenyMessage()
+    end
+    return ok
 end
 
 -- =============================================================================
@@ -379,9 +393,9 @@ SlashCmdList["WORLDMARKER"] = function(msg)
     end
 
     if parts[2] then
-        WorldMarker(index, parts[2])
+        WorldMarkers.UI_WorldMarker(index, parts[2])
     else
-        WorldMarker(index)
+        WorldMarkers.UI_WorldMarker(index)
     end
 end
 
@@ -390,8 +404,8 @@ SLASH_CLEARWORLDMARKER2 = "/cwm"
 SlashCmdList["CLEARWORLDMARKER"] = function(msg)
     local index = tonumber(msg or "")
     if index then
-        ClearWorldMarker(index)
+        WorldMarkers.UI_ClearWorldMarker(index)
     else
-        ClearWorldMarker()
+        WorldMarkers.UI_ClearWorldMarker()
     end
 end

@@ -24,11 +24,12 @@ Markers automatically sync with group members who also have WeirdUtils installed
 
 Lua API for addon developers:
 
-- `WorldMarker(index)` -- place marker at cursor terrain position (returns 1 on success, nil if no permission)
+- `WorldMarker(index)` -- place marker at cursor (returns x,y,z,areaId on success, nil if no permission, -1 on failure)
 - `WorldMarker(index, "unit")` -- place marker at a unit's position
 - `WorldMarker(index, x, y, z)` -- place marker at world coordinates
 - `ClearWorldMarker(index)` / `ClearWorldMarker()` -- remove one or all markers (returns 1 on success, nil if no permission)
-- `CanSetWorldMarkers()` -- returns 1 if the local player is party/raid leader or raid assist, nil otherwise
+- `GetWorldMarker(index)` -- returns x,y,z,areaId for an active marker, nil if empty
+- `CanSetWorldMarker()` -- returns 1 if the local player is party/raid leader or raid assist, nil otherwise
 
 **DLL:** `worldmarkers.dll`
 
