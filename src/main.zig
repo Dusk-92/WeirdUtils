@@ -114,8 +114,10 @@ fn registerLuaFunctions() void {
 }
 
 // =============================================================================
-// Embedded addon files
+// Embedded addon files — auto-generated from addon/ and assets/ directories
 // =============================================================================
+
+const build_options = @import("build_options");
 
 const AddonPrefix = struct {
     prefix: []const u8,
@@ -127,90 +129,225 @@ const FileEntry = struct {
     data: []const u8,
 };
 
-
-// Conditional module addons
-const screenshot_files = if (build_opts.screenshot) [_]FileEntry{
-    .{ .name = "Screenshot.toc", .data = @embedFile("screenshot/addon/Screenshot.toc") },
-    .{ .name = "Screenshot.lua", .data = @embedFile("screenshot/addon/Screenshot.lua") },
-} else [_]FileEntry{};
-
-const interact_files = if (build_opts.interact) [_]FileEntry{
-    .{ .name = "Interact.toc", .data = @embedFile("interact/addon/Interact.toc") },
-    .{ .name = "Interact.lua", .data = @embedFile("interact/addon/Interact.lua") },
-    .{ .name = "Bindings.xml", .data = @embedFile("interact/addon/Bindings.xml") },
-} else [_]FileEntry{};
-
-const outline_files = if (build_opts.outline) [_]FileEntry{
-    .{ .name = "Outline.toc", .data = @embedFile("outline/addon/Outline.toc") },
-    .{ .name = "Outline.lua", .data = @embedFile("outline/addon/Outline.lua") },
-    .{ .name = "Bindings.xml", .data = @embedFile("outline/addon/Bindings.xml") },
-} else [_]FileEntry{};
-
-const logsessions_files = if (build_opts.logsessions) [_]FileEntry{
-    .{ .name = "LogSessions.toc", .data = @embedFile("logsessions/addon/LogSessions.toc") },
-    .{ .name = "LogSessions.lua", .data = @embedFile("logsessions/addon/LogSessions.lua") },
-} else [_]FileEntry{};
-
-const markers_files = if (build_opts.worldmarkers) [_]FileEntry{
-    .{ .name = "WorldMarkers.toc", .data = @embedFile("markers/addon/Markers.toc") },
-    .{ .name = "WorldMarkers.lua", .data = @embedFile("markers/addon/Markers.lua") },
-    .{ .name = "Bindings.xml", .data = @embedFile("markers/addon/Bindings.xml") },
-} else [_]FileEntry{};
-
-// Marker model + skin + textures served under Spells\ prefix
-const markers_spells_assets = if (build_opts.worldmarkers) [_]FileEntry{
-    // Models (5 colors)
-    .{ .name = "Raid_UI_FX_Yellow.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Yellow.m2") },
-    .{ .name = "Raid_UI_FX_Cyan.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Cyan.m2") },
-    .{ .name = "Raid_UI_FX_Green.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Green.m2") },
-    .{ .name = "Raid_UI_FX_Purple.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Purple.m2") },
-    .{ .name = "Raid_UI_FX_Red.m2", .data = @embedFile("markers/assets/Spells/Raid_UI_FX_Red.m2") },
-    // Per-model raid target icon textures
-    .{ .name = "RaidTarget_Star.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Star.blp") },
-    .{ .name = "RaidTarget_Square.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Square.blp") },
-    .{ .name = "RaidTarget_Triangle.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Triangle.blp") },
-    .{ .name = "RaidTarget_Diamond.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_Diamond.blp") },
-    .{ .name = "RaidTarget_X.blp", .data = @embedFile("markers/assets/Spells/RaidTarget_X.blp") },
-    // Shared effect textures
-    .{ .name = "T_VFX_FLARE05_32ALPHA.BLP", .data = @embedFile("markers/assets/Spells/T_VFX_FLARE05_32ALPHA.BLP") },
-    .{ .name = "GRAD2D.BLP", .data = @embedFile("markers/assets/Spells/GRAD2D.BLP") },
-    .{ .name = "GRAD2C2.BLP", .data = @embedFile("markers/assets/Spells/GRAD2C2.BLP") },
-    .{ .name = "NEXUS_FIREBEAM_FAINT_SQUARE_ORA.BLP", .data = @embedFile("markers/assets/Spells/NEXUS_FIREBEAM_FAINT_SQUARE_ORA.BLP") },
-} else [_]FileEntry{};
-
-// Shared effect textures served under World\Expansion01\Doodads\Zulaman\Doors\ prefix
-const markers_world_assets = if (build_opts.worldmarkers) [_]FileEntry{
-    .{ .name = "T_VFX_FIRE03_A.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_FIRE03_A.BLP") },
-    .{ .name = "T_VFX_BORDER6.BLP", .data = @embedFile("markers/assets/World/Expansion01/Doodads/Zulaman/Doors/T_VFX_BORDER6.BLP") },
-} else [_]FileEntry{};
-
-// XYZ debug model (renamed to avoid collision with game's built-in xyz.m2)
-const markers_xyz_model = if (build_opts.worldmarkers) [_]FileEntry{
-    .{ .name = "WU_XYZ.m2", .data = @embedFile("markers/assets/Spells/WU_XYZ.m2") },
-} else [_]FileEntry{};
-
-// XYZ texture served under World\ArtTest\Boxtest\ (matches M2 internal reference)
-const markers_xyz_texture = if (build_opts.worldmarkers) [_]FileEntry{
-    .{ .name = "xyz.blp", .data = @embedFile("markers/assets/Spells/xyz.blp") },
-} else [_]FileEntry{};
-
-// All addon prefixes to check
-const addon_prefixes = [_]AddonPrefix{
-    .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
-    .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
-    .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
-    .{ .prefix = "Interface\\AddOns\\LogSessions\\", .files = &logsessions_files },
-    .{ .prefix = "Interface\\AddOns\\WorldMarkers\\", .files = &markers_files },
-    .{ .prefix = "Spells\\", .files = &markers_spells_assets },
-    .{ .prefix = "Spells\\", .files = &markers_xyz_model },
-    .{ .prefix = "World\\Expansion01\\Doodads\\Zulaman\\Doors\\", .files = &markers_world_assets },
-    .{ .prefix = "World\\ArtTest\\Boxtest\\", .files = &markers_xyz_texture },
+/// Module descriptor for compile-time embed generation.
+/// addon_name: WoW AddOns folder name (determines prefix + TOC/Bindings paths).
+/// option: build_options field name for enable flag.
+/// addon_files_opt / asset_files_opt: build_options field names for file lists.
+const EmbedModule = struct {
+    option: []const u8,
+    addon_name: ?[]const u8 = null,
+    addon_files_opt: ?[]const u8 = null,
+    asset_files_opt: ?[]const u8 = null,
 };
+
+const embed_modules = [_]EmbedModule{
+    .{ .option = "screenshot", .addon_name = "Screenshot", .addon_files_opt = "screenshot_addon_files" },
+    .{ .option = "interact", .addon_name = "Interact", .addon_files_opt = "interact_addon_files" },
+    .{ .option = "outline", .addon_name = "Outline", .addon_files_opt = "outline_addon_files" },
+    .{ .option = "worldmarkers", .addon_name = "WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files" },
+    .{ .option = "logsessions", .addon_name = "LogSessions", .addon_files_opt = "logsessions_addon_files" },
+};
+
+/// Extract filename from a path like "markers/addon/Foo.lua" → "Foo.lua"
+fn comptimeBasename(comptime path: []const u8) []const u8 {
+    var i = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/') return path[i + 1 ..];
+    }
+    return path;
+}
+
+/// Extract WoW-style parent directory: "markers/assets/Spells/foo.m2" with
+/// assets_prefix="markers/assets/" → "Spells\\"
+fn comptimeWowDir(comptime path: []const u8, comptime assets_prefix: []const u8) []const u8 {
+    const rel = path[assets_prefix.len..]; // e.g. "Spells/foo.m2"
+    // Find last '/' to separate dir from filename
+    var last_slash: usize = 0;
+    var found = false;
+    for (rel, 0..) |c, i| {
+        if (c == '/') {
+            last_slash = i;
+            found = true;
+        }
+    }
+    if (!found) return "";
+    const dir = rel[0..last_slash]; // e.g. "Spells"
+    // Convert '/' to '\' and add trailing '\'
+    return comptime blk: {
+        var buf: [dir.len + 1]u8 = undefined;
+        for (dir, 0..) |c, i| {
+            buf[i] = if (c == '/') '\\' else c;
+        }
+        buf[dir.len] = '\\';
+        const final = buf;
+        break :blk &final;
+    };
+}
+
+/// Embed a list of files, returning an array of FileEntry.
+fn embedFiles(comptime paths: []const []const u8) [paths.len]FileEntry {
+    comptime {
+        var entries: [paths.len]FileEntry = undefined;
+        for (paths, 0..) |path, i| {
+            entries[i] = .{
+                .name = comptimeBasename(path),
+                .data = @embedFile(path),
+            };
+        }
+        const final = entries;
+        return final;
+    }
+}
+
+/// Build all AddonPrefix entries from embed_modules at comptime.
+fn buildAllPrefixes() []const AddonPrefix {
+    @setEvalBranchQuota(10000);
+    comptime {
+        // First pass: count total prefix entries
+        var count: usize = 0;
+        for (embed_modules) |mod| {
+            if (!@field(build_options, "enable_" ++ mod.option)) continue;
+
+            if (mod.addon_files_opt) |opt| {
+                if (@field(build_options, opt).len > 0) count += 1;
+            }
+            if (mod.asset_files_opt) |opt| {
+                const asset_paths = @field(build_options, opt);
+                // Determine assets_prefix from first path (e.g. "markers/assets/")
+                if (asset_paths.len > 0) {
+                    const pfx = assetsPrefixFromOpt(opt);
+                    count += countUniqueAssetDirs(asset_paths, pfx);
+                }
+            }
+        }
+
+        // Second pass: build array
+        var result: [count]AddonPrefix = undefined;
+        var idx: usize = 0;
+        for (embed_modules) |mod| {
+            if (!@field(build_options, "enable_" ++ mod.option)) continue;
+
+            if (mod.addon_files_opt) |opt| {
+                const paths = @field(build_options, opt);
+                if (paths.len > 0) {
+                    const files = embedFiles(paths);
+                    result[idx] = .{
+                        .prefix = "Interface\\AddOns\\" ++ mod.addon_name.? ++ "\\",
+                        .files = &files,
+                    };
+                    idx += 1;
+                }
+            }
+            if (mod.asset_files_opt) |opt| {
+                const asset_paths = @field(build_options, opt);
+                if (asset_paths.len > 0) {
+                    const pfx = assetsPrefixFromOpt(opt);
+                    idx = appendAssetPrefixes(&result, idx, asset_paths, pfx);
+                }
+            }
+        }
+        const final = result;
+        return &final;
+    }
+}
+
+/// Derive the assets/ path prefix from the option name pattern.
+/// "worldmarkers_asset_files" → look at first path to get "markers/assets/"
+fn assetsPrefixFromOpt(comptime opt: []const u8) []const u8 {
+    const paths = @field(build_options, opt);
+    // First path is like "markers/assets/Spells/foo.m2" — find "/assets/" to get prefix
+    const first = paths[0];
+    for (first, 0..) |_, i| {
+        if (i + 8 <= first.len and eqlSlice(first[i .. i + 8], "/assets/")) {
+            return first[0 .. i + 8]; // e.g. "markers/assets/"
+        }
+    }
+    return first; // fallback
+}
+
+fn eqlSlice(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (x != y) return false;
+    }
+    return true;
+}
+
+/// Count unique parent directories in asset paths.
+fn countUniqueAssetDirs(comptime paths: []const []const u8, comptime assets_prefix: []const u8) usize {
+    var dirs: [paths.len][]const u8 = undefined;
+    var n: usize = 0;
+    for (paths) |path| {
+        const dir = comptimeWowDir(path, assets_prefix);
+        if (dir.len == 0) continue;
+        var found = false;
+        for (dirs[0..n]) |d| {
+            if (eqlSlice(d, dir)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            dirs[n] = dir;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// Append asset prefix entries grouped by WoW directory.
+fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []const []const u8, comptime assets_prefix: []const u8) usize {
+    comptime {
+        // Collect unique directories
+        var dirs: [paths.len][]const u8 = undefined;
+        var n_dirs: usize = 0;
+        for (paths) |path| {
+            const dir = comptimeWowDir(path, assets_prefix);
+            if (dir.len == 0) continue;
+            var found = false;
+            for (dirs[0..n_dirs]) |d| {
+                if (eqlSlice(d, dir)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                dirs[n_dirs] = dir;
+                n_dirs += 1;
+            }
+        }
+
+        var idx = start_idx;
+        for (dirs[0..n_dirs]) |dir| {
+            // Count files in this directory
+            var file_count: usize = 0;
+            for (paths) |path| {
+                if (eqlSlice(comptimeWowDir(path, assets_prefix), dir)) file_count += 1;
+            }
+            // Build file entries for this group
+            var files: [file_count]FileEntry = undefined;
+            var fi: usize = 0;
+            for (paths) |path| {
+                if (eqlSlice(comptimeWowDir(path, assets_prefix), dir)) {
+                    files[fi] = .{ .name = comptimeBasename(path), .data = @embedFile(path) };
+                    fi += 1;
+                }
+            }
+            const final_files = files;
+            result[idx] = .{ .prefix = dir, .files = &final_files };
+            idx += 1;
+        }
+        return idx;
+    }
+}
+
+const addon_prefixes = buildAllPrefixes();
 
 fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
     const path_span = std.mem.span(path);
 
-    for (&addon_prefixes) |*addon| {
+    for (addon_prefixes) |*addon| {
         if (path_span.len <= addon.prefix.len) continue;
 
         // Case-insensitive prefix check
@@ -653,57 +790,53 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
 
     var md5ctx = std.mem.zeroes([88]u8);
 
-    // Conditionally load module addons
-    if (build_opts.screenshot) {
-        callLoadFileListWithIncludes(
-            "Interface\\AddOns\\Screenshot\\Screenshot.toc",
-            &md5ctx,
-            error_handler,
-        );
+    inline for (embed_modules) |mod| {
+        if (comptime mod.addon_name == null) continue;
+        if (!@field(build_options, "enable_" ++ mod.option)) continue;
+
+        // Module-specific runtime checks
+        const load = if (comptime std.mem.eql(u8, mod.option, "worldmarkers"))
+            markers.isActive()
+        else
+            true;
+
+        if (load) {
+            const addon_name = comptime mod.addon_name.?;
+            const paths = comptime @field(build_options, mod.addon_files_opt.?);
+            const toc_name = comptime findTocName(paths);
+            if (toc_name) |tn| {
+                callLoadFileListWithIncludes(
+                    "Interface\\AddOns\\" ++ addon_name ++ "\\" ++ tn,
+                    &md5ctx,
+                    error_handler,
+                );
+            }
+            if (comptime hasFile(paths, "Bindings.xml")) {
+                callLoadUIBindingsFromFile(
+                    "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",
+                    &md5ctx,
+                    error_handler,
+                );
+            }
+        }
     }
-    if (build_opts.interact) {
-        callLoadFileListWithIncludes(
-            "Interface\\AddOns\\Interact\\Interact.toc",
-            &md5ctx,
-            error_handler,
-        );
-        callLoadUIBindingsFromFile(
-            "Interface\\AddOns\\Interact\\Bindings.xml",
-            &md5ctx,
-            error_handler,
-        );
+}
+
+/// Find the .toc filename from an addon file path list.
+fn findTocName(comptime paths: []const []const u8) ?[]const u8 {
+    for (paths) |path| {
+        const name = comptimeBasename(path);
+        if (name.len >= 4 and eqlSlice(name[name.len - 4 ..], ".toc")) return name;
     }
-    if (build_opts.outline) {
-        callLoadFileListWithIncludes(
-            "Interface\\AddOns\\Outline\\Outline.toc",
-            &md5ctx,
-            error_handler,
-        );
-        callLoadUIBindingsFromFile(
-            "Interface\\AddOns\\Outline\\Bindings.xml",
-            &md5ctx,
-            error_handler,
-        );
+    return null;
+}
+
+/// Check if a filename exists in the path list.
+fn hasFile(comptime paths: []const []const u8, comptime target: []const u8) bool {
+    for (paths) |path| {
+        if (eqlSlice(comptimeBasename(path), target)) return true;
     }
-    if (build_opts.logsessions) {
-        callLoadFileListWithIncludes(
-            "Interface\\AddOns\\LogSessions\\LogSessions.toc",
-            &md5ctx,
-            error_handler,
-        );
-    }
-    if (build_opts.worldmarkers and markers.isActive()) {
-        callLoadFileListWithIncludes(
-            "Interface\\AddOns\\WorldMarkers\\WorldMarkers.toc",
-            &md5ctx,
-            error_handler,
-        );
-        callLoadUIBindingsFromFile(
-            "Interface\\AddOns\\WorldMarkers\\Bindings.xml",
-            &md5ctx,
-            error_handler,
-        );
-    }
+    return false;
 }
 
 fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_handler: u32) void {

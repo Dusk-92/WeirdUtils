@@ -4,17 +4,21 @@ const ModuleDesc = struct {
     name: []const u8,
     desc: []const u8,
     default: bool = true,
+    /// Source directory under src/ (defaults to name if null).
+    src_dir: ?[]const u8 = null,
+    /// WoW addon folder name. Non-null means this module has an addon/ dir.
+    addon_name: ?[]const u8 = null,
 };
 
 /// Single source of truth for all modules. Adding a module here is enough
 /// to wire up the build option, build_options passthrough, and DLL variant.
 const module_list = [_]ModuleDesc{
-    .{ .name = "screenshot", .desc = "Enable screenshot module" },
-    .{ .name = "interact", .desc = "Enable interact module" },
-    .{ .name = "outline", .desc = "Enable outline module", .default = false },
-    .{ .name = "worldmarkers", .desc = "Enable world markers module" },
+    .{ .name = "screenshot", .desc = "Enable screenshot module", .addon_name = "Screenshot" },
+    .{ .name = "interact", .desc = "Enable interact module", .addon_name = "Interact" },
+    .{ .name = "outline", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
+    .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers" },
     .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
-    .{ .name = "logsessions", .desc = "Enable log session rotation" },
+    .{ .name = "logsessions", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
     .{ .name = "minimapicons", .desc = "Enable custom minimap icons" },
     .{ .name = "transmogfix", .desc = "Enable transmog update coalescing" },
     .{ .name = "customassets", .desc = "Enable loose file loading & permissive patch glob" },
@@ -31,11 +35,8 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    // Build options for conditional module compilation
     const build_options = b.addOptions();
-    inline for (module_list) |mod| {
-        build_options.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
-    }
+    addModuleOptions(b, build_options);
     const build_options_module = build_options.createModule();
 
     const zhook_dep = b.dependency("zhook", .{
@@ -67,6 +68,7 @@ pub fn build(b: *std.Build) void {
         inline for (module_list) |m| {
             opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
         }
+        addFileListOptions(b, opts);
 
         const variant_lib = b.addLibrary(.{
             .name = variant_mod.name,
@@ -87,4 +89,88 @@ pub fn build(b: *std.Build) void {
         });
         build_all_step.dependOn(&install_variant.step);
     }
+}
+
+// =============================================================================
+// Build options: enable flags + scanned file lists for each module
+// =============================================================================
+
+fn addModuleOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
+    inline for (module_list) |mod| {
+        opts.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
+    }
+    addFileListOptions(b, opts);
+}
+
+fn addFileListOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
+    const a = b.allocator;
+    const io = b.graph.io;
+    const root = b.build_root.handle;
+
+    for (module_list) |mod| {
+        const src_dir = mod.src_dir orelse mod.name;
+
+        // Addon files: <module>_addon_files = ["screenshot/addon/Screenshot.lua", ...]
+        if (mod.addon_name != null) {
+            const addon_rel = std.fmt.allocPrint(a, "src/{s}/addon", .{src_dir}) catch unreachable;
+            const files = listDir(a, io, root, addon_rel);
+            var paths: std.ArrayList([]const u8) = .empty;
+            for (files) |fname| {
+                paths.append(a, std.fmt.allocPrint(a, "{s}/addon/{s}", .{ src_dir, fname }) catch unreachable) catch unreachable;
+            }
+            opts.addOption([]const []const u8, std.fmt.allocPrint(a, "{s}_addon_files", .{mod.name}) catch unreachable, paths.items);
+        }
+
+        // Asset files: <module>_asset_files = ["markers/assets/Spells/foo.m2", ...]
+        const assets_rel = std.fmt.allocPrint(a, "src/{s}/assets", .{src_dir}) catch unreachable;
+        const asset_files = listAssets(a, io, root, assets_rel, src_dir);
+        if (asset_files.len > 0) {
+            opts.addOption([]const []const u8, std.fmt.allocPrint(a, "{s}_asset_files", .{mod.name}) catch unreachable, asset_files);
+        }
+    }
+}
+
+fn listDir(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, rel_path: []const u8) []const []const u8 {
+    var dir = root.openDir(io, rel_path, .{ .iterate = true }) catch return &.{};
+    defer dir.close(io);
+
+    var files: std.ArrayList([]const u8) = .empty;
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind == .file) {
+            files.append(a, a.dupe(u8, entry.name) catch unreachable) catch unreachable;
+        }
+    }
+
+    std.mem.sort([]const u8, files.items, {}, struct {
+        fn lt(_: void, aa: []const u8, bb: []const u8) bool {
+            return std.mem.order(u8, aa, bb) == .lt;
+        }
+    }.lt);
+
+    return files.items;
+}
+
+/// Walk assets/ recursively, return paths like "markers/assets/Spells/foo.m2"
+fn listAssets(a: std.mem.Allocator, io: std.Io, root: std.Io.Dir, rel_path: []const u8, src_dir: []const u8) []const []const u8 {
+    var dir = root.openDir(io, rel_path, .{ .iterate = true }) catch return &.{};
+    defer dir.close(io);
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    var walker = dir.walk(a) catch return &.{};
+    defer walker.deinit();
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        // Only include files in subdirectories (not root of assets/)
+        if (std.fs.path.dirname(entry.path) == null) continue;
+        paths.append(a, std.fmt.allocPrint(a, "{s}/assets/{s}", .{ src_dir, entry.path }) catch unreachable) catch unreachable;
+    }
+
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lt(_: void, aa: []const u8, bb: []const u8) bool {
+            return std.mem.order(u8, aa, bb) == .lt;
+        }
+    }.lt);
+
+    return paths.items;
 }
