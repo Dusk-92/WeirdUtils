@@ -457,6 +457,12 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
         return false;
     };
 
+    // UpdateWorldPosition (called by createEntityInstance with updateNow=1) snaps
+    // the position to the terrain chunk grid, modifying the position array in place.
+    // Re-apply the exact position via SetUnitPositionAndOrientation to override the snap.
+    position = [3]f32{ pos.x, pos.y, pos.z + MARKER_Z_OFFSET };
+    setUnitPositionAndOrientation(obj, &position, 0.0);
+
     marker_entities[index] = obj;
     marker_created_tick[index] = GetTickCount();
     hold_queued[index] = false;
@@ -465,6 +471,20 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
         index + 1, pos.x, pos.y, pos.z, @intFromPtr(obj),
     });
     return true;
+}
+
+/// SetUnitPositionAndOrientation - __fastcall(ECX=positionData, EDX=pos), 1 stack param.
+fn setUnitPositionAndOrientation(entity: *anyopaque, pos: *[3]f32, facing: f32) void {
+    const facing_bits: u32 = @bitCast(facing);
+    asm volatile (
+        \\ push %[facing]
+        \\ call *%[func]
+        :
+        : [_] "{ecx}" (@intFromPtr(entity)),
+          [_] "{edx}" (@intFromPtr(pos)),
+          [facing] "r" (facing_bits),
+          [func] "r" (@as(u32, 0x698e20)),
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 /// Remove only the live entity for a marker slot (def untouched).
