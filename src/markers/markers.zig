@@ -525,8 +525,8 @@ fn clearAllMarkers() void {
 // Lua API
 // =============================================================================
 
-/// Lua: local ok = WorldMarker(index [, x, y, z | "unitId"])
-///   Returns 1 on success, nil on permission denied, -1 on placement failure.
+/// Lua: local x,y,z,areaId = WorldMarker(index [, x, y, z | "unitId"])
+///   Returns x,y,z,areaId on success, nil on permission denied, -1 on placement failure.
 pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
     if (!canSetMarkers()) {
         con.print("[worldmarkers] WorldMarker: no permission\n");
@@ -553,7 +553,10 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         const x: f32 = @floatCast(lua.tonumber(L, 2));
         const y: f32 = @floatCast(lua.tonumber(L, 3));
         const z: f32 = @floatCast(lua.tonumber(L, 4));
-        _ = placeMarker(index, .{ .x = x, .y = y, .z = z });
+        if (!placeMarker(index, .{ .x = x, .y = y, .z = z })) {
+            lua.pushnumber(L, -1.0);
+            return 1;
+        }
     } else if (nargs >= 2 and lua.isstring(L, 2)) {
         const unit_id = lua.tostring(L, 2) orelse {
             con.print("[worldmarkers] WorldMarker: invalid unit string\n");
@@ -565,18 +568,23 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
             lua.pushnumber(L, -1.0);
             return 1;
         };
-        _ = placeMarker(index, pos);
+        if (!placeMarker(index, pos)) {
+            lua.pushnumber(L, -1.0);
+            return 1;
+        }
     } else {
         const pos = getCursorTerrainPosition() orelse {
             con.print("[worldmarkers] no terrain under cursor\n");
             lua.pushnumber(L, -1.0);
             return 1;
         };
-        _ = placeMarker(index, pos);
+        if (!placeMarker(index, pos)) {
+            lua.pushnumber(L, -1.0);
+            return 1;
+        }
     }
 
-    lua.pushnumber(L, 1.0);
-    return 1;
+    return pushMarkerDef(L, index);
 }
 
 /// Lua: local ok = ClearWorldMarker([index])
@@ -756,16 +764,8 @@ pub fn luaClearMarkerDef(L: lua.State) callconv(.c) u32 {
     return 0;
 }
 
-/// Lua: local x, y, z, areaId = GetMarkerDef(index)
-/// Returns position and area ID for an active marker def, or nil if inactive.
-pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
-    const nargs = lua.gettop(L);
-    if (nargs < 1 or !lua.isnumber(L, 1)) return 0;
-
-    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
-    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
-    const index: usize = @intCast(raw_index - 1);
-
+/// Push x, y, z, areaId for a marker slot, or return 0 (nil) if inactive.
+fn pushMarkerDef(L: lua.State, index: usize) u32 {
     if (!marker_defs[index].active) return 0;
 
     lua.pushnumber(L, @floatCast(marker_defs[index].pos.x));
@@ -773,6 +773,24 @@ pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
     lua.pushnumber(L, @floatCast(marker_defs[index].pos.z));
     lua.pushnumber(L, @floatCast(@as(f64, @floatFromInt(marker_defs[index].area_id))));
     return 4;
+}
+
+/// Lua: local x, y, z, areaId = GetWorldMarker(index)
+/// Returns position and area ID for an active marker, or nil if empty.
+pub fn luaGetWorldMarker(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
+    if (nargs < 1 or !lua.isnumber(L, 1)) return 0;
+
+    const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
+    if (raw_index < 1 or raw_index > NUM_MARKERS) return 0;
+
+    return pushMarkerDef(L, @intCast(raw_index - 1));
+}
+
+/// Lua: local x, y, z, areaId = WorldMarkers.GetMarkerDef(index)
+/// Internal alias kept for addon sync protocol compatibility.
+pub fn luaGetMarkerDef(L: lua.State) callconv(.c) u32 {
+    return luaGetWorldMarker(L);
 }
 
 /// Lua: local ok = CanSetWorldMarkers()

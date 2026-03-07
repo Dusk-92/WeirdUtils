@@ -100,7 +100,8 @@ fn registerLuaFunctions() void {
         // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
         registerFunction("ClearWorldMarker", @intFromPtr(&markers.luaClearWorldMarker));
-        registerFunction("CanSetWorldMarkers", @intFromPtr(&markers.luaCanSetMarkers));
+        registerFunction("GetWorldMarker", @intFromPtr(&markers.luaGetWorldMarker));
+        registerFunction("CanSetWorldMarker", @intFromPtr(&markers.luaCanSetMarkers));
 
         // Internal functions in WorldMarkers table (via luaL_openlib)
         const lib = [_]lua.LuaReg{

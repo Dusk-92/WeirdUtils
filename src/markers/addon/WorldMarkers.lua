@@ -19,7 +19,7 @@ BINDING_HEADER_WORLDMARKERS = "World Markers"
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
 --   SetMarkerDef/ClearMarkerDef: DLL checks sender name against roster.
---   CanSetWorldMarkers(): DLL returns 1 if local player has permission.
+--   CanSetWorldMarker(): DLL returns 1 if local player has permission.
 -- =============================================================================
 
 local MSG_PREFIX = "WMark"
@@ -109,7 +109,7 @@ local function broadcastAllDefs()
     local ch = getChannel()
     if not ch then return end
     for i = 1, NUM_MARKERS do
-        local x, y, z, areaId = WorldMarkers.GetMarkerDef(i)
+        local x, y, z, areaId = GetWorldMarker(i)
         if x then
             local msg = "SF:" .. i .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
             SendAddonMessage(MSG_PREFIX, msg, ch)
@@ -155,23 +155,21 @@ end
 
 local RawWorldMarker = WorldMarker
 function WorldMarker(index, ...)
-    local ok = RawWorldMarker(index, unpack(arg))
-    if not ok then
+    local x, y, z, areaId = RawWorldMarker(index, unpack(arg))
+    if x == nil then
         showDenyMessage()
         return
     end
-    if ok < 0 then
+    if x < 0 and (y == nil) then
         showFailMessage()
         return
     end
     denyCount = 0
     local ch = getChannel()
     if ch then
-        local x, y, z, areaId = WorldMarkers.GetMarkerDef(index)
-        if x then
-            broadcastPlace(index, x, y, z, areaId)
-        end
+        broadcastPlace(index, x, y, z, areaId)
     end
+    return x, y, z, areaId
 end
 
 local RawClearWorldMarker = ClearWorldMarker
@@ -222,7 +220,7 @@ local function onAddonMessage(prefix, message, channel, sender)
     local cmd = parts[1]
 
     if cmd == "SR" then
-        if CanSetWorldMarkers() then
+        if CanSetWorldMarker() then
             broadcastAllDefs()
         end
         return
@@ -266,7 +264,7 @@ local function broadcastSyncRequest()
     local ch = getChannel()
     if not ch then return end
     startSyncing()
-    local cmd = CanSetWorldMarkers() and "LSR" or "SR"
+    local cmd = CanSetWorldMarker() and "LSR" or "SR"
     SendAddonMessage(MSG_PREFIX, cmd, ch)
 end
 
@@ -310,7 +308,7 @@ rosterTimer:SetScript("OnUpdate", function()
         rosterTimer:Hide()
         rosterTimer.pending = false
         rosterTimer.extensions = 0
-        if CanSetWorldMarkers() then
+        if CanSetWorldMarker() then
             broadcastAllDefs()
         end
     end
