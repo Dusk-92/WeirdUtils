@@ -1,6 +1,0 @@
-## Interface: 11200
-## Title: WeirdUtils
-## Notes: Core utilities DLL framework
-## Version: 1.0
-
-WeirdUtils.lua

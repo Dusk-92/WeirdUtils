@@ -76,29 +76,7 @@ fn allocateGameBuffer(size: u32) ?[*]u8 {
 // Custom C functions (callable from Lua)
 // =============================================================================
 
-fn weirdUtilsTest(L: lua.State) callconv(.c) u32 {
-    hook.fastcall(void, 0x6F3890, @intFromPtr(L), @intFromPtr(@as([*:0]const u8, "WeirdUtils is working!")));
-    return 1;
-}
-
-fn weirdUtilsVersion(L: lua.State) callconv(.c) u32 {
-    asm volatile (
-        \\sub $8, %%esp
-        \\fld1
-        \\fstpl (%%esp)
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(L)),
-          [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-    return 1;
-}
-
 fn registerLuaFunctions() void {
-    // Core functions (always registered)
-    registerFunction("WeirdUtilsTest", @intFromPtr(&weirdUtilsTest));
-    registerFunction("WeirdUtilsVersion", @intFromPtr(&weirdUtilsVersion));
-
     // Conditional module functions
     if (build_opts.screenshot) {
         registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
@@ -149,12 +127,6 @@ const FileEntry = struct {
     data: []const u8,
 };
 
-// Core addon (always included)
-const core_prefix = "Interface\\AddOns\\WeirdUtils\\";
-const core_files = [_]FileEntry{
-    .{ .name = "WeirdUtils.toc", .data = @embedFile("core/addon/WeirdUtils.toc") },
-    .{ .name = "WeirdUtils.lua", .data = @embedFile("core/addon/WeirdUtils.lua") },
-};
 
 // Conditional module addons
 const screenshot_files = if (build_opts.screenshot) [_]FileEntry{
@@ -225,7 +197,6 @@ const markers_xyz_texture = if (build_opts.worldmarkers) [_]FileEntry{
 
 // All addon prefixes to check
 const addon_prefixes = [_]AddonPrefix{
-    .{ .prefix = core_prefix, .files = &core_files },
     .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
     .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
     .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
@@ -682,13 +653,6 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
     load_addons_hook.callOriginal(.{error_handler});
 
     var md5ctx = std.mem.zeroes([88]u8);
-
-    // Always load core addon
-    callLoadFileListWithIncludes(
-        "Interface\\AddOns\\WeirdUtils\\WeirdUtils.toc",
-        &md5ctx,
-        error_handler,
-    );
 
     // Conditionally load module addons
     if (build_opts.screenshot) {

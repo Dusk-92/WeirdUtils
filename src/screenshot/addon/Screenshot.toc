@@ -2,6 +2,6 @@
 ## Title: Screenshot
 ## Notes: PNG screenshot capture with configurable compression
 ## Version: 1.0
-## Dependencies: WeirdUtils
+
 
 Screenshot.lua

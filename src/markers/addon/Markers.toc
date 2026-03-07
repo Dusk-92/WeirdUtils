@@ -2,6 +2,6 @@
 ## Title: WorldMarkers
 ## Notes: Client-side world markers
 ## Version: 1.0
-## Dependencies: WeirdUtils
+
 
 WorldMarkers.lua
