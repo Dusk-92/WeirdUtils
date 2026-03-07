@@ -175,6 +175,11 @@ const outline_files = if (build_opts.outline) [_]FileEntry{
     .{ .name = "Bindings.xml", .data = @embedFile("outline/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
+const logsessions_files = if (build_opts.logsessions) [_]FileEntry{
+    .{ .name = "LogSessions.toc", .data = @embedFile("logsessions/addon/LogSessions.toc") },
+    .{ .name = "LogSessions.lua", .data = @embedFile("logsessions/addon/LogSessions.lua") },
+} else [_]FileEntry{};
+
 const markers_files = if (build_opts.worldmarkers) [_]FileEntry{
     .{ .name = "WorldMarkers.toc", .data = @embedFile("markers/addon/Markers.toc") },
     .{ .name = "WorldMarkers.lua", .data = @embedFile("markers/addon/Markers.lua") },
@@ -224,6 +229,7 @@ const addon_prefixes = [_]AddonPrefix{
     .{ .prefix = "Interface\\AddOns\\Screenshot\\", .files = &screenshot_files },
     .{ .prefix = "Interface\\AddOns\\Interact\\", .files = &interact_files },
     .{ .prefix = "Interface\\AddOns\\Outline\\", .files = &outline_files },
+    .{ .prefix = "Interface\\AddOns\\LogSessions\\", .files = &logsessions_files },
     .{ .prefix = "Interface\\AddOns\\WorldMarkers\\", .files = &markers_files },
     .{ .prefix = "Spells\\", .files = &markers_spells_assets },
     .{ .prefix = "Spells\\", .files = &markers_xyz_model },
@@ -717,6 +723,13 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
         );
         callLoadUIBindingsFromFile(
             "Interface\\AddOns\\Outline\\Bindings.xml",
+            &md5ctx,
+            error_handler,
+        );
+    }
+    if (build_opts.logsessions) {
+        callLoadFileListWithIncludes(
+            "Interface\\AddOns\\LogSessions\\LogSessions.toc",
             &md5ctx,
             error_handler,
         );
