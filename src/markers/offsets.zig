@@ -78,15 +78,12 @@ pub const FN_DECREMENT_REFCOUNT: usize = 0x007103a0;
 pub const PTR_WORLD_FRAME: usize = 0x00B4B2BC;
 
 /// UpdateHitTest - __fastcall(ECX=worldFrame), no stack params.
-/// Raycasts from camera through mouse cursor, stores result at worldFrame+0x350:
-///   +0x350: hit type (0=none, 1=terrain, 2=object)
-///   +0x360: terrain intersection X (f32)
-///   +0x364: terrain intersection Y (f32)
-///   +0x368: terrain intersection Z (f32)
+/// Raycasts from camera through mouse cursor, stores result at worldFrame+0x350.
 pub const FN_UPDATE_HIT_TEST: usize = 0x00481F00;
 
 /// Offsets from worldFrame base to HitTestResult fields.
-pub const WF_HIT_TYPE: usize = 0x350;
+pub const WF_HIT_TYPE: usize = 0x350; // 0=terrain, 1=ground-target, 2=object
+pub const WF_HIT_GUID: usize = 0x358; // u64 object GUID (0 for terrain)
 pub const WF_HIT_TERRAIN_X: usize = 0x360;
 pub const WF_HIT_TERRAIN_Y: usize = 0x364;
 pub const WF_HIT_TERRAIN_Z: usize = 0x368;

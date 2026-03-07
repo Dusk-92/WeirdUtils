@@ -257,17 +257,15 @@ fn resolveUnitPosition(unit_id: [*:0]const u8) ?Vec3 {
     return pos;
 }
 
-/// Get the terrain position under the mouse cursor by calling UpdateHitTest.
-/// This performs a camera-through-cursor raycast and stores the result at
-/// worldFrame+0x350. Safe to call from Lua callbacks (saves/restores matrices).
+/// Get the world position under the mouse cursor via UpdateHitTest.
+/// Accepts terrain, WMO, and object hits. For object hits (type 2), uses the
+/// object's unit position instead of the ray intersection point (which can
+/// land at the camera position due to how object raycasting works).
 fn getCursorTerrainPosition() ?Vec3 {
     const world_frame = hook.readMem(u32, o.PTR_WORLD_FRAME);
     if (world_frame == 0 or world_frame < 0x10000) return null;
 
     // Zero the intersection point before raycasting so we can detect "no hit"
-    // (HitTestPoint returns 0 for both "terrain hit" and "no hit" in normal mode -
-    // WorldIntersectionTest returns gameStateFlags & 1, which is 0 outside AoE targeting.
-    // On a real hit the coords are overwritten; on sky/no-hit they stay zeroed.)
     @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_X)).* = 0;
     @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_Y)).* = 0;
     @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_Z)).* = 0;
@@ -275,9 +273,31 @@ fn getCursorTerrainPosition() ?Vec3 {
     // UpdateHitTest - __fastcall(ECX=worldFrame)
     hook.fastcall(void, o.FN_UPDATE_HIT_TEST, world_frame, 0);
 
+    const hit_type = hook.readMem(u32, world_frame + o.WF_HIT_TYPE);
     const x = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_X);
     const y = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Y);
     const z = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Z);
+
+    con.fmt("[worldmarkers] hitTest: type={d} pos={d:.1},{d:.1},{d:.1}\n", .{ hit_type, x, y, z });
+
+    if (hit_type == 2) {
+        // Object hit — the intersection point is unreliable (can be at camera).
+        // Look up the object's actual position via its GUID.
+        const guid_lo = hook.readMem(u32, world_frame + o.WF_HIT_GUID);
+        const guid_hi = hook.readMem(u32, world_frame + o.WF_HIT_GUID + 4);
+        const guid: u64 = @as(u64, guid_hi) << 32 | guid_lo;
+        if (guid != 0) {
+            const obj = wow.getObjectByGUID(guid);
+            if (obj != 0) {
+                const pos = getUnitPosition(obj);
+                if (pos.x != 0 or pos.y != 0 or pos.z != 0) {
+                    con.fmt("[worldmarkers] object hit, using unit pos: {d:.1},{d:.1},{d:.1}\n", .{ pos.x, pos.y, pos.z });
+                    return pos;
+                }
+            }
+        }
+        // Object hit but couldn't resolve position — fall through to raw coords
+    }
 
     if (x == 0 and y == 0 and z == 0) return null;
 
