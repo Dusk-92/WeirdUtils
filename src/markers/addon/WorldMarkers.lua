@@ -18,7 +18,7 @@ BINDING_HEADER_WORLDMARKERS = "World Markers"
 --
 -- Permission model: ALL permission checks are enforced DLL-side.
 --   WorldMarker/ClearWorldMarker: DLL checks local player is leader/assist.
---   SetMarkerDef/ClearMarkerDef: DLL checks sender name against roster.
+--   SetMarkerSync/ClearMarkerSync: DLL checks sender name against roster.
 --   CanSetWorldMarker(): DLL returns 1 if local player has permission.
 -- =============================================================================
 
@@ -236,7 +236,7 @@ local function onAddonMessage(prefix, message, channel, sender)
         end
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
+            WorldMarkers.SetMarkerSync(idx, x, y, z, areaId, sender)
         end
         return
     end
@@ -244,15 +244,15 @@ local function onAddonMessage(prefix, message, channel, sender)
     if cmd == "P" then
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
-            WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
+            WorldMarkers.SetMarkerSync(idx, x, y, z, areaId, sender)
         end
     elseif cmd == "C" then
         local idx = tonumber(parts[2])
         if idx then
-            WorldMarkers.ClearMarkerDef(idx, sender)
+            WorldMarkers.ClearMarkerSync(idx, sender)
         end
     elseif cmd == "CA" then
-        WorldMarkers.ClearMarkerDef(sender)
+        WorldMarkers.ClearMarkerSync(sender)
     end
 end
 

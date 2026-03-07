@@ -103,11 +103,10 @@ fn registerLuaFunctions() void {
         registerFunction("GetWorldMarker", @intFromPtr(&markers.luaGetWorldMarker));
         registerFunction("CanSetWorldMarker", @intFromPtr(&markers.luaCanSetMarkers));
 
-        // Internal functions in WorldMarkers table (via luaL_openlib)
+        // Sync functions in WorldMarkers table (used by addon message handler)
         const lib = [_]lua.LuaReg{
-            .{ .name = "SetMarkerDef", .func = @intFromPtr(&markers.luaSetMarkerDef) },
-            .{ .name = "ClearMarkerDef", .func = @intFromPtr(&markers.luaClearMarkerDef) },
-            .{ .name = "GetMarkerDef", .func = @intFromPtr(&markers.luaGetMarkerDef) },
+            .{ .name = "SetMarkerSync", .func = @intFromPtr(&markers.luaSetMarkerDef) },
+            .{ .name = "ClearMarkerSync", .func = @intFromPtr(&markers.luaClearMarkerDef) },
             .{ .name = null, .func = 0 }, // sentinel
         };
         lua.openlib(lua.getContext(), "WorldMarkers", &lib, 0);
