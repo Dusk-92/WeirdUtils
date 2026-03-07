@@ -1,20 +1,6 @@
 -- Screenshot addon (embedded in DLL, loaded from memory)
--- Part of WeirdUtils - only loaded when screenshot module is compiled
-
-SCREENSHOT_VERSION = 1
 
 BINDING_HEADER_SCREENSHOT = "Screenshot"
-
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("ADDON_LOADED")
-frame:RegisterEvent("PLAYER_LOGIN")
-
-frame:SetScript("OnEvent", function()
-    if event == "PLAYER_LOGIN" then
-        local on, level = WeirdUtilsScreenshot()
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00Screenshot|r v" .. SCREENSHOT_VERSION .. " loaded (" .. (on and "enabled" or "disabled") .. ", quality " .. level .. ")")
-    end
-end)
 
 SLASH_SCREENSHOT1 = "/ss"
 SLASH_SCREENSHOT2 = "/screenshot"

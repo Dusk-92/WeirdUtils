@@ -132,7 +132,6 @@ const FileEntry = struct {
 const screenshot_files = if (build_opts.screenshot) [_]FileEntry{
     .{ .name = "Screenshot.toc", .data = @embedFile("screenshot/addon/Screenshot.toc") },
     .{ .name = "Screenshot.lua", .data = @embedFile("screenshot/addon/Screenshot.lua") },
-    .{ .name = "Bindings.xml", .data = @embedFile("screenshot/addon/Bindings.xml") },
 } else [_]FileEntry{};
 
 const interact_files = if (build_opts.interact) [_]FileEntry{
@@ -658,11 +657,6 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
     if (build_opts.screenshot) {
         callLoadFileListWithIncludes(
             "Interface\\AddOns\\Screenshot\\Screenshot.toc",
-            &md5ctx,
-            error_handler,
-        );
-        callLoadUIBindingsFromFile(
-            "Interface\\AddOns\\Screenshot\\Bindings.xml",
             &md5ctx,
             error_handler,
         );

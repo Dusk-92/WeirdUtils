@@ -1,5 +1,0 @@
-<Bindings>
-    <Binding name="Toggle Screenshots" header="SCREENSHOT">
-        local on = WeirdUtilsScreenshot(); WeirdUtilsScreenshot(on and "disable" or "enable")
-    </Binding>
-</Bindings>

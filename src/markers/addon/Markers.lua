@@ -1,17 +1,8 @@
 -- WorldMarkers addon (embedded in DLL, loaded from memory)
--- Part of WeirdUtils - only loaded when worldmarkers module is compiled
 
 WORLDMARKERS_VERSION = 4
 
 BINDING_HEADER_WORLDMARKERS = "World Markers"
-
--- =============================================================================
--- Debug logging
--- =============================================================================
-
-local function log(msg)
-    -- DEFAULT_CHAT_FRAME:AddMessage("|cff88aaff[WMark]|r " .. msg)
-end
 
 -- =============================================================================
 -- Addon message protocol
@@ -80,7 +71,6 @@ local function startSyncing()
     syncTimer.delay = 5
     syncTimer.callback = function()
         if syncing then
-            log("sync timeout (5s), clearing sync state")
             syncing = false
             syncSender = nil
         end
@@ -97,7 +87,6 @@ local function broadcastPlace(index, x, y, z, areaId)
     local ch = getChannel()
     if not ch then return end
     local msg = "P:" .. index .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
-    log("SEND [" .. ch .. "] " .. msg)
     SendAddonMessage(MSG_PREFIX, msg, ch)
 end
 
@@ -106,7 +95,6 @@ local function broadcastClear(index)
     local ch = getChannel()
     if not ch then return end
     local msg = "C:" .. index
-    log("SEND [" .. ch .. "] " .. msg)
     SendAddonMessage(MSG_PREFIX, msg, ch)
 end
 
@@ -114,24 +102,19 @@ local function broadcastClearAll()
     clearSyncState()
     local ch = getChannel()
     if not ch then return end
-    log("SEND [" .. ch .. "] CA")
     SendAddonMessage(MSG_PREFIX, "CA", ch)
 end
 
 local function broadcastAllDefs()
     local ch = getChannel()
     if not ch then return end
-    local count = 0
     for i = 1, NUM_MARKERS do
         local x, y, z, areaId = WorldMarkers.GetMarkerDef(i)
         if x then
             local msg = "SF:" .. i .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
-            log("SEND [" .. ch .. "] " .. msg)
             SendAddonMessage(MSG_PREFIX, msg, ch)
-            count = count + 1
         end
     end
-    log("syncAll: " .. count .. " on " .. ch)
 end
 
 -- =============================================================================
@@ -214,13 +197,7 @@ end
 
 local function onAddonMessage(prefix, message, channel, sender)
     if prefix ~= MSG_PREFIX then return end
-
-    log("RECV [" .. channel .. "] " .. tostring(sender) .. ": " .. tostring(message))
-
-    if sender == UnitName("player") then
-        log("  own msg, skip")
-        return
-    end
+    if sender == UnitName("player") then return end
 
     -- Parse colon-delimited message
     local parts = {}
@@ -229,49 +206,33 @@ local function onAddonMessage(prefix, message, channel, sender)
     end
 
     local cmd = parts[1]
-    log("  cmd=" .. tostring(cmd) .. " n=" .. table.getn(parts))
 
     if cmd == "SR" then
-        -- Normal sync request: only leader/assist responds
-        log("  sync request from " .. tostring(sender))
         if CanSetWorldMarkers() then
             broadcastAllDefs()
         end
         return
     elseif cmd == "LSR" then
-        -- Leader sync request: anyone with defs responds (leader relogged)
-        log("  leader sync request from " .. tostring(sender))
         broadcastAllDefs()
         return
     elseif cmd == "SF" then
-        -- Sync fill: only process if we're in sync mode
-        if not syncing then
-            log("  ignoring SF (not syncing)")
-            return
-        end
+        if not syncing then return end
         if syncSender == nil then
             syncSender = sender
-            log("  sync responder locked: " .. sender)
         elseif syncSender ~= sender then
-            log("  ignoring SF from " .. sender .. " (locked to " .. syncSender .. ")")
             return
         end
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
             WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
-        else
-            log("  PARSE FAIL")
         end
         return
     end
 
-    -- P, C, CA - DLL checks sender permission via SetMarkerDef/ClearMarkerDef
     if cmd == "P" then
         local idx, x, y, z, areaId = parseMarkerFields(parts)
         if idx then
             WorldMarkers.SetMarkerDef(idx, x, y, z, areaId, sender)
-        else
-            log("  PARSE FAIL")
         end
     elseif cmd == "C" then
         local idx = tonumber(parts[2])
@@ -280,8 +241,6 @@ local function onAddonMessage(prefix, message, channel, sender)
         end
     elseif cmd == "CA" then
         WorldMarkers.ClearMarkerDef(sender)
-    else
-        log("  unknown: " .. tostring(cmd))
     end
 end
 
@@ -291,13 +250,9 @@ end
 
 local function broadcastSyncRequest()
     local ch = getChannel()
-    if not ch then
-        log("syncReq: no channel (not in group)")
-        return
-    end
+    if not ch then return end
     startSyncing()
     local cmd = CanSetWorldMarkers() and "LSR" or "SR"
-    log("SEND [" .. ch .. "] " .. cmd)
     SendAddonMessage(MSG_PREFIX, cmd, ch)
 end
 
@@ -307,11 +262,9 @@ local function scheduleSyncRequest()
     syncTimer.elapsed = 0
     syncTimer.delay = 5
     syncTimer.callback = function()
-        log("login sync timer fired")
         broadcastSyncRequest()
     end
     syncTimer:Show()
-    log("sync request scheduled (5s)")
 end
 
 -- =============================================================================
@@ -343,7 +296,6 @@ rosterTimer:SetScript("OnUpdate", function()
         rosterTimer:Hide()
         rosterTimer.pending = false
         rosterTimer.extensions = 0
-        log("roster timer fired, broadcasting")
         if CanSetWorldMarkers() then
             broadcastAllDefs()
         end
@@ -357,23 +309,16 @@ local function onRosterChange()
     local oldSize = lastGroupSize
     lastGroupSize = newSize
 
-    if newSize <= oldSize then
-        log("roster: " .. oldSize .. "->" .. newSize .. " (no increase)")
-        return
-    end
-
-    log("roster: " .. oldSize .. "->" .. newSize .. " (grew)")
+    if newSize <= oldSize then return end
 
     if not rosterTimer.pending then
         rosterTimer.remaining = ROSTER_INITIAL_DELAY
         rosterTimer.pending = true
         rosterTimer.extensions = 0
         rosterTimer:Show()
-        log("roster timer started (" .. ROSTER_INITIAL_DELAY .. "s)")
     elseif rosterTimer.extensions < MAX_EXTENSIONS then
         rosterTimer.remaining = rosterTimer.remaining + ROSTER_EXTEND_SEC
         rosterTimer.extensions = rosterTimer.extensions + 1
-        log("roster timer +" .. ROSTER_EXTEND_SEC .. "s (ext " .. rosterTimer.extensions .. "/" .. MAX_EXTENSIONS .. ")")
     end
 end
 
@@ -385,7 +330,6 @@ frame:RegisterEvent("RAID_ROSTER_UPDATE")
 
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00WorldMarkers|r v" .. WORLDMARKERS_VERSION .. " loaded")
         lastGroupSize = getGroupSize()
         scheduleSyncRequest()
     elseif event == "CHAT_MSG_ADDON" then
@@ -393,7 +337,6 @@ frame:SetScript("OnEvent", function()
     elseif event == "RAID_ROSTER_UPDATE" then
         onRosterChange()
     elseif event == "PARTY_MEMBERS_CHANGED" then
-        -- Skip party events when in a raid (RAID_ROSTER_UPDATE handles it)
         if GetNumRaidMembers() == 0 then
             onRosterChange()
         end
@@ -409,7 +352,6 @@ SLASH_WORLDMARKER2 = "/wm"
 SlashCmdList["WORLDMARKER"] = function(msg)
     msg = string.lower(msg or "")
 
-    -- Parse arguments
     local parts = {}
     for word in string.gfind(msg, "%S+") do
         table.insert(parts, word)
