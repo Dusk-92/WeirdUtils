@@ -146,6 +146,11 @@ Upscales the hardware cursor for improved visibility without losing sharpness. S
 
 This value is saved to the `cursorScale` CVar in tenths: `/script SetCVar("cursorScale", "15")` for 1.5x.
 
+Lua API for addon developers:
+
+- `SetCursorScale(n)` -- set scale factor (1.0–4.0), takes effect on next cursor change
+- `GetCursorScale()` -- returns current scale factor
+
 **DLL:** `bigcursor.dll`
 
 ---
@@ -163,7 +168,7 @@ Publishing the source would be handing a candy store to bad actors: the same hoo
 ## Developer Notes
 ### Runtime Module Control API
 
-WeirdUtils exports three functions for querying and disabling modules at runtime. This is the preferred way for other DLLs to check module state and take over functionality - no mutex tricks needed.
+WeirdUtils exports three functions for querying and disabling modules at runtime in case other devs find their dll's in conflict.
 
 #### Exported Functions
 
@@ -208,9 +213,10 @@ if (hMod) {
         if (disable) disable("transmogfix");
     }
 }
+```
 
 ### Module Mutexes
 
-Each module holds a named mutex while active: `Local\WeirdUtils_<name>_<PID>` (e.g. `Local\WeirdUtils_framecrash_12345`). The exception is transmogfix, which uses `Local\TransmogCoalesceHook_<PID>` for legacy reasons.
+Each module also holds a named mutex while active: `Local\WeirdUtils_<name>_<PID>` (e.g. `Local\WeirdUtils_framecrash_12345`). The exception is transmogfix, which uses `Local\TransmogCoalesceHook_<PID>` for legacy reasons.
 
-If you see the mutex, the module is loaded - use the Runtime Module Control API below to disable it. If you don't see it, the module isn't active and you're free to hook those functions yourself.
+If you see the mutex, the module is loaded - and can use the Runtime Module Control API to disable it. If you don't see it, the module isn't active and you're free to hook those functions yourself.
