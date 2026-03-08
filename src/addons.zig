@@ -309,15 +309,37 @@ fn setupAddonsDetour(mgr_ptr: u32) callconv(fc) void {
         if (comptime mod.addon_name == null) continue;
         if (!@field(build_options, "enable_" ++ mod.option)) continue;
 
-        if (mod.hidden) continue;
-
         const active = if (mod.is_active) |f| f() else true;
         if (active) {
             const name: [*:0]const u8 = comptime (mod.addon_name.? ++ "\x00").ptr;
             con.fmt("[addons] registering embedded addon: {s}\n", .{name});
             callLoadAddonTOC(name);
+
+            if (mod.hidden) {
+                hideAddonFromList(name);
+            }
         }
     }
+}
+
+/// Find an addon struct in the linked list by name and set +0x29 to 1,
+/// which excludes it from the flat display array built by DeserializeAddonData.
+fn hideAddonFromList(name: [*:0]const u8) void {
+    // Walk the addon linked list (PTR_00be1b6c). Each node has:
+    //   +0x14: name pointer
+    //   next: *(PTR_00be1b64 + 4 + node)
+    const list_base = hook.readMem(u32, 0x00be1b64);
+    var node = hook.readMem(u32, 0x00be1b6c);
+    while (node != 0 and (node & 1) == 0) {
+        const node_name = hook.readMem([*:0]const u8, node + 0x14);
+        if (std.mem.orderZ(u8, node_name, name) == .eq) {
+            hook.writeMem(node + 0x29, &[_]u8{1});
+            con.fmt("[addons] hidden addon {s} excluded from list (+0x29=1)\n", .{name});
+            return;
+        }
+        node = hook.readMem(u32, list_base + 4 + node);
+    }
+    con.fmt("[addons] WARNING: could not find {s} in addon list\n", .{name});
 }
 
 fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
@@ -326,101 +348,6 @@ fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
         :
         : [_] "{ecx}" (@intFromPtr(addon_name)),
           [func] "{eax}" (@as(u32, 0x0051c9b0)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-}
-
-// =============================================================================
-// Hook: LoadAddonsRecursively (0x51F600)
-// Non-hidden addons are fully handled by the game's LoadAddonRecursive (which
-// respects enabled/disabled state) — the CheckFileExistence hook in main.zig
-// makes their embedded files visible to preloadFileWithFlags. Hidden addons
-// bypass LoadAddonRecursive, so we load their TOC and bindings explicitly here.
-// =============================================================================
-
-var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
-
-fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
-    load_addons_hook.callOriginal(.{error_handler});
-
-    var md5ctx = std.mem.zeroes([88]u8);
-
-    inline for (embed_modules) |mod| {
-        if (comptime mod.addon_name != null and
-            @field(build_options, "enable_" ++ mod.option) and
-            mod.hidden)
-        {
-            const active = if (mod.is_active) |f| f() else true;
-            if (active) {
-                const addon_name = comptime mod.addon_name.?;
-                const paths = comptime @field(build_options, mod.addon_files_opt.?);
-
-                // Hidden addons are not registered via LoadAddonTOC, so the game
-                // doesn't know about them. Load their files directly to keep them
-                // invisible in the addon list.
-                const toc_name = comptime findTocName(paths);
-                if (toc_name) |tn| {
-                    callLoadFileListWithIncludes(
-                        "Interface\\AddOns\\" ++ addon_name ++ "\\" ++ tn,
-                        &md5ctx,
-                        error_handler,
-                    );
-                }
-
-                // Hidden addons bypass LoadAddonRecursive, so load bindings
-                // explicitly. Non-hidden addons get theirs loaded by the game
-                // (which respects addon enabled/disabled state).
-                if (comptime hasFile(paths, "Bindings.xml")) {
-                    callLoadUIBindingsFromFile(
-                        "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",
-                        &md5ctx,
-                        error_handler,
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn findTocName(comptime paths: []const []const u8) ?[]const u8 {
-    for (paths) |path| {
-        const name = comptimeBasename(path);
-        if (name.len >= 4 and eqlSlice(name[name.len - 4 ..], ".toc")) return name;
-    }
-    return null;
-}
-
-fn hasFile(comptime paths: []const []const u8, comptime target: []const u8) bool {
-    for (paths) |path| {
-        if (eqlSlice(comptimeBasename(path), target)) return true;
-    }
-    return false;
-}
-
-fn callLoadFileListWithIncludes(toc_path: [*:0]const u8, md5ctx: *[88]u8, error_handler: u32) void {
-    asm volatile (
-        \\push %[eh]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(toc_path)),
-          [_] "{edx}" (@intFromPtr(md5ctx)),
-          [eh] "r" (error_handler),
-          [func] "r" (@as(u32, 0x6EDB90)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-}
-
-fn callLoadUIBindingsFromFile(path: [*:0]const u8, md5ctx: *[88]u8, callback: u32) void {
-    const binding_mgr = hook.readMem(u32, 0xB71290);
-    asm volatile (
-        \\push %[cb]
-        \\push %[md5]
-        \\push %[path]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (binding_mgr),
-          [func] "{edx}" (@as(u32, 0x4B6F70)),
-          [path] "r" (@intFromPtr(path)),
-          [md5] "r" (@intFromPtr(md5ctx)),
-          [cb] "r" (callback),
         : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
@@ -440,11 +367,9 @@ const has_addons = blk: {
 pub fn install() void {
     if (!has_addons) return;
     _ = setup_addons_hook.attach(0x51C740, &setupAddonsDetour);
-    _ = load_addons_hook.attach(0x51F600, &loadAddonsDetour);
 }
 
 pub fn uninstall() void {
     if (!has_addons) return;
-    load_addons_hook.detach();
     setup_addons_hook.detach();
 }
