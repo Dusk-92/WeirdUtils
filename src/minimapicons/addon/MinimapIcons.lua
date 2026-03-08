@@ -87,11 +87,11 @@ local NPC_CATEGORIES = {
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
     { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.7 },
+    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.7, default = 1 },
     { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class",
         getFilter = function() return (UnitClass("player")) end },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
-    { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper" },
+    { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper", default = 1 },
     { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox" },
     { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Poison",
         getFilter = function() return getLocaleFilter(POISON_FILTERS) end },
@@ -99,7 +99,7 @@ local NPC_CATEGORIES = {
         getExclude = function() return UnitClass("player") end },
     { name = "Reagent Vendor", trackingType = "vendor",      icon = "Interface\\Minimap\\Tracking\\Reagents",
         getFilter = function() return getLocaleFilter(REAGENT_FILTERS) end },
-    { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair" },
+    { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair", default = 1 },
     { name = "Stable Master", trackingType = "stablemaster", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
     { name = "Trade Goods",   trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Profession",
         getFilter = function() return getLocaleFilter(TRADE_FILTERS) end },
@@ -109,10 +109,10 @@ local NPC_CATEGORIES = {
 }
 
 -- =============================================================================
--- NPC tracking state (persists per session, no SavedVariables)
+-- NPC tracking state (persisted per-character via SavedVariablesPerCharacter)
 -- =============================================================================
 
-local activeNpcCategories = {} -- name -> 1/nil
+local activeNpcCategories = {} -- name -> 1/nil, loaded from UI_MinimapIcons
 
 -- Sync DLL tracking state with addon toggle state.
 -- Each category gets its own DLL call. Categories with a subnameFilter
@@ -232,6 +232,7 @@ UIDropDownMenu_Initialize(dropdown, function()
             else
                 activeNpcCategories[catName] = 1
             end
+            UI_MinimapIcons = activeNpcCategories
             updateDllTracking()
         end
         UIDropDownMenu_AddButton(info)
@@ -309,12 +310,25 @@ end)
 -- =============================================================================
 
 local events = CreateFrame("Frame")
+events:RegisterEvent("VARIABLES_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
 events:RegisterEvent("SPELLS_CHANGED")
 events:RegisterEvent("PLAYER_AURAS_CHANGED")
 
 events:SetScript("OnEvent", function()
-    if event == "PLAYER_LOGIN" or event == "SPELLS_CHANGED" then
+    if event == "VARIABLES_LOADED" then
+        if UI_MinimapIcons then
+            activeNpcCategories = UI_MinimapIcons
+        else
+            for _, cat in ipairs(NPC_CATEGORIES) do
+                if cat.default then
+                    activeNpcCategories[cat.name] = 1
+                end
+            end
+            UI_MinimapIcons = activeNpcCategories
+        end
+        updateDllTracking()
+    elseif event == "PLAYER_LOGIN" or event == "SPELLS_CHANGED" then
         scanSpellbook()
     end
     MiniMapTrackingFrame:Show()

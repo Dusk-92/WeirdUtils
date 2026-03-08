@@ -784,7 +784,55 @@ fn loadScriptFunctionsDetour() callconv(sc) void {
 }
 
 // =============================================================================
+// Hook: SetupAddonProcessing (0x51C740)
+// Called during HandleLogin. After the original runs (which scans Interface\AddOns\
+// on the filesystem), we call LoadAddonTOC for each DLL-embedded addon to register
+// them in the game's internal addon hash table. This makes the game aware of our
+// addons for SavedVariables, Bindings.xml, and proper load ordering.
+// =============================================================================
+
+var setup_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
+
+fn setupAddonsDetour(mgr_ptr: u32) callconv(fc) void {
+    setup_addons_hook.callOriginal(.{mgr_ptr});
+
+    // Register each embedded addon via LoadAddonTOC. The game reads the .toc
+    // file through LoadFileWithTextureResourceFallback, which our loadFileDetour
+    // intercepts to serve the embedded content. This populates the addon's
+    // SavedVariablesPerCharacter list so the game saves/loads them from WTF/.
+    inline for (embed_modules) |mod| {
+        if (comptime mod.addon_name == null) continue;
+        if (!@field(build_options, "enable_" ++ mod.option)) continue;
+
+        const load = if (comptime std.mem.eql(u8, mod.option, "worldmarkers"))
+            markers.isActive()
+        else
+            true;
+
+        if (load) {
+            const name: [*:0]const u8 = comptime (mod.addon_name.? ++ "\x00").ptr;
+            con.fmt("[addons] registering embedded addon: {s}\n", .{name});
+            callLoadAddonTOC(name);
+        }
+    }
+}
+
+/// Call LoadAddonTOC (0x0051c9b0) -- __fastcall(ECX=addonName), RET
+fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
+    asm volatile (
+        \\call *%[func]
+        :
+        : [_] "{ecx}" (@intFromPtr(addon_name)),
+          [func] "{eax}" (@as(u32, 0x0051c9b0)),
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+}
+
+// =============================================================================
 // Hook: LoadAddonsRecursively (0x51F600)
+// With SetupAddonProcessing registering our addons, the game's own
+// LoadAddonRecursive now handles loading files, Bindings.xml, and saved
+// variables for embedded addons. This hook is kept for any future
+// post-load work but no longer manually loads addon files.
 // =============================================================================
 
 var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
@@ -792,13 +840,16 @@ var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
 fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
     load_addons_hook.callOriginal(.{error_handler});
 
+    // The game's LoadAddonRecursive now handles .lua/.toc loading and saved
+    // variables for registered addons, but Bindings.xml loading uses
+    // preloadFileWithFlags which may not go through our file hook.
+    // Explicitly load bindings for embedded addons that include them.
     var md5ctx = std.mem.zeroes([88]u8);
 
     inline for (embed_modules) |mod| {
         if (comptime mod.addon_name == null) continue;
         if (!@field(build_options, "enable_" ++ mod.option)) continue;
 
-        // Module-specific runtime checks
         const load = if (comptime std.mem.eql(u8, mod.option, "worldmarkers"))
             markers.isActive()
         else
@@ -807,14 +858,6 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
         if (load) {
             const addon_name = comptime mod.addon_name.?;
             const paths = comptime @field(build_options, mod.addon_files_opt.?);
-            const toc_name = comptime findTocName(paths);
-            if (toc_name) |tn| {
-                callLoadFileListWithIncludes(
-                    "Interface\\AddOns\\" ++ addon_name ++ "\\" ++ tn,
-                    &md5ctx,
-                    error_handler,
-                );
-            }
             if (comptime hasFile(paths, "Bindings.xml")) {
                 callLoadUIBindingsFromFile(
                     "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",
@@ -985,6 +1028,7 @@ fn install() void {
         if (m.install) |inst| inst();
     }
 
+    _ = setup_addons_hook.attach(0x51C740, &setupAddonsDetour);
     _ = load_addons_hook.attach(0x51F600, &loadAddonsDetour);
     _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
     _ = logout_hook.attach(0x491180, &logoutDetour);
@@ -1004,6 +1048,7 @@ fn uninstall() void {
     }
 
     load_addons_hook.detach();
+    setup_addons_hook.detach();
     lsf_hook.detach();
     file_hook.detach();
     removeFileHooks();
@@ -1080,6 +1125,7 @@ fn disableAll() callconv(.c) i32 {
     logout_hook.detach();
     engine_init_hook.detach();
     load_addons_hook.detach();
+    setup_addons_hook.detach();
     lsf_hook.detach();
     file_hook.detach();
     removeFileHooks();

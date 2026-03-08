@@ -2,5 +2,6 @@
 ## Title: MinimapIcons
 ## Notes: Minimap tracking spell dropdown
 ## Version: 1.0
+## SavedVariablesPerCharacter: UI_MinimapIcons
 
 MinimapIcons.lua
