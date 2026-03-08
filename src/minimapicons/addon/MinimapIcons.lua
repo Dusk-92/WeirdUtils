@@ -1,8 +1,8 @@
 -- MinimapIcons addon (embedded in DLL, loaded from memory)
 -- Takes over the native MiniMapTrackingFrame to add a tracking spell dropdown
--- with Wrath-style NPC tracking categories.
+-- with Wrath-style NPC tracking categories backed by DLL-side minimap hooks.
 
-MINIMAPICONS_VERSION = 2
+MINIMAPICONS_VERSION = 3
 
 -- =============================================================================
 -- Tracking spell definitions grouped by category
@@ -22,21 +22,21 @@ local SPELL_CATEGORIES = {
 }
 
 -- NPC tracking categories (icons embedded from Wrath client)
--- These don't filter minimap blips yet — future DLL hook work.
+-- trackingType maps to DLL SetObjectTypeBlip() type names.
+-- Categories sharing a trackingType share the same NPC flag filter:
+--   "trainer" = Class Trainer + Profession Trainer (UNIT_NPC_FLAG_TRAINER)
 local NPC_CATEGORIES = {
-    { name = "Auctioneer",    icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
-    { name = "Banker",        icon = "Interface\\Minimap\\Tracking\\Banker" },
-    { name = "Battle Master", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Class Trainer", icon = "Interface\\Minimap\\Tracking\\Class" },
-    { name = "Flight Master", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
-    { name = "Food & Drink",  icon = "Interface\\Minimap\\Tracking\\Food" },
-    { name = "Innkeeper",     icon = "Interface\\Minimap\\Tracking\\Innkeeper" },
-    { name = "Mailbox",       icon = "Interface\\Minimap\\Tracking\\Mailbox" },
-    { name = "Profession Trainer", icon = "Interface\\Minimap\\Tracking\\Profession" },
-    { name = "Reagent Vendor", icon = "Interface\\Minimap\\Tracking\\Reagents" },
-    { name = "Repair",        icon = "Interface\\Minimap\\Tracking\\Repair" },
-    { name = "Stable Master", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
-    { name = "Ammunition",    icon = "Interface\\Minimap\\Tracking\\Ammunition" },
+    { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
+    { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
+    { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
+    { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class" },
+    { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
+    { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper" },
+    { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox" },
+    { name = "Profession Trainer", trackingType = "trainer", icon = "Interface\\Minimap\\Tracking\\Profession" },
+    { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair" },
+    { name = "Stable Master", trackingType = "stablemaster", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
+    { name = "Vendor",        trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Food" },
 }
 
 -- =============================================================================
@@ -44,6 +44,34 @@ local NPC_CATEGORIES = {
 -- =============================================================================
 
 local activeNpcCategories = {} -- name -> 1/nil
+
+-- Sync DLL tracking state with addon toggle state.
+-- For shared trackingTypes (e.g. "trainer" used by both Class Trainer and
+-- Profession Trainer), enables if ANY category with that type is active,
+-- using the first active category's icon.
+local function updateDllTracking()
+    if not SetObjectTypeBlip then return end
+    local seen = {}
+    for _, cat in ipairs(NPC_CATEGORIES) do
+        local tt = cat.trackingType
+        if not seen[tt] then
+            seen[tt] = true
+            -- Find first active category with this tracking type
+            local icon = nil
+            for _, c in ipairs(NPC_CATEGORIES) do
+                if c.trackingType == tt and activeNpcCategories[c.name] then
+                    icon = c.icon
+                    break
+                end
+            end
+            if icon then
+                SetObjectTypeBlip(tt, icon, 1.3)
+            else
+                SetObjectTypeBlip(tt)
+            end
+        end
+    end
+end
 
 -- =============================================================================
 -- Spellbook scanning
@@ -90,7 +118,6 @@ local dropdown = CreateFrame("Frame", "MinimapIconsDropDown", UIParent, "UIDropD
 
 UIDropDownMenu_Initialize(dropdown, function()
     -- Spell tracking section
-    local hasSpells = nil
     for _, cat in ipairs(SPELL_CATEGORIES) do
         local found = {}
         for _, spell in ipairs(cat.spells) do
@@ -115,10 +142,15 @@ UIDropDownMenu_Initialize(dropdown, function()
                 info.tCoordTop = 0.0625
                 info.tCoordBottom = 0.9
                 info.checked = isTrackingActive(sid)
-                info.func = function() CastSpell(sid, BOOKTYPE_SPELL) end
+                info.func = function()
+                    if isTrackingActive(sid) then
+                        CancelTrackingBuff()
+                    else
+                        CastSpell(sid, BOOKTYPE_SPELL)
+                    end
+                end
                 UIDropDownMenu_AddButton(info)
             end
-            hasSpells = 1
         end
     end
 
@@ -142,18 +174,11 @@ UIDropDownMenu_Initialize(dropdown, function()
             else
                 activeNpcCategories[catName] = 1
             end
+            updateDllTracking()
         end
         UIDropDownMenu_AddButton(info)
     end
 
-    -- None option (cancel all tracking)
-    if hasSpells then
-        local none = {}
-        none.text = NONE or "None"
-        none.notCheckable = 1
-        none.func = function() CancelTrackingBuff() end
-        UIDropDownMenu_AddButton(none)
-    end
 end, "MENU")
 
 -- =============================================================================

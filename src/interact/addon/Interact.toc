@@ -3,5 +3,4 @@
 ## Notes: Nearest NPC/object interaction and bulk looting
 ## Version: 1.0
 
-
 Interact.lua

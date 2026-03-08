@@ -96,6 +96,9 @@ fn registerLuaFunctions() void {
         registerFunction("SetCursorScale", @intFromPtr(&bigcursor.luaSetCursorScale));
         registerFunction("GetCursorScale", @intFromPtr(&bigcursor.luaGetCursorScale));
     }
+    if (build_opts.minimapicons and minimapicons.isActive()) {
+        registerFunction("SetObjectTypeBlip", @intFromPtr(&minimapicons.luaSetObjectTypeBlip));
+    }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
