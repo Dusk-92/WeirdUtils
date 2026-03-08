@@ -95,17 +95,17 @@ local NPC_CATEGORIES = {
         getFilter = function() return getLocaleFilter(REAGENT_FILTERS) end },
     { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Poison",
         getFilter = function() return getLocaleFilter(POISON_FILTERS) end },
-    { name = "Trade Goods",   trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Profession",
+    { name = "Trade Goods",   trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Trade",
         getFilter = function() return getLocaleFilter(TRADE_FILTERS) end },
     { name = "Ammunition",    trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Ammunition",
         getFilter = function() return getLocaleFilter(AMMO_FILTERS) end },
     { name = "General Vendor", trackingType = "vendor",      icon = "Interface\\Minimap\\Tracking\\Food" },
+    { name = "Stable Master", trackingType = "stablemaster", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
+    { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
     { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class",
         getFilter = function() return (UnitClass("player")) end },
     { name = "Profession Trainer", trackingType = "trainer", icon = "Interface\\Minimap\\Tracking\\Profession",
         getExclude = function() return UnitClass("player") end },
-    { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Stable Master", trackingType = "stablemaster", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
 }
 
 -- =============================================================================

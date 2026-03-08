@@ -259,9 +259,65 @@ var g_go_id_tracking: [MAX_GO_ID_ENTRIES]GoEntryEntry = .{GoEntryEntry{}} ** MAX
 var g_blips: [MAX_BLIPS]TrackedBlip = undefined;
 var g_blip_count: u32 = 0;
 var g_has_active_tracking: bool = false;
+var g_has_active_unit_tracking: bool = false;
+var g_has_active_go_tracking: bool = false;
+var g_has_any_filters: bool = false;
+var g_active_flag_mask: u32 = 0; // OR of all active flag entry flags
 var g_tex_cache: [MAX_TEXTURES]TextureEntry = .{TextureEntry{}} ** MAX_TEXTURES;
 var g_tex_cache_count: u32 = 0;
 var g_default_tex_flags: u32 = 0;
+
+// GUID → blip result cache. NPC flags/subnames don't change at runtime,
+// so a matched GUID always produces the same blip. Cleared when tracking
+// config changes (refreshActiveTrackingCache).
+const GUID_CACHE_SIZE = 256; // must be power of 2
+const GuidCacheEntry = struct {
+    guid_lo: u32 = 0,
+    guid_hi: u32 = 0,
+    blip: Blip = .{ .texture = 0, .scale = 1.0 },
+    valid: bool = false, // entry is populated
+    matched: bool = false, // true = has blip, false = no match (negative cache)
+};
+var g_guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = .{GuidCacheEntry{}} ** GUID_CACHE_SIZE;
+
+fn guidCacheIndex(guid_lo: u32, guid_hi: u32) usize {
+    // Simple hash: XOR fold both halves
+    return @intCast((guid_lo ^ guid_hi) & (GUID_CACHE_SIZE - 1));
+}
+
+fn guidCacheLookup(guid_lo: u32, guid_hi: u32) ?GuidCacheEntry {
+    const idx = guidCacheIndex(guid_lo, guid_hi);
+    const entry = &g_guid_cache[idx];
+    if (entry.valid and entry.guid_lo == guid_lo and entry.guid_hi == guid_hi) {
+        return entry.*;
+    }
+    return null;
+}
+
+fn guidCacheStore(guid_lo: u32, guid_hi: u32, blip: ?Blip) void {
+    const idx = guidCacheIndex(guid_lo, guid_hi);
+    g_guid_cache[idx] = .{
+        .guid_lo = guid_lo,
+        .guid_hi = guid_hi,
+        .blip = blip orelse .{ .texture = 0, .scale = 1.0 },
+        .valid = true,
+        .matched = blip != null,
+    };
+}
+
+fn guidCacheClear() void {
+    g_guid_cache = .{GuidCacheEntry{}} ** GUID_CACHE_SIZE;
+}
+
+// Per-frame minimap info cache (same for all objects in one enumeration cycle)
+const MinimapInfoCache = struct {
+    cur: C3Vector = .{ .x = 0, .y = 0, .z = 0 },
+    radius: f32 = 0,
+    layout_scale: f32 = 0,
+    unk_scale: f32 = 0,
+    valid: bool = false,
+};
+var g_minimap_info: MinimapInfoCache = .{};
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -529,23 +585,8 @@ fn initTexFlags() u32 {
 // Blip drawing (port of VanillaHelpers DrawMinimapTexture)
 // =============================================================================
 
-fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
-    if (texture == 0) return;
-
-    const color: CImVector = .{ .b = 0xFF, .g = 0xFF, .r = 0xFF, .a = 0xFF };
-
-    // Scale static blip vertex template by blip scale and offset by minimap position
-    var vertices: [4]C3Vector = undefined;
-    for (0..4) |i| {
-        const src = ADDR.BlipVertices + i * 12;
-        vertices[i] = .{
-            .x = pos.x + scale * hook.readMem(f32, src),
-            .y = pos.y + scale * hook.readMem(f32, src + 4),
-            .z = scale * hook.readMem(f32, src + 8),
-        };
-    }
-
-    // TextureGetGxTex: __fastcall(texture_ECX, flag_EDX, status*_stack) → CGxTex*
+/// Resolve HTEXTURE to CGxTex* for binding. Returns 0 on failure.
+fn getGxTex(texture: u32) u32 {
     var status: CStatus = undefined;
     status.init();
     defer status.deinit();
@@ -560,11 +601,24 @@ fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
           [func] "r" (@as(u32, ADDR.TextureGetGxTex)),
         : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 
-    if (!status.ok() or gx_tex == 0) return;
+    if (!status.ok()) return 0;
+    return gx_tex;
+}
 
-    // GxRsSet(GxRs_Texture0=23, gxTex)
-    const gxRsSet: *const fn (u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxRsSet);
-    gxRsSet(23, gx_tex);
+/// Draw a single blip quad. Caller must have already bound the texture via GxRsSet.
+fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
+    const color: CImVector = .{ .b = 0xFF, .g = 0xFF, .r = 0xFF, .a = 0xFF };
+
+    // Scale static blip vertex template by blip scale and offset by minimap position
+    var vertices: [4]C3Vector = undefined;
+    for (0..4) |i| {
+        const src = ADDR.BlipVertices + i * 12;
+        vertices[i] = .{
+            .x = pos.x + scale * hook.readMem(f32, src),
+            .y = pos.y + scale * hook.readMem(f32, src + 4),
+            .z = scale * hook.readMem(f32, src + 8),
+        };
+    }
 
     // GxPrimLockVertexPtrs(count=4, vertices, vertStride=12, normal, 0, color, 0,
     //   null, 0, texCoords, 8, null, 0)
@@ -615,21 +669,40 @@ fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
 // =============================================================================
 
 fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
+    // Check GUID cache first — avoids all classification work for known objects
+    if (guidCacheLookup(guid_lo, guid_hi)) |cached| {
+        if (cached.matched) {
+            trackObject(info, guid_lo, guid_hi, cached.blip);
+            return true;
+        }
+        return false; // negative cache hit
+    }
+
     const obj = getObjectByGUID(guid_lo, guid_hi);
     if (obj == 0 or !isValidPtr(obj)) return false;
 
     const obj_type = getObjectType(obj);
 
-    if (obj_type == OBJ_TYPE_UNIT) {
+    if (obj_type == OBJ_TYPE_UNIT and g_has_active_unit_tracking) {
         const npc_flags = getNpcFlags(obj);
-        if (npc_flags == 0) return false;
+        if (npc_flags == 0) {
+            guidCacheStore(guid_lo, guid_hi, null);
+            return false;
+        }
+
+        // Quick bitmask check — skip loop if no active entries match any of this NPC's flags
+        if (npc_flags & g_active_flag_mask == 0) {
+            guidCacheStore(guid_lo, guid_hi, null);
+            return false;
+        }
 
         // Match entries by NPC flag + subname filter. Include filters take
         // priority over exclude-only filters, which take priority over unfiltered.
         // Within each tier, higher flag value = higher priority.
-        const subname = getCreatureSubName(obj);
-        const entry_id = getObjectEntry(obj);
-        const is_reagent_override = isReagentVendorEntry(entry_id);
+        // Only read subname/entry when filters are active (expensive per-object reads).
+        const has_filters = g_has_any_filters;
+        const subname = if (has_filters) getCreatureSubName(obj) else @as(?[*:0]const u8, null);
+        const is_reagent_override = if (has_filters) isReagentVendorEntry(getObjectEntry(obj)) else false;
 
         var best_priority: u8 = 0; // 0=none, 1=unfiltered, 2=exclude-only, 3=include
         var best_flag: u32 = 0;
@@ -667,16 +740,18 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         }
 
         if (best_flag != 0) {
-            trackObject(info, obj, best_blip);
+            guidCacheStore(guid_lo, guid_hi, best_blip);
+            trackObject(info, guid_lo, guid_hi, best_blip);
             return true;
         }
-    } else if (obj_type == OBJ_TYPE_GAMEOBJECT) {
+    } else if (obj_type == OBJ_TYPE_GAMEOBJECT and g_has_active_go_tracking) {
         // Check by specific entry ID first
         const go_entry_id = getObjectEntry(obj);
         for (&g_go_id_tracking) |*entry| {
             if (!entry.active) continue;
             if (entry.entry_id == go_entry_id) {
-                trackObject(info, obj, entry.blip);
+                guidCacheStore(guid_lo, guid_hi, entry.blip);
+                trackObject(info, guid_lo, guid_hi, entry.blip);
                 return true;
             }
         }
@@ -685,31 +760,42 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         for (&g_go_tracking) |*entry| {
             if (!entry.active) continue;
             if (entry.go_type == go_type) {
-                trackObject(info, obj, entry.blip);
+                guidCacheStore(guid_lo, guid_hi, entry.blip);
+                trackObject(info, guid_lo, guid_hi, entry.blip);
                 return true;
             }
         }
     }
 
+    guidCacheStore(guid_lo, guid_hi, null);
     return false;
 }
 
-fn trackObject(info: u32, obj: u32, blip: Blip) void {
+fn trackObject(info: u32, guid_lo: u32, guid_hi: u32, blip: Blip) void {
     if (g_blip_count >= MAX_BLIPS) return;
+
+    const obj = getObjectByGUID(guid_lo, guid_hi);
+    if (obj == 0 or !isValidPtr(obj)) return;
 
     const pos = getObjectPosition(obj) orelse return;
 
-    const cur = C3Vector{
-        .x = hook.readMem(f32, info + ADDR.MI_POS),
-        .y = hook.readMem(f32, info + ADDR.MI_POS + 4),
-        .z = hook.readMem(f32, info + ADDR.MI_POS + 8),
-    };
-    const radius = hook.readMem(f32, info + ADDR.MI_RADIUS);
-    const layout_scale = hook.readMem(f32, info + ADDR.MI_LAYOUT_SCALE);
-    const unk_scale = getFrameUnkScale(info);
+    // Cache minimap info per frame — same for all objects in one enumeration cycle
+    if (!g_minimap_info.valid) {
+        g_minimap_info = .{
+            .cur = .{
+                .x = hook.readMem(f32, info + ADDR.MI_POS),
+                .y = hook.readMem(f32, info + ADDR.MI_POS + 4),
+                .z = hook.readMem(f32, info + ADDR.MI_POS + 8),
+            },
+            .radius = hook.readMem(f32, info + ADDR.MI_RADIUS),
+            .layout_scale = hook.readMem(f32, info + ADDR.MI_LAYOUT_SCALE),
+            .unk_scale = getFrameUnkScale(info),
+            .valid = true,
+        };
+    }
 
     var minimap_pos: C2Vector = undefined;
-    worldPosToMinimapCoords(&minimap_pos, cur, radius, pos.x, pos.y, layout_scale, unk_scale);
+    worldPosToMinimapCoords(&minimap_pos, g_minimap_info.cur, g_minimap_info.radius, pos.x, pos.y, g_minimap_info.layout_scale, g_minimap_info.unk_scale);
 
     g_blips[g_blip_count] = .{
         .pos = minimap_pos,
@@ -719,25 +805,31 @@ fn trackObject(info: u32, obj: u32, blip: Blip) void {
 }
 
 fn refreshActiveTrackingCache() void {
+    var has_unit = false;
+    var has_go = false;
+    var has_filters = false;
+    var flag_mask: u32 = 0;
     for (&g_flag_tracking) |*entry| {
         if (entry.active) {
-            g_has_active_tracking = true;
-            return;
+            has_unit = true;
+            flag_mask |= entry.flag;
+            if (entry.hasFilter()) has_filters = true;
         }
     }
     for (&g_go_tracking) |*entry| {
-        if (entry.active) {
-            g_has_active_tracking = true;
-            return;
-        }
+        if (entry.active) has_go = true;
     }
     for (&g_go_id_tracking) |*entry| {
-        if (entry.active) {
-            g_has_active_tracking = true;
-            return;
-        }
+        if (entry.active) has_go = true;
     }
-    g_has_active_tracking = false;
+    g_has_active_unit_tracking = has_unit;
+    g_has_active_go_tracking = has_go;
+    g_has_active_tracking = has_unit or has_go;
+    g_has_any_filters = has_filters;
+    g_active_flag_mask = flag_mask;
+
+    // Config changed — cached match results may be stale
+    guidCacheClear();
 }
 
 // =============================================================================
@@ -767,13 +859,41 @@ var render_blips_hook: hook.Detour(RenderBlipsFn) = .{};
 fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(fc) void {
     render_blips_hook.callOriginal(.{ thisptr, _edx, dn_info });
 
-    // Draw our custom blips after the original ones
-    for (0..g_blip_count) |i| {
-        drawMinimapTexture(
-            g_blips[i].blip.texture,
-            g_blips[i].pos,
-            g_blips[i].blip.scale,
-        );
+    const count = g_blip_count;
+    if (count == 0) return;
+
+    // Sort blips by texture handle to batch draw calls
+    const blips = g_blips[0..count];
+    std.mem.sort(TrackedBlip, blips, {}, struct {
+        fn lessThan(_: void, a: TrackedBlip, b: TrackedBlip) bool {
+            return a.blip.texture < b.blip.texture;
+        }
+    }.lessThan);
+
+    // Draw batched by texture — one GxRsSet per unique texture
+    var i: usize = 0;
+    while (i < count) {
+        const tex = blips[i].blip.texture;
+        if (tex == 0) {
+            i += 1;
+            continue;
+        }
+
+        // Bind texture once for this group
+        const gx_tex = getGxTex(tex);
+        if (gx_tex == 0) {
+            // Skip all blips with this texture
+            while (i < count and blips[i].blip.texture == tex) : (i += 1) {}
+            continue;
+        }
+
+        const gxRsSet: *const fn (u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxRsSet);
+        gxRsSet(23, gx_tex);
+
+        // Draw all blips sharing this texture
+        while (i < count and blips[i].blip.texture == tex) : (i += 1) {
+            drawMinimapBlip(blips[i].pos, blips[i].blip.scale);
+        }
     }
 }
 
@@ -785,6 +905,7 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
     // Clear tracked blips when the minimap's own callback is about to enumerate
     if (callback == ADDR.ObjectEnumProc) {
         g_blip_count = 0;
+        g_minimap_info.valid = false;
     }
     return enum_vis_hook.callOriginal(.{ callback, context });
 }
