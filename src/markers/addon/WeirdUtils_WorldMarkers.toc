@@ -1,7 +1,6 @@
 ## Interface: 11200
-## Title: WeirdUtils_WorldMarkers
+## Title: [WeirdUtils] World Markers
 ## Notes: Client-side world markers
 ## Version: 1.0
-
 
 WorldMarkers.lua
