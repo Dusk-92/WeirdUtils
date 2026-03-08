@@ -1,0 +1,6 @@
+## Interface: 11200
+## Title: MinimapIcons
+## Notes: Minimap tracking spell dropdown
+## Version: 1.0
+
+MinimapIcons.lua

@@ -146,6 +146,7 @@ const embed_modules = [_]EmbedModule{
     .{ .option = "outline", .addon_name = "Outline", .addon_files_opt = "outline_addon_files" },
     .{ .option = "worldmarkers", .addon_name = "WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files" },
     .{ .option = "logsessions", .addon_name = "LogSessions", .addon_files_opt = "logsessions_addon_files" },
+    .{ .option = "minimapicons", .addon_name = "MinimapIcons", .addon_files_opt = "minimapicons_addon_files", .asset_files_opt = "minimapicons_asset_files" },
 };
 
 /// Extract filename from a path like "markers/addon/Foo.lua" → "Foo.lua"
@@ -202,7 +203,7 @@ fn embedFiles(comptime paths: []const []const u8) [paths.len]FileEntry {
 
 /// Build all AddonPrefix entries from embed_modules at comptime.
 fn buildAllPrefixes() []const AddonPrefix {
-    @setEvalBranchQuota(10000);
+    @setEvalBranchQuota(50000);
     comptime {
         // First pass: count total prefix entries
         var count: usize = 0;

@@ -19,7 +19,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers" },
     .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
     .{ .name = "logsessions", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
-    .{ .name = "minimapicons", .desc = "Enable custom minimap icons" },
+    .{ .name = "minimapicons", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
     .{ .name = "transmogfix", .desc = "Enable transmog update coalescing" },
     .{ .name = "customassets", .desc = "Enable loose file loading & permissive patch glob" },
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
