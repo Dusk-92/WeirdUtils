@@ -906,6 +906,7 @@ fn logoutDetour() callconv(sc) void {
 
     // Reset per-session state - only on real logout/disconnect, not /reload.
     if (build_opts.worldmarkers) markers.onShutdown();
+    if (build_opts.minimapicons) minimapicons.onShutdown();
     if (build_opts.logsessions) logsessions.onShutdown();
 
     // Clean up world objects BEFORE game teardown - modules with

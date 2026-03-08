@@ -65,6 +65,7 @@ const ADDR = struct {
     const CACHE_SUBNAME: usize = 0x10; // char* subname/title (e.g. "Druid Trainer")
 
     // Descriptor field byte offsets (absolute_field_index * 4 from m_data)
+    const DESC_ENTRY: usize = 0x03 * 4; // OBJECT_FIELD_ENTRY
     const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END + 0x8D
     const DESC_GO_TYPE: usize = 0x15 * 4; // GAMEOBJECT_TYPE_ID
 
@@ -211,6 +212,12 @@ const GoTypeEntry = struct {
     active: bool = false,
 };
 
+const GoEntryEntry = struct {
+    entry_id: u32 = 0,
+    blip: Blip = .{ .texture = 0, .scale = 1.0 },
+    active: bool = false,
+};
+
 const TextureEntry = struct {
     path_hash: u32 = 0,
     handle: u32 = 0,
@@ -247,11 +254,13 @@ const CStatus = extern struct {
 
 const MAX_FLAG_ENTRIES = 16;
 const MAX_GO_ENTRIES = 4;
+const MAX_GO_ID_ENTRIES = 4;
 const MAX_BLIPS = 128;
 const MAX_TEXTURES = 16;
 
 var g_flag_tracking: [MAX_FLAG_ENTRIES]FlagEntry = .{FlagEntry{}} ** MAX_FLAG_ENTRIES;
 var g_go_tracking: [MAX_GO_ENTRIES]GoTypeEntry = .{GoTypeEntry{}} ** MAX_GO_ENTRIES;
+var g_go_id_tracking: [MAX_GO_ID_ENTRIES]GoEntryEntry = .{GoEntryEntry{}} ** MAX_GO_ID_ENTRIES;
 var g_blips: [MAX_BLIPS]TrackedBlip = undefined;
 var g_blip_count: u32 = 0;
 var g_tex_cache: [MAX_TEXTURES]TextureEntry = .{TextureEntry{}} ** MAX_TEXTURES;
@@ -322,6 +331,23 @@ fn getCreatureSubName(obj: u32) ?[*:0]const u8 {
     return subname;
 }
 
+fn getObjectEntry(obj: u32) u32 {
+    const desc = getDescriptor(obj);
+    if (!isValidPtr(desc)) return 0;
+    return hook.readMem(u32, desc + ADDR.DESC_ENTRY);
+}
+
+// Creature entry IDs that should be treated as reagent vendors despite having no subname.
+const REAGENT_VENDOR_ENTRIES = [_]u32{
+    50041, // Field Repair Bot 75B
+};
+
+fn isReagentVendorEntry(entry_id: u32) bool {
+    for (REAGENT_VENDOR_ENTRIES) |e| {
+        if (e == entry_id) return true;
+    }
+    return false;
+}
 
 fn containsInsensitive(haystack: [*:0]const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
@@ -629,6 +655,8 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         // priority over exclude-only filters, which take priority over unfiltered.
         // Within each tier, higher flag value = higher priority.
         const subname = getCreatureSubName(obj);
+        const entry_id = getObjectEntry(obj);
+        const is_reagent_override = isReagentVendorEntry(entry_id);
 
         var best_priority: u8 = 0; // 0=none, 1=unfiltered, 2=exclude-only, 3=include
         var best_flag: u32 = 0;
@@ -649,11 +677,15 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
             if (priority == best_priority and entry.flag < best_flag) continue;
             if (priority == best_priority and entry.flag == best_flag) continue; // first match wins at same tier
 
-            // Check subname match
+            // Check subname match (entry-ID overrides bypass subname requirement)
             if (entry.hasFilter()) {
                 if (subname) |sn| {
                     if (!entry.matchesSubName(sn)) continue;
-                } else continue; // no subname available, can't match filters
+                } else if (entry.filter != null and is_reagent_override and
+                    entry.flag == NPC_FLAG_VENDOR and FlagEntry.pipeMatchAny("Reagent Vendor", entry.filter.?))
+                {
+                    // NPC has no subname but entry ID is a known reagent vendor
+                } else continue;
             }
 
             best_priority = priority;
@@ -666,6 +698,16 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
             return true;
         }
     } else if (obj_type == OBJ_TYPE_GAMEOBJECT) {
+        // Check by specific entry ID first
+        const go_entry_id = getObjectEntry(obj);
+        for (&g_go_id_tracking) |*entry| {
+            if (!entry.active) continue;
+            if (entry.entry_id == go_entry_id) {
+                trackObject(info, obj, entry.blip);
+                return true;
+            }
+        }
+        // Then by gameobject type
         const go_type = getGoType(obj);
         for (&g_go_tracking) |*entry| {
             if (!entry.active) continue;
@@ -802,7 +844,7 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
     const type_name = lua.tostring(L, 1) orelse return 0;
 
     const mapping = findTypeMapping(type_name) orelse {
-        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, flightmaster, innkeeper, repair, stablemaster, trainer, vendor, mailbox");
+        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, brainwasher, flightmaster, innkeeper, repair, stablemaster, trainer, vendor, mailbox");
         return 0;
     };
 
@@ -812,22 +854,33 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
 
     if (!lua.isstring(L, 2)) {
         // Disable tracking for this type + filter combo
-        if (mapping.is_go_type) {
-            for (&g_go_tracking) |*entry| {
-                if (entry.active and entry.go_type == mapping.value) {
-                    entry.active = false;
-                    break;
+        switch (mapping.kind) {
+            .go_type => {
+                for (&g_go_tracking) |*entry| {
+                    if (entry.active and entry.go_type == mapping.value) {
+                        entry.active = false;
+                        break;
+                    }
                 }
-            }
-        } else {
-            for (&g_flag_tracking) |*entry| {
-                if (entry.active and entry.flag == mapping.value and
-                    entry.filtersEqual(inc, exc))
-                {
-                    entry.clear();
-                    break;
+            },
+            .go_entry => {
+                for (&g_go_id_tracking) |*entry| {
+                    if (entry.active and entry.entry_id == mapping.value) {
+                        entry.active = false;
+                        break;
+                    }
                 }
-            }
+            },
+            .npc_flag => {
+                for (&g_flag_tracking) |*entry| {
+                    if (entry.active and entry.flag == mapping.value and
+                        entry.filtersEqual(inc, exc))
+                    {
+                        entry.clear();
+                        break;
+                    }
+                }
+            },
         }
         return 0;
     }
@@ -847,59 +900,80 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
 
     const blip = Blip{ .texture = texture, .scale = scale };
 
-    if (mapping.is_go_type) {
-        for (&g_go_tracking) |*entry| {
-            if (entry.active and entry.go_type == mapping.value) {
-                entry.blip = blip;
-                return 0;
+    switch (mapping.kind) {
+        .go_type => {
+            for (&g_go_tracking) |*entry| {
+                if (entry.active and entry.go_type == mapping.value) {
+                    entry.blip = blip;
+                    return 0;
+                }
             }
-        }
-        for (&g_go_tracking) |*entry| {
-            if (!entry.active) {
-                entry.* = .{ .go_type = mapping.value, .blip = blip, .active = true };
-                return 0;
+            for (&g_go_tracking) |*entry| {
+                if (!entry.active) {
+                    entry.* = .{ .go_type = mapping.value, .blip = blip, .active = true };
+                    return 0;
+                }
             }
-        }
-    } else {
-        // Match by flag + include/exclude combo — update existing or add new
-        for (&g_flag_tracking) |*entry| {
-            if (entry.active and entry.flag == mapping.value and
-                entry.filtersEqual(inc, exc))
-            {
-                entry.blip = blip;
-                return 0;
+        },
+        .go_entry => {
+            for (&g_go_id_tracking) |*entry| {
+                if (entry.active and entry.entry_id == mapping.value) {
+                    entry.blip = blip;
+                    return 0;
+                }
             }
-        }
-        for (&g_flag_tracking) |*entry| {
-            if (!entry.active) {
-                entry.flag = mapping.value;
-                entry.blip = blip;
-                entry.active = true;
-                entry.setFilter(inc);
-                entry.setExclude(exc);
-                return 0;
+            for (&g_go_id_tracking) |*entry| {
+                if (!entry.active) {
+                    entry.* = .{ .entry_id = mapping.value, .blip = blip, .active = true };
+                    return 0;
+                }
             }
-        }
+        },
+        .npc_flag => {
+            // Match by flag + include/exclude combo — update existing or add new
+            for (&g_flag_tracking) |*entry| {
+                if (entry.active and entry.flag == mapping.value and
+                    entry.filtersEqual(inc, exc))
+                {
+                    entry.blip = blip;
+                    return 0;
+                }
+            }
+            for (&g_flag_tracking) |*entry| {
+                if (!entry.active) {
+                    entry.flag = mapping.value;
+                    entry.blip = blip;
+                    entry.active = true;
+                    entry.setFilter(inc);
+                    entry.setExclude(exc);
+                    return 0;
+                }
+            }
+        },
     }
 
     return 0;
 }
 
-const TypeMapping = struct { is_go_type: bool, value: u32 };
+const TypeMapping = struct {
+    kind: enum { npc_flag, go_type, go_entry } = .npc_flag,
+    value: u32,
+};
 
 fn findTypeMapping(name: [*:0]const u8) ?TypeMapping {
     const T = struct { n: []const u8, m: TypeMapping };
     const table = [_]T{
-        .{ .n = "auctioneer", .m = .{ .is_go_type = false, .value = NPC_FLAG_AUCTIONEER } },
-        .{ .n = "banker", .m = .{ .is_go_type = false, .value = NPC_FLAG_BANKER } },
-        .{ .n = "battlemaster", .m = .{ .is_go_type = false, .value = NPC_FLAG_BATTLEMASTER } },
-        .{ .n = "flightmaster", .m = .{ .is_go_type = false, .value = NPC_FLAG_FLIGHTMASTER } },
-        .{ .n = "innkeeper", .m = .{ .is_go_type = false, .value = NPC_FLAG_INNKEEPER } },
-        .{ .n = "repair", .m = .{ .is_go_type = false, .value = NPC_FLAG_REPAIR } },
-        .{ .n = "stablemaster", .m = .{ .is_go_type = false, .value = NPC_FLAG_STABLEMASTER } },
-        .{ .n = "trainer", .m = .{ .is_go_type = false, .value = NPC_FLAG_TRAINER } },
-        .{ .n = "vendor", .m = .{ .is_go_type = false, .value = NPC_FLAG_VENDOR } },
-        .{ .n = "mailbox", .m = .{ .is_go_type = true, .value = GO_TYPE_MAILBOX } },
+        .{ .n = "auctioneer", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_AUCTIONEER } },
+        .{ .n = "banker", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_BANKER } },
+        .{ .n = "battlemaster", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_BATTLEMASTER } },
+        .{ .n = "flightmaster", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_FLIGHTMASTER } },
+        .{ .n = "innkeeper", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_INNKEEPER } },
+        .{ .n = "repair", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_REPAIR } },
+        .{ .n = "stablemaster", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_STABLEMASTER } },
+        .{ .n = "trainer", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_TRAINER } },
+        .{ .n = "vendor", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_VENDOR } },
+        .{ .n = "mailbox", .m = .{ .kind = .go_type, .value = GO_TYPE_MAILBOX } },
+        .{ .n = "brainwasher", .m = .{ .kind = .go_entry, .value = 1000333 } }, // Goblin Brainwashing Device
     };
 
     for (&table) |*entry| {
@@ -965,6 +1039,7 @@ pub fn removeHooks() void {
 
         for (&g_flag_tracking) |*entry| entry.active = false;
         for (&g_go_tracking) |*entry| entry.active = false;
+        for (&g_go_id_tracking) |*entry| entry.active = false;
         g_blip_count = 0;
 
         mod_mutex.release(&g_mutex);
