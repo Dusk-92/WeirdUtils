@@ -98,7 +98,7 @@ var mutex: std.atomic.Mutex = .unlocked;
 var worker_running: bool = false;
 const mod_mutex = @import("../mutex.zig");
 
-pub const module_name: [*:0]const u8 = "screenshot";
+pub const module_name: [*:0]const u8 = "pngscreenshot";
 
 var g_mutex: ?HANDLE = null;
 var g_is_hook_owner: bool = false;

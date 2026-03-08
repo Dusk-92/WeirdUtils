@@ -73,7 +73,7 @@ Controlled via the `screenshotQuality` CVar (saved to config.wtf):
 - `/script SetCVar("screenshotQuality", "6")` -- set compression level (1 = fast, 9 = smallest, default 6)
 - `/script SetCVar("screenshotQuality", "0")` -- disable PNG, use original TGA format
 
-**DLL:** `screenshot.dll`
+**DLL:** `pngscreenshot.dll`
 
 ---
 
@@ -111,13 +111,14 @@ No configuration needed, install and forget.
 
 Adds custom minimap icons for NPC types (vendors, trainers, innkeepers, etc.) and game objects (mailboxes).  
 Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
+Can be disabled easily from normal AddOn menu.  
 
 - Click the minimap tracking icon to open the dropdown
 - Check/uncheck NPC categories to toggle their minimap icons
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
 
-Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more
-Supported game objects: Mailbox, Brainwasher
+Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more  
+Supported game objects: Mailbox, Brainwasher  
 
 **DLL:** `minimapicons.dll`
 
@@ -198,7 +199,7 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 
 Module names are case-insensitive and match the build option names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `screenshot`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshot`
 
 There is no re-enable API - re-hooking after unhook is unsafe.
 

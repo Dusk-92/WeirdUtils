@@ -4,7 +4,7 @@ pub const con = @import("console.zig");
 
 // Build options for conditional module compilation
 const build_opts = struct {
-    const screenshot = @import("build_options").enable_screenshot;
+    const screenshot = @import("build_options").enable_pngscreenshot;
     const interact = @import("build_options").enable_interact;
     const outline = @import("build_options").enable_outline;
     const worldmarkers = @import("build_options").enable_worldmarkers;
