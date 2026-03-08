@@ -59,6 +59,10 @@ const ADDR = struct {
     const OBJ_DATA: usize = 0x08; // m_data — update fields descriptor (starts at field 0)
     const OBJ_TYPE: usize = 0x14; // m_objectType
     const OBJ_WORLD_DATA: usize = 0xE0; // m_worldData (CWorld*)
+    const OBJ_CREATURE_CACHE: usize = 0xB30; // ptr to creature cache entry
+
+    // Creature cache entry offsets (name[0..3] at +0x00..+0x0C, subname at +0x10)
+    const CACHE_SUBNAME: usize = 0x10; // char* subname/title (e.g. "Druid Trainer")
 
     // Descriptor field byte offsets (absolute_field_index * 4 from m_data)
     const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END + 0x8D
@@ -114,10 +118,41 @@ const TrackedBlip = struct {
     gray: bool,
 };
 
+const FILTER_MAX = 32;
+
 const FlagEntry = struct {
     flag: u32 = 0,
     blip: Blip = .{ .texture = 0, .scale = 1.0 },
     active: bool = false,
+    filter: [FILTER_MAX]u8 = .{0} ** FILTER_MAX, // include: subname must contain
+    filter_len: u8 = 0,
+    exclude: [FILTER_MAX]u8 = .{0} ** FILTER_MAX, // exclude: subname must NOT contain
+    exclude_len: u8 = 0,
+
+    fn hasFilter(self: *const FlagEntry) bool {
+        return self.filter_len > 0 or self.exclude_len > 0;
+    }
+
+    fn matchesSubName(self: *const FlagEntry, subname: [*:0]const u8) bool {
+        if (self.filter_len > 0 and !containsInsensitive(subname, self.filter[0..self.filter_len]))
+            return false;
+        if (self.exclude_len > 0 and containsInsensitive(subname, self.exclude[0..self.exclude_len]))
+            return false;
+        return true;
+    }
+
+    fn filtersEqual(self: *const FlagEntry, inc: []const u8, exc: []const u8) bool {
+        return sliceEqual(self.filter[0..self.filter_len], inc) and
+            sliceEqual(self.exclude[0..self.exclude_len], exc);
+    }
+
+    fn sliceEqual(a: []const u8, b: []const u8) bool {
+        if (a.len != b.len) return false;
+        for (a, b) |x, y| {
+            if (x != y) return false;
+        }
+        return true;
+    }
 };
 
 const GoTypeEntry = struct {
@@ -225,6 +260,38 @@ fn getGoType(obj: u32) u32 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
     return hook.readMem(u32, desc + ADDR.DESC_GO_TYPE);
+}
+
+fn getCreatureSubName(obj: u32) ?[*:0]const u8 {
+    const cache = hook.readMem(u32, obj + ADDR.OBJ_CREATURE_CACHE);
+    if (!isValidPtr(cache)) return null;
+    const subname_ptr = hook.readMem(u32, cache + ADDR.CACHE_SUBNAME);
+    if (!isValidPtr(subname_ptr)) return null;
+    const subname: [*:0]const u8 = @ptrFromInt(subname_ptr);
+    if (subname[0] == 0) return null;
+    return subname;
+}
+
+
+fn containsInsensitive(haystack: [*:0]const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    var i: u32 = 0;
+    while (haystack[i] != 0) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |nc, j| {
+            var hc = haystack[i + @as(u32, @intCast(j))];
+            if (hc == 0) return false;
+            if (hc >= 'A' and hc <= 'Z') hc += 32;
+            var nlc = nc;
+            if (nlc >= 'A' and nlc <= 'Z') nlc += 32;
+            if (hc != nlc) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
 }
 
 fn getObjectPosition(obj: u32) ?C3Vector {
@@ -508,18 +575,39 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         const npc_flags = getNpcFlags(obj);
         if (npc_flags == 0) return false;
 
-        // Find highest-priority matching flag (higher flag value = higher priority)
+        // Match entries by NPC flag + subname filter. Include filters take
+        // priority over exclude-only filters, which take priority over unfiltered.
+        // Within each tier, higher flag value = higher priority.
+        const subname = getCreatureSubName(obj);
+
+        var best_priority: u8 = 0; // 0=none, 1=unfiltered, 2=exclude-only, 3=include
         var best_flag: u32 = 0;
         var best_blip: Blip = .{ .texture = 0, .scale = 1.0 };
 
         for (&g_flag_tracking) |*entry| {
             if (!entry.active) continue;
-            if (npc_flags & entry.flag != 0) {
-                if (entry.flag > best_flag) {
-                    best_flag = entry.flag;
-                    best_blip = entry.blip;
-                }
+            if (npc_flags & entry.flag == 0) continue;
+
+            const priority: u8 = if (entry.filter_len > 0)
+                3
+            else if (entry.exclude_len > 0)
+                2
+            else
+                1;
+
+            if (priority < best_priority) continue;
+            if (priority == best_priority and entry.flag <= best_flag) continue;
+
+            // Check subname match
+            if (entry.hasFilter()) {
+                if (subname) |sn| {
+                    if (!entry.matchesSubName(sn)) continue;
+                } else continue; // no subname available, can't match filters
             }
+
+            best_priority = priority;
+            best_flag = entry.flag;
+            best_blip = entry.blip;
         }
 
         if (best_flag != 0) {
@@ -643,10 +731,10 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
 // Lua API
 // =============================================================================
 
-// SetObjectTypeBlip(typeName [, texturePath [, scale]])
+// SetObjectTypeBlip(typeName [, texturePath [, scale [, includeFilter [, excludeFilter]]]])
 pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
     if (!lua.isstring(L, 1)) {
-        lua.luaError(L, "Usage: SetObjectTypeBlip(type [, texture [, scale]])");
+        lua.luaError(L, "Usage: SetObjectTypeBlip(type [, texture [, scale [, include [, exclude]]]])");
         return 0;
     }
 
@@ -657,8 +745,28 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
         return 0;
     };
 
+    // Parse optional include filter (arg 4) and exclude filter (arg 5)
+    var inc_buf: [FILTER_MAX]u8 = .{0} ** FILTER_MAX;
+    var inc_len: u8 = 0;
+    var exc_buf: [FILTER_MAX]u8 = .{0} ** FILTER_MAX;
+    var exc_len: u8 = 0;
+    if (lua.isstring(L, 4)) {
+        if (lua.tostring(L, 4)) |f| {
+            while (inc_len < FILTER_MAX and f[inc_len] != 0) : (inc_len += 1) {
+                inc_buf[inc_len] = f[inc_len];
+            }
+        }
+    }
+    if (lua.isstring(L, 5)) {
+        if (lua.tostring(L, 5)) |f| {
+            while (exc_len < FILTER_MAX and f[exc_len] != 0) : (exc_len += 1) {
+                exc_buf[exc_len] = f[exc_len];
+            }
+        }
+    }
+
     if (!lua.isstring(L, 2)) {
-        // Disable tracking for this type
+        // Disable tracking for this type + filter combo
         if (mapping.is_go_type) {
             for (&g_go_tracking) |*entry| {
                 if (entry.active and entry.go_type == mapping.value) {
@@ -668,7 +776,9 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
             }
         } else {
             for (&g_flag_tracking) |*entry| {
-                if (entry.active and entry.flag == mapping.value) {
+                if (entry.active and entry.flag == mapping.value and
+                    entry.filtersEqual(inc_buf[0..inc_len], exc_buf[0..exc_len]))
+                {
                     entry.active = false;
                     break;
                 }
@@ -693,7 +803,6 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
     const blip = Blip{ .texture = texture, .scale = scale };
 
     if (mapping.is_go_type) {
-        // Update existing or add new
         for (&g_go_tracking) |*entry| {
             if (entry.active and entry.go_type == mapping.value) {
                 entry.blip = blip;
@@ -707,15 +816,27 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
             }
         }
     } else {
+        // Match by flag + include/exclude combo
         for (&g_flag_tracking) |*entry| {
-            if (entry.active and entry.flag == mapping.value) {
+            if (entry.active and entry.flag == mapping.value and
+                entry.filtersEqual(inc_buf[0..inc_len], exc_buf[0..exc_len]))
+            {
                 entry.blip = blip;
                 return 0;
             }
         }
+        // Add new entry
         for (&g_flag_tracking) |*entry| {
             if (!entry.active) {
-                entry.* = .{ .flag = mapping.value, .blip = blip, .active = true };
+                entry.* = .{
+                    .flag = mapping.value,
+                    .blip = blip,
+                    .active = true,
+                    .filter = inc_buf,
+                    .filter_len = inc_len,
+                    .exclude = exc_buf,
+                    .exclude_len = exc_len,
+                };
                 return 0;
             }
         }

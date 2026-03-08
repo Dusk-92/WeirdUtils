@@ -23,17 +23,20 @@ local SPELL_CATEGORIES = {
 
 -- NPC tracking categories (icons embedded from Wrath client)
 -- trackingType maps to DLL SetObjectTypeBlip() type names.
--- Categories sharing a trackingType share the same NPC flag filter:
---   "trainer" = Class Trainer + Profession Trainer (UNIT_NPC_FLAG_TRAINER)
+-- subnameFilter: substring match on NPC subname/title (e.g. "Druid" matches "Druid Trainer").
+--   Filtered entries take priority over unfiltered catch-all entries with the same flag.
+--   "dynamic" filter is resolved at runtime via getFilter().
 local NPC_CATEGORIES = {
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
     { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class" },
+    { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class",
+        getFilter = function() return (UnitClass("player")) end },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper" },
     { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox" },
-    { name = "Profession Trainer", trackingType = "trainer", icon = "Interface\\Minimap\\Tracking\\Profession" },
+    { name = "Profession Trainer", trackingType = "trainer", icon = "Interface\\Minimap\\Tracking\\Profession",
+        getExclude = function() return UnitClass("player") end },
     { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair" },
     { name = "Stable Master", trackingType = "stablemaster", icon = "Interface\\Minimap\\Tracking\\StableMaster" },
     { name = "Vendor",        trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Food" },
@@ -46,29 +49,18 @@ local NPC_CATEGORIES = {
 local activeNpcCategories = {} -- name -> 1/nil
 
 -- Sync DLL tracking state with addon toggle state.
--- For shared trackingTypes (e.g. "trainer" used by both Class Trainer and
--- Profession Trainer), enables if ANY category with that type is active,
--- using the first active category's icon.
+-- Each category gets its own DLL call. Categories with a subnameFilter
+-- (e.g. Class Trainer filtering by player class) create filtered entries
+-- that take priority over unfiltered catch-all entries.
 local function updateDllTracking()
     if not SetObjectTypeBlip then return end
-    local seen = {}
     for _, cat in ipairs(NPC_CATEGORIES) do
-        local tt = cat.trackingType
-        if not seen[tt] then
-            seen[tt] = true
-            -- Find first active category with this tracking type
-            local icon = nil
-            for _, c in ipairs(NPC_CATEGORIES) do
-                if c.trackingType == tt and activeNpcCategories[c.name] then
-                    icon = c.icon
-                    break
-                end
-            end
-            if icon then
-                SetObjectTypeBlip(tt, icon, 1.3)
-            else
-                SetObjectTypeBlip(tt)
-            end
+        local inc = cat.getFilter and cat.getFilter() or nil
+        local exc = cat.getExclude and cat.getExclude() or nil
+        if activeNpcCategories[cat.name] then
+            SetObjectTypeBlip(cat.trackingType, cat.icon, 1.5, inc, exc)
+        else
+            SetObjectTypeBlip(cat.trackingType, nil, nil, inc, exc)
         end
     end
 end
