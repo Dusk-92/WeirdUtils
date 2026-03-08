@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Title: Outline
+## Title: WeirdUtils_Outline
 ## Notes: Screen-space outline rendering for targets, raid marks, and corpses
 ## Version: 1.0
 

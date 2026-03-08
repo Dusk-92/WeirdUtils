@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Title: LogSessions
+## Title: WeirdUtils_LogSessions
 ## Notes: Session-based combat and chat log management
 ## Version: 1.0
 

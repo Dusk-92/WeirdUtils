@@ -87,7 +87,7 @@ Dynamic arrays (each: capacity/count/data_ptr/growth at 3 dword intervals):
 
 `LoadAddonTOC` reads the TOC file via `LoadFileWithTextureResourceFallback`, which our `loadFileDetour` already intercepts. So calling `LoadAddonTOC("MinimapIcons")` will:
 1. Hit our file hook, serve the embedded TOC content
-2. Parse `## SavedVariablesPerCharacter: UI_MinimapIcons`
+2. Parse `## SavedVariablesPerCharacter: WeirdUtils_MinimapIconsSettings`
 3. Register the addon in the hash table with the variable name at +0x78/7c/80
 
 Hook `SetupAddonProcessing` (0x0051c740). After calling the original (which runs `ProcessAddonDirectory` and initializes the addon system), call `LoadAddonTOC` for each DLL-embedded addon. This ensures:

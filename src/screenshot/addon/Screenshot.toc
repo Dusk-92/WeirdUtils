@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Title: Screenshot
+## Title: WeirdUtils_Screenshot
 ## Notes: PNG screenshot capture with configurable compression
 ## Version: 1.0
 

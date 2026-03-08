@@ -144,12 +144,12 @@ const EmbedModule = struct {
 };
 
 const embed_modules = [_]EmbedModule{
-    .{ .option = "screenshot", .addon_name = "Screenshot", .addon_files_opt = "screenshot_addon_files" },
-    .{ .option = "interact", .addon_name = "Interact", .addon_files_opt = "interact_addon_files" },
-    .{ .option = "outline", .addon_name = "Outline", .addon_files_opt = "outline_addon_files" },
-    .{ .option = "worldmarkers", .addon_name = "WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files" },
-    .{ .option = "logsessions", .addon_name = "LogSessions", .addon_files_opt = "logsessions_addon_files" },
-    .{ .option = "minimapicons", .addon_name = "MinimapIcons", .addon_files_opt = "minimapicons_addon_files", .asset_files_opt = "minimapicons_asset_files" },
+    .{ .option = "screenshot", .addon_name = "WeirdUtils_Screenshot", .addon_files_opt = "screenshot_addon_files" },
+    .{ .option = "interact", .addon_name = "WeirdUtils_Interact", .addon_files_opt = "interact_addon_files" },
+    .{ .option = "outline", .addon_name = "WeirdUtils_Outline", .addon_files_opt = "outline_addon_files" },
+    .{ .option = "worldmarkers", .addon_name = "WeirdUtils_WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files" },
+    .{ .option = "logsessions", .addon_name = "WeirdUtils_LogSessions", .addon_files_opt = "logsessions_addon_files" },
+    .{ .option = "minimapicons", .addon_name = "WeirdUtils_MinimapIcons", .addon_files_opt = "minimapicons_addon_files", .asset_files_opt = "minimapicons_asset_files" },
 };
 
 /// Extract filename from a path like "markers/addon/Foo.lua" → "Foo.lua"

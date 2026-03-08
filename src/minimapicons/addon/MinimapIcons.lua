@@ -112,7 +112,7 @@ local NPC_CATEGORIES = {
 -- NPC tracking state (persisted per-character via SavedVariablesPerCharacter)
 -- =============================================================================
 
-local activeNpcCategories = {} -- name -> 1/nil, loaded from UI_MinimapIcons
+local activeNpcCategories = {} -- name -> 1/nil, loaded from WeirdUtils_MinimapIconsSettings
 
 -- Sync DLL tracking state with addon toggle state.
 -- Each category gets its own DLL call. Categories with a subnameFilter
@@ -172,7 +172,7 @@ end
 -- Dropdown menu
 -- =============================================================================
 
-local dropdown = CreateFrame("Frame", "MinimapIconsDropDown", UIParent, "UIDropDownMenuTemplate")
+local dropdown = CreateFrame("Frame", "WeirdUtils_MinimapIconsDropDown", UIParent, "UIDropDownMenuTemplate")
 
 UIDropDownMenu_Initialize(dropdown, function()
     -- Spell tracking section
@@ -232,7 +232,7 @@ UIDropDownMenu_Initialize(dropdown, function()
             else
                 activeNpcCategories[catName] = 1
             end
-            UI_MinimapIcons = activeNpcCategories
+            WeirdUtils_MinimapIconsSettings = activeNpcCategories
             updateDllTracking()
         end
         UIDropDownMenu_AddButton(info)
@@ -317,15 +317,15 @@ events:RegisterEvent("PLAYER_AURAS_CHANGED")
 
 events:SetScript("OnEvent", function()
     if event == "VARIABLES_LOADED" then
-        if UI_MinimapIcons then
-            activeNpcCategories = UI_MinimapIcons
+        if WeirdUtils_MinimapIconsSettings then
+            activeNpcCategories = WeirdUtils_MinimapIconsSettings
         else
             for _, cat in ipairs(NPC_CATEGORIES) do
                 if cat.default then
                     activeNpcCategories[cat.name] = 1
                 end
             end
-            UI_MinimapIcons = activeNpcCategories
+            WeirdUtils_MinimapIconsSettings = activeNpcCategories
         end
         updateDllTracking()
     elseif event == "PLAYER_LOGIN" or event == "SPELLS_CHANGED" then

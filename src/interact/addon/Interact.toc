@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Title: Interact
+## Title: WeirdUtils_Interact
 ## Notes: Nearest NPC/object interaction and bulk looting
 ## Version: 1.0
 

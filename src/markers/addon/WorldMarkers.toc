@@ -1,5 +1,5 @@
 ## Interface: 11200
-## Title: WorldMarkers
+## Title: WeirdUtils_WorldMarkers
 ## Notes: Client-side world markers
 ## Version: 1.0
 
