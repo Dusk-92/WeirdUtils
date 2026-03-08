@@ -88,7 +88,11 @@ ls -lh zig-out/bin/weirdutils.dll zig-out/variants/*.dll
 The remote README should match the features in this release. Start from
 `DLL_README.md` and remove the sections for modules not being released -
 keep the header, install instructions, and included feature sections exactly
-as they are.
+as they are. Do NOT remove trailing spaces in `DLL_README.md` - they are
+intentional Markdown line breaks.
+
+The module name list in the Developer Notes section must also only list
+released module names.
 
 ```sh
 # from a clone or worktree of the remote repo
@@ -133,7 +137,11 @@ Uses `tea` (Gitea/Forgejo CLI) which handles release creation, tagging, and
 asset upload in one command. The tag is created on the remote automatically.
 
 Run from a clone of the remote repo, or specify `--repo` explicitly.
-Only attach the combined DLL and the variant DLLs for modules in this release:
+Only attach the combined DLL and the variant DLLs for modules in this release.
+
+Also include a release-specific copy of `include/weirdutils_api.h` with the
+DLL names list trimmed to only released modules. Non-released DLL names must
+NOT appear in the header.
 
 ```sh
 # Example: transmogfix + customassets + healtextfix release
@@ -147,6 +155,15 @@ tea release create \
   --asset zig-out/variants/transmogfix.dll \
   --asset zig-out/variants/customassets.dll \
   --asset zig-out/variants/healtextfix.dll
+```
+
+Upload the header separately via API after creating the release:
+
+```sh
+curl -s -X POST \
+  -H "Authorization: token <your-token>" \
+  -F "attachment=@/path/to/weirdutils_api.h" \
+  "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils/releases/<release-id>/assets"
 ```
 
 ## 5. Hide source archives
@@ -166,6 +183,7 @@ Get the release ID from `tea release list --repo MarcelineVQ/WeirdUtils --output
 ## Checklist
 
 - [ ] Built with `ReleaseSmall` (both default and `all-variants`)
-- [ ] Remote README updated (if `DLL_README.md` changed)
+- [ ] Remote README updated — no unreleased module sections or names
+- [ ] `weirdutils_api.h` trimmed to released DLL names only and uploaded
 - [ ] Release created and DLLs uploaded via `tea`
 - [ ] Source archives hidden
