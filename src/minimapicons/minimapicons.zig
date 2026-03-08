@@ -118,37 +118,87 @@ const TrackedBlip = struct {
     gray: bool,
 };
 
-const FILTER_MAX = 32;
+const allocator = std.heap.page_allocator;
 
 const FlagEntry = struct {
     flag: u32 = 0,
     blip: Blip = .{ .texture = 0, .scale = 1.0 },
     active: bool = false,
-    filter: [FILTER_MAX]u8 = .{0} ** FILTER_MAX, // include: subname must contain
-    filter_len: u8 = 0,
-    exclude: [FILTER_MAX]u8 = .{0} ** FILTER_MAX, // exclude: subname must NOT contain
-    exclude_len: u8 = 0,
+    filter: ?[]u8 = null, // include: subname must contain ANY pipe-delimited segment
+    exclude: ?[]u8 = null, // exclude: subname must NOT contain ANY pipe-delimited segment
 
     fn hasFilter(self: *const FlagEntry) bool {
-        return self.filter_len > 0 or self.exclude_len > 0;
+        return self.filter != null or self.exclude != null;
     }
 
+    /// Match subname against pipe-delimited filter segments.
+    /// Include: subname must contain ANY segment (OR).
+    /// Exclude: subname must NOT contain ANY segment (OR).
     fn matchesSubName(self: *const FlagEntry, subname: [*:0]const u8) bool {
-        if (self.filter_len > 0 and !containsInsensitive(subname, self.filter[0..self.filter_len]))
-            return false;
-        if (self.exclude_len > 0 and containsInsensitive(subname, self.exclude[0..self.exclude_len]))
-            return false;
+        if (self.filter) |f| {
+            if (!pipeMatchAny(subname, f)) return false;
+        }
+        if (self.exclude) |e| {
+            if (pipeMatchAny(subname, e)) return false;
+        }
         return true;
     }
 
-    fn filtersEqual(self: *const FlagEntry, inc: []const u8, exc: []const u8) bool {
-        return sliceEqual(self.filter[0..self.filter_len], inc) and
-            sliceEqual(self.exclude[0..self.exclude_len], exc);
+    /// Returns true if haystack contains ANY pipe-delimited segment from pattern.
+    fn pipeMatchAny(haystack: [*:0]const u8, pattern: []const u8) bool {
+        var start: usize = 0;
+        for (pattern, 0..) |c, i| {
+            if (c == '|') {
+                if (i > start and containsInsensitive(haystack, pattern[start..i]))
+                    return true;
+                start = i + 1;
+            }
+        }
+        // Last (or only) segment
+        if (pattern.len > start and containsInsensitive(haystack, pattern[start..]))
+            return true;
+        return false;
     }
 
-    fn sliceEqual(a: []const u8, b: []const u8) bool {
-        if (a.len != b.len) return false;
-        for (a, b) |x, y| {
+    fn filtersEqual(self: *const FlagEntry, inc: ?[]const u8, exc: ?[]const u8) bool {
+        return sliceEqual(self.filterSlice(), inc) and sliceEqual(self.excludeSlice(), exc);
+    }
+
+    fn filterSlice(self: *const FlagEntry) ?[]const u8 {
+        return self.filter;
+    }
+
+    fn excludeSlice(self: *const FlagEntry) ?[]const u8 {
+        return self.exclude;
+    }
+
+    fn setFilter(self: *FlagEntry, src: ?[]const u8) void {
+        if (self.filter) |old| allocator.free(old);
+        self.filter = dupeStr(src);
+    }
+
+    fn setExclude(self: *FlagEntry, src: ?[]const u8) void {
+        if (self.exclude) |old| allocator.free(old);
+        self.exclude = dupeStr(src);
+    }
+
+    fn clear(self: *FlagEntry) void {
+        if (self.filter) |f| allocator.free(f);
+        if (self.exclude) |e| allocator.free(e);
+        self.* = .{};
+    }
+
+    fn dupeStr(src: ?[]const u8) ?[]u8 {
+        const s = src orelse return null;
+        if (s.len == 0) return null;
+        return allocator.dupe(u8, s) catch return null;
+    }
+
+    fn sliceEqual(a: ?[]const u8, b: ?[]const u8) bool {
+        const sa = a orelse return b == null or b.?.len == 0;
+        const sb = b orelse return sa.len == 0;
+        if (sa.len != sb.len) return false;
+        for (sa, sb) |x, y| {
             if (x != y) return false;
         }
         return true;
@@ -588,15 +638,16 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
             if (!entry.active) continue;
             if (npc_flags & entry.flag == 0) continue;
 
-            const priority: u8 = if (entry.filter_len > 0)
+            const priority: u8 = if (entry.filter != null)
                 3
-            else if (entry.exclude_len > 0)
+            else if (entry.exclude != null)
                 2
             else
                 1;
 
             if (priority < best_priority) continue;
-            if (priority == best_priority and entry.flag <= best_flag) continue;
+            if (priority == best_priority and entry.flag < best_flag) continue;
+            if (priority == best_priority and entry.flag == best_flag) continue; // first match wins at same tier
 
             // Check subname match
             if (entry.hasFilter()) {
@@ -731,6 +782,16 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
 // Lua API
 // =============================================================================
 
+/// Read a Lua string arg as a slice (null if absent/empty).
+fn luaStringToSlice(L: lua.State, idx: i32) ?[]const u8 {
+    if (!lua.isstring(L, idx)) return null;
+    const s = lua.tostring(L, idx) orelse return null;
+    var len: usize = 0;
+    while (s[len] != 0) : (len += 1) {}
+    if (len == 0) return null;
+    return s[0..len];
+}
+
 // SetObjectTypeBlip(typeName [, texturePath [, scale [, includeFilter [, excludeFilter]]]])
 pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
     if (!lua.isstring(L, 1)) {
@@ -745,25 +806,9 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
         return 0;
     };
 
-    // Parse optional include filter (arg 4) and exclude filter (arg 5)
-    var inc_buf: [FILTER_MAX]u8 = .{0} ** FILTER_MAX;
-    var inc_len: u8 = 0;
-    var exc_buf: [FILTER_MAX]u8 = .{0} ** FILTER_MAX;
-    var exc_len: u8 = 0;
-    if (lua.isstring(L, 4)) {
-        if (lua.tostring(L, 4)) |f| {
-            while (inc_len < FILTER_MAX and f[inc_len] != 0) : (inc_len += 1) {
-                inc_buf[inc_len] = f[inc_len];
-            }
-        }
-    }
-    if (lua.isstring(L, 5)) {
-        if (lua.tostring(L, 5)) |f| {
-            while (exc_len < FILTER_MAX and f[exc_len] != 0) : (exc_len += 1) {
-                exc_buf[exc_len] = f[exc_len];
-            }
-        }
-    }
+    // Parse optional include filter (arg 4) and exclude filter (arg 5) as slices
+    const inc = luaStringToSlice(L, 4);
+    const exc = luaStringToSlice(L, 5);
 
     if (!lua.isstring(L, 2)) {
         // Disable tracking for this type + filter combo
@@ -777,9 +822,9 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
         } else {
             for (&g_flag_tracking) |*entry| {
                 if (entry.active and entry.flag == mapping.value and
-                    entry.filtersEqual(inc_buf[0..inc_len], exc_buf[0..exc_len]))
+                    entry.filtersEqual(inc, exc))
                 {
-                    entry.active = false;
+                    entry.clear();
                     break;
                 }
             }
@@ -816,27 +861,22 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
             }
         }
     } else {
-        // Match by flag + include/exclude combo
+        // Match by flag + include/exclude combo — update existing or add new
         for (&g_flag_tracking) |*entry| {
             if (entry.active and entry.flag == mapping.value and
-                entry.filtersEqual(inc_buf[0..inc_len], exc_buf[0..exc_len]))
+                entry.filtersEqual(inc, exc))
             {
                 entry.blip = blip;
                 return 0;
             }
         }
-        // Add new entry
         for (&g_flag_tracking) |*entry| {
             if (!entry.active) {
-                entry.* = .{
-                    .flag = mapping.value,
-                    .blip = blip,
-                    .active = true,
-                    .filter = inc_buf,
-                    .filter_len = inc_len,
-                    .exclude = exc_buf,
-                    .exclude_len = exc_len,
-                };
+                entry.flag = mapping.value;
+                entry.blip = blip;
+                entry.active = true;
+                entry.setFilter(inc);
+                entry.setExclude(exc);
                 return 0;
             }
         }
@@ -909,6 +949,12 @@ pub fn installHooks() void {
     }
 
     con.print("[minimapicons] Hooks installed\n");
+}
+
+/// Called from CGGameUI_Shutdown (logout/exit) — frees heap-allocated filter strings.
+pub fn onShutdown() void {
+    for (&g_flag_tracking) |*entry| entry.clear();
+    con.print("[minimapicons] filters freed (shutdown)\n");
 }
 
 pub fn removeHooks() void {
