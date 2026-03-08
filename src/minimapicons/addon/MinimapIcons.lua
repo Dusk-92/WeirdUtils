@@ -87,13 +87,13 @@ local NPC_CATEGORIES = {
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
     { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Icons\\INV_Gizmo_01" },
+    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.7 },
     { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class",
         getFilter = function() return (UnitClass("player")) end },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper" },
     { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox" },
-    { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Icons\\INV_Potion_19",
+    { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Poison",
         getFilter = function() return getLocaleFilter(POISON_FILTERS) end },
     { name = "Profession Trainer", trackingType = "trainer", icon = "Interface\\Minimap\\Tracking\\Profession",
         getExclude = function() return UnitClass("player") end },
@@ -124,7 +124,7 @@ local function updateDllTracking()
         local inc = cat.getFilter and cat.getFilter() or nil
         local exc = cat.getExclude and cat.getExclude() or nil
         if activeNpcCategories[cat.name] then
-            SetObjectTypeBlip(cat.trackingType, cat.icon, 1.5, inc, exc)
+            SetObjectTypeBlip(cat.trackingType, cat.icon, cat.scale or 1.5, inc, exc)
         else
             SetObjectTypeBlip(cat.trackingType, nil, nil, inc, exc)
         end

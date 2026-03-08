@@ -767,6 +767,9 @@ fn hasActiveTracking() bool {
     for (&g_go_tracking) |*entry| {
         if (entry.active) return true;
     }
+    for (&g_go_id_tracking) |*entry| {
+        if (entry.active) return true;
+    }
     return false;
 }
 
