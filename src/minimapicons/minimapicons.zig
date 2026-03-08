@@ -380,7 +380,7 @@ fn getObjectPosition(obj: u32) ?C3Vector {
         : [_] "{ecx}" (obj),
           [out] "r" (@intFromPtr(&pos)),
           [func] "r" (get_pos_fn),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     return pos;
 }
 
@@ -424,7 +424,7 @@ fn worldPosToMinimapCoords(
         : [_] "{ecx}" (@intFromPtr(out)),
           [args] "r" (&args),
           [func] "r" (@as(u32, ADDR.WorldPosToMinimapCoords)),
-        : .{ .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 fn getFrameUnkScale(info: u32) f32 {
@@ -441,7 +441,7 @@ fn getFrameUnkScale(info: u32) f32 {
         : [ret] "={st}" (-> f32),
         : [_] "{ecx}" (fsp),
           [func] "r" (fn_addr),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 }
 
 // =============================================================================
@@ -489,7 +489,7 @@ fn loadTexture(path: [*:0]const u8) u32 {
           [_] "{edx}" (@intFromPtr(&status)),
           [flags] "r" (g_default_tex_flags),
           [func] "r" (@as(u32, ADDR.TextureCreate)),
-        : .{ .memory = true, .cc = true });
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 
     if (!status.ok() or texture == 0) {
         con.print("[minimapicons] Failed to load texture\n");
@@ -521,7 +521,7 @@ fn initTexFlags() u32 {
         :
         : [_] "{ecx}" (@intFromPtr(&flags)),
           [func] "r" (@as(u32, ADDR.CGxTexFlagsInit)),
-        : .{ .eax = true, .edx = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
     return flags;
 }
 
@@ -558,7 +558,7 @@ fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
           [_] "{edx}" (@as(u32, 1)),
           [status] "r" (@intFromPtr(&status)),
           [func] "r" (@as(u32, ADDR.TextureGetGxTex)),
-        : .{ .memory = true, .cc = true });
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
 
     if (!status.ok() or gx_tex == 0) return;
 
@@ -599,7 +599,7 @@ fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
           [_] "{edx}" (@intFromPtr(&vertices)), // vertices
           [args] "r" (&lock_args),
           [func] "r" (@as(u32, ADDR.GxPrimLockVertexPtrs)),
-        : .{ .eax = true, .memory = true, .cc = true });
+        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
 
     // GxPrimDrawElements(TriangleStrip=4, count=4, indices)
     const drawElements: *const fn (u32, u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxPrimDrawElements);
