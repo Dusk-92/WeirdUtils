@@ -78,9 +78,6 @@ fn allocateGameBuffer(size: u32) ?[*]u8 {
 
 fn registerLuaFunctions() void {
     // Conditional module functions
-    if (build_opts.screenshot) {
-        registerFunction("WeirdUtilsScreenshot", @intFromPtr(&screenshot.screenshotCommand));
-    }
     if (build_opts.interact) {
         registerFunction("InteractNearest", @intFromPtr(&interact.interactNearest));
         registerFunction("LootAllCorpses", @intFromPtr(&interact.lootAllCorpses));
@@ -141,13 +138,15 @@ const EmbedModule = struct {
     addon_name: ?[]const u8 = null,
     addon_files_opt: ?[]const u8 = null,
     asset_files_opt: ?[]const u8 = null,
+    /// If true, addon is marked as SECURE (hidden from addon list, always loaded).
+    hidden: bool = false,
 };
 
 const embed_modules = [_]EmbedModule{
-    .{ .option = "screenshot", .addon_name = "WeirdUtils_Screenshot", .addon_files_opt = "screenshot_addon_files" },
+    .{ .option = "screenshot" },
     .{ .option = "interact", .addon_name = "WeirdUtils_Interact", .addon_files_opt = "interact_addon_files" },
     .{ .option = "outline", .addon_name = "WeirdUtils_Outline", .addon_files_opt = "outline_addon_files" },
-    .{ .option = "worldmarkers", .addon_name = "WeirdUtils_WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files" },
+    .{ .option = "worldmarkers", .addon_name = "WeirdUtils_WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files", .hidden = true },
     .{ .option = "logsessions", .addon_name = "WeirdUtils_LogSessions", .addon_files_opt = "logsessions_addon_files" },
     .{ .option = "minimapicons", .addon_name = "WeirdUtils_MinimapIcons", .addon_files_opt = "minimapicons_addon_files", .asset_files_opt = "minimapicons_asset_files" },
 };
@@ -809,7 +808,7 @@ fn setupAddonsDetour(mgr_ptr: u32) callconv(fc) void {
         else
             true;
 
-        if (load) {
+        if (load and !mod.hidden) {
             const name: [*:0]const u8 = comptime (mod.addon_name.? ++ "\x00").ptr;
             con.fmt("[addons] registering embedded addon: {s}\n", .{name});
             callLoadAddonTOC(name);
@@ -840,10 +839,6 @@ var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
 fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
     load_addons_hook.callOriginal(.{error_handler});
 
-    // The game's LoadAddonRecursive now handles .lua/.toc loading and saved
-    // variables for registered addons, but Bindings.xml loading uses
-    // preloadFileWithFlags which may not go through our file hook.
-    // Explicitly load bindings for embedded addons that include them.
     var md5ctx = std.mem.zeroes([88]u8);
 
     inline for (embed_modules) |mod| {
@@ -858,6 +853,23 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
         if (load) {
             const addon_name = comptime mod.addon_name.?;
             const paths = comptime @field(build_options, mod.addon_files_opt.?);
+
+            if (mod.hidden) {
+                // Hidden addons are not registered via LoadAddonTOC, so the game
+                // doesn't know about them. Load their files directly to keep them
+                // invisible in the addon list.
+                const toc_name = comptime findTocName(paths);
+                if (toc_name) |tn| {
+                    callLoadFileListWithIncludes(
+                        "Interface\\AddOns\\" ++ addon_name ++ "\\" ++ tn,
+                        &md5ctx,
+                        error_handler,
+                    );
+                }
+            }
+
+            // Bindings.xml must be loaded explicitly for all addons -- the game's
+            // preloadFileWithFlags doesn't go through our file hook.
             if (comptime hasFile(paths, "Bindings.xml")) {
                 callLoadUIBindingsFromFile(
                     "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",

@@ -96,12 +96,93 @@ Hook `SetupAddonProcessing` (0x0051c740). After calling the original (which runs
 - `LoadAddonRecursive` will find our addon, load its files (via our hook), load saved vars from WTF/, and fire ADDON_LOADED
 - `SaveAddonVariables` will find our addon and write its variables to WTF/ on logout
 
-This also means **Bindings.xml** will be loaded automatically if included in the TOC -- no need to handle it separately.
+**Note:** Bindings.xml loading via `preloadFileWithFlags` does NOT go through our file hook, so we still explicitly call `callLoadUIBindingsFromFile` in `loadAddonsDetour` for addons with Bindings.xml.
+
+### Current Status (WORKING)
+
+- SavedVariablesPerCharacter persists to `WTF/Account/.../SavedVariables/WeirdUtils_MinimapIcons.lua`
+- Addon names use `WeirdUtils_<name>` namespace (6 addons)
+- Game's `LoadAddonRecursive` handles .lua/.toc loading and saved variables
+- Explicit bindings loading still needed (kept in `loadAddonsDetour`)
 
 ### Verification Plan
 
-1. Hook `SetupAddonProcessing`, call `LoadAddonTOC("MinimapIcons")` after original
+1. Hook `SetupAddonProcessing`, call `LoadAddonTOC("WeirdUtils_MinimapIcons")` after original
 2. Check console for `[file] served embedded` messages for the .toc read during `LoadAddonTOC`
 3. Toggle some NPC categories, log out
-4. Check `WTF/Account/<acct>/<realm>/<char>/SavedVariables/MinimapIcons.lua` exists on disk
+4. Check `WTF/Account/<acct>/<realm>/<char>/SavedVariables/WeirdUtils_MinimapIcons.lua` exists on disk
 5. Re-login, verify toggles persisted
+
+## Login Screen Addon List (WIP)
+
+### Goal
+Make DLL-embedded addons appear in the character select screen's "AddOns" button list.
+This allows users to enable/disable them before entering world, and the DLL could
+check the enabled state to skip hooking for disabled addons.
+
+### Architecture
+
+Two separate Lua C function tables exist for addon management:
+- **Glue (login/charselect) table** at 0x008374a0 -- functions in 0x0046dxxx range
+- **In-game table** at 0x0083e488 -- functions in 0x0048exxx range
+
+Both read from the **same** underlying addon data:
+- `GetAddonCount` (0x0051def0): returns `PTR_00be1b90` (simple count)
+- `GetAddonByIndex` (0x0051df00): returns `PTR_00be1b94[index]` (flat array of addon ptrs)
+
+These globals (`PTR_00be1b90` count, `PTR_00be1b94` array) are separate from the
+hash table (PTR_00be1b7c) and linked list (PTR_00be1b6c) -- they're a flat indexed
+view, likely populated after `ProcessAddonDirectory` finishes.
+
+#### Glue Lua Functions (charselect screen)
+
+| Address    | Function |
+|------------|----------|
+| 0x0046d420 | GetNumAddOns |
+| 0x0046d460 | GetAddOnInfo -- returns: name, title, notes, url, loadable, reason, security, isNew |
+| 0x0046d5e0 | LaunchAddOnURL |
+| 0x0046d650 | GetAddOnDependencies |
+| 0x0046d6f0 | GetAddOnEnableState |
+| 0x0046d7b0 | EnableAddOn |
+| 0x0046d850 | EnableAllAddOns |
+| 0x0046d8a0 | DisableAddOn |
+| 0x0046d940 | DisableAllAddOns |
+| 0x0046d990 | SaveAddOns |
+| 0x0046d9a0 | ResetAddOns |
+
+### Call Flow
+
+```
+HandleLogin (0x0046afb0) -- triggered by login credentials submit
+  -> SetupAddonProcessing (0x0051c740) -- OUR HOOK IS HERE
+    -> ShutdownAddonSystem (0x0051fa40)  -- clears old state
+    -> ProcessAddonDirectory (0x0051c760) -- filesystem scan
+  -> [our hook: callLoadAddonTOC per embedded addon]
+```
+
+After `HandleLogin` returns, the client transitions to the character select screen
+where the "AddOns" button is available. The Lua `GetNumAddOns`/`GetAddOnInfo` calls
+read from the flat array at PTR_00be1b90/PTR_00be1b94.
+
+### Open Questions
+
+1. **When is PTR_00be1b90/PTR_00be1b94 populated?** These are a flat indexed array,
+   not the hash table. Possibly built from the linked list after `ProcessAddonDirectory`
+   finishes, or lazily on first `GetAddonCount` call. Need to find xrefs to PTR_00be1b90
+   to determine who writes to it and when.
+
+2. **Does our `LoadAddonTOC` call also update the flat array?** If it only adds to the
+   hash table + linked list but not the flat array, our addons won't appear in the UI.
+   Need to trace `LoadAddonTOC` -> `Container_MoveOrInsertElement` to see if the flat
+   array is updated as a side effect.
+
+3. **Timing**: Our hook fires after `SetupAddonProcessing` returns (which is after
+   `ProcessAddonDirectory`). If the flat array is built at the end of
+   `ProcessAddonDirectory` and never updated, we'd need to either:
+   - Hook ProcessAddonDirectory and inject our addons before the array is built
+   - Manually append to PTR_00be1b90/PTR_00be1b94 after calling LoadAddonTOC
+   - Find and call whatever rebuilds the flat array
+
+4. **Enable/Disable state**: `EnableAddOn`/`DisableAddOn` write to `AddOns.txt` via
+   `SaveAddOns`. The DLL could check this file or the addon struct's enabled field
+   at startup to decide whether to install hooks for a given module.

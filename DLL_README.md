@@ -68,9 +68,10 @@ Best used via keybindings (available in the Key Bindings menu) or macros:
 
 Saves screenshots as compressed PNG files instead of the default uncompressed TGA format. Runs on a background thread with no frame drops.
 
-- `/screenshot 0` through `/screenshot 9` -- set compression level (0 = fast, 9 = smallest, default 6)
+Controlled via the `screenshotQuality` CVar (saved to config.wtf):
 
-Compression level 6 provides the best balance of quality and file size. Enabled automatically on install.
+- `/script SetCVar("screenshotQuality", "6")` -- set compression level (1 = fast, 9 = smallest, default 6)
+- `/script SetCVar("screenshotQuality", "0")` -- disable PNG, use original TGA format
 
 **DLL:** `screenshot.dll`
 

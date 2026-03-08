@@ -1,7 +1,0 @@
-## Interface: 11200
-## Title: WeirdUtils_Screenshot
-## Notes: PNG screenshot capture with configurable compression
-## Version: 1.0
-
-
-Screenshot.lua

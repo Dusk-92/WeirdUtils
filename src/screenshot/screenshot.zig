@@ -53,9 +53,22 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 // State
 // =============================================================================
 
-var enabled: bool = true;
-var compression_level: i32 = 6; // user-facing 0–9, kept for Lua interface
 const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
+
+// CVar for compression level persistence (0–9, default 6)
+const CVAR_NAME = "screenshotQuality";
+const CVAR_LOOKUP: usize = 0x0063DEC0;
+const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(fc) u32;
+const registerCVar: RegisterCVarFn = @ptrFromInt(0x0063DB90);
+
+fn readCVarQuality() i32 {
+    const cvar_ptr = hook.fastcall(u32, CVAR_LOOKUP, @intFromPtr(@as([*:0]const u8, CVAR_NAME)), @as(u32, 0));
+    if (cvar_ptr == 0) return 6;
+    const val = hook.readMem(i32, cvar_ptr + 40);
+    return std.math.clamp(val, 0, 9);
+}
+
 const TgaWriteFn = fn (u32, u32) callconv(tc) i32;
 var tga_hook: hook.Detour(TgaWriteFn) = .{};
 var screenshot_dir: [260]u8 = undefined;
@@ -141,7 +154,9 @@ fn callOriginal(self: u32, filename: u32) i32 {
 // =============================================================================
 
 fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
-    if (!enabled) return callOriginal(self, filename);
+    // CVar 0 = disabled, fall through to original TGA write
+    const quality = readCVarQuality();
+    if (quality == 0) return callOriginal(self, filename);
 
     // Validate TGA header fields
     const pixel_data = hook.readMem(u32, self + 0x04);
@@ -170,7 +185,7 @@ fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
     while (!mutex.tryLock()) {}
     defer mutex.unlock();
 
-    if (!enqueue(.{ .buffer = buffer.ptr, .width = width, .height = height, .size = size, .level = png.mapLevel(compression_level) })) {
+    if (!enqueue(.{ .buffer = buffer.ptr, .width = width, .height = height, .size = size, .level = png.mapLevel(quality) })) {
         std.heap.page_allocator.free(buffer);
         return callOriginal(self, filename);
     }
@@ -279,70 +294,6 @@ fn writePng(path: [*:0]const u8, pixels: [*]const u8, width: u16, height: u16, l
 }
 
 // =============================================================================
-// Lua helper: push f64 onto Lua stack via __fastcall(L_ECX, f64_on_stack)
-// =============================================================================
-
-fn luaPushNumber(L_ptr: usize, n: f64) void {
-    // lua_pushnumber at 0x6F3810 is __fastcall(L, double)
-    // double skips EDX, goes on stack (8 bytes). Callee cleans with ret 8.
-    const raw: [2]u32 = @bitCast(n);
-    asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (L_ptr),
-          [lo] "r" (raw[0]),
-          [hi] "r" (raw[1]),
-          [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-}
-
-// =============================================================================
-// Lua C function: WeirdUtilsScreenshot(...)
-//   No args          → returns enabled (bool), compression_level (number)
-//   ("enable")       → enable PNG screenshots
-//   ("disable")      → disable (fall through to original TGA)
-//   ("quality", N)   → set compression level 0–9 (kept for addon compat)
-// =============================================================================
-
-pub fn screenshotCommand(L: *anyopaque) callconv(.c) u32 {
-    const L_ptr = @intFromPtr(L);
-
-    // lua_gettop(L) - __fastcall(L_ECX), EDX unused
-    const nargs = hook.fastcall(i32, 0x6F3070, L_ptr, @as(u32, 0));
-
-    if (nargs == 0) {
-        // lua_pushboolean(L, enabled)
-        hook.fastcall(void, 0x6F39F0, L_ptr, @as(i32, if (enabled) 1 else 0));
-        // lua_pushnumber(L, compression_level)
-        luaPushNumber(L_ptr, @floatFromInt(compression_level));
-        return 2;
-    }
-
-    // lua_tostring(L, 1) - __fastcall(L_ECX, index_EDX)
-    const raw_str = hook.fastcall(usize, 0x6F3690, L_ptr, @as(i32, 1));
-    if (raw_str != 0) {
-        const str: [*:0]const u8 = @ptrFromInt(raw_str);
-        const arg = std.mem.span(str);
-
-        if (std.mem.eql(u8, arg, "enable")) {
-            enabled = true;
-        } else if (std.mem.eql(u8, arg, "disable")) {
-            enabled = false;
-        } else if (std.mem.eql(u8, arg, "quality")) {
-            if (nargs >= 2) {
-                // lua_tonumber(L, 2) - __fastcall(L_ECX, index_EDX), returns f64 in ST(0)
-                const level = hook.fastcall(f64, 0x6F3620, L_ptr, @as(i32, 2));
-                compression_level = std.math.clamp(@as(i32, @intFromFloat(level)), 0, 9);
-            }
-        }
-    }
-
-    return 0;
-}
-
-// =============================================================================
 // Install / Remove
 // =============================================================================
 
@@ -353,6 +304,9 @@ pub fn installHook() void {
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
+
+    // Register CVar for compression quality persistence (saved to config.wtf)
+    _ = registerCVar(CVAR_NAME, 0, 0, "6", 0, 1, 0, 0);
 
     // CTgaFile::Write at 0x5a4810
     // __thiscall(self, filename) ret 4
