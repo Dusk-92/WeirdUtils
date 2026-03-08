@@ -751,6 +751,29 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
     return model_load_hook.callOriginal(.{ model, file_handle, should_use_callback });
 }
 
+// --- Hook 6: CheckFileExistence (0x654DD0) ---
+// __fastcall(ECX=filename, EDX=flags, stack=outputBuffer) → EAX (bool)
+// Tells the game whether a file exists in the VFS. Without this, embedded
+// files are invisible to preloadFileWithFlags, so LoadAddonRecursive skips
+// Bindings.xml (and SavedVariables) for our addons.
+
+const CheckFileExistenceFn = fn (u32, u32, u32) callconv(fc) u32;
+var cfe_hook: hook.Detour(CheckFileExistenceFn) = .{};
+
+fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(fc) u32 {
+    if (filename_ptr != 0) {
+        // Embedded DLL files
+        const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
+        if (findEmbeddedFile(path) != null) return 1;
+
+        // Loose disk files (customassets module)
+        if (build_opts.customassets and customassets.isActive()) {
+            if (customassets.looseFilesLookup(filename_ptr, output_buffer_ptr)) return 1;
+        }
+    }
+    return cfe_hook.callOriginal(.{ filename_ptr, flags, output_buffer_ptr });
+}
+
 // --- Install/remove in-memory file hooks ---
 
 fn installFileHooks() void {
@@ -759,10 +782,12 @@ fn installFileHooks() void {
     _ = read_file_hook.attach(0x648460, &readFileDetour);
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
+    _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
     con.print("[file] in-memory file hooks installed\n");
 }
 
 fn removeFileHooks() void {
+    cfe_hook.detach();
     model_load_hook.detach();
     process_async_hook.detach();
     cleanup_file_handle_hook.detach();
@@ -828,10 +853,10 @@ fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
 
 // =============================================================================
 // Hook: LoadAddonsRecursively (0x51F600)
-// With SetupAddonProcessing registering our addons, the game's own
-// LoadAddonRecursive now handles loading files, Bindings.xml, and saved
-// variables for embedded addons. This hook is kept for any future
-// post-load work but no longer manually loads addon files.
+// Non-hidden addons are fully handled by the game's LoadAddonRecursive (which
+// respects enabled/disabled state) — our CheckFileExistence hook makes their
+// embedded files visible to preloadFileWithFlags. Hidden addons bypass
+// LoadAddonRecursive, so we load their TOC and bindings explicitly here.
 // =============================================================================
 
 var load_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
@@ -866,16 +891,17 @@ fn loadAddonsDetour(error_handler: u32) callconv(fc) void {
                         error_handler,
                     );
                 }
-            }
 
-            // Bindings.xml must be loaded explicitly for all addons -- the game's
-            // preloadFileWithFlags doesn't go through our file hook.
-            if (comptime hasFile(paths, "Bindings.xml")) {
-                callLoadUIBindingsFromFile(
-                    "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",
-                    &md5ctx,
-                    error_handler,
-                );
+                // Hidden addons bypass LoadAddonRecursive, so load bindings
+                // explicitly. Non-hidden addons get theirs loaded by the game
+                // (which respects addon enabled/disabled state).
+                if (comptime hasFile(paths, "Bindings.xml")) {
+                    callLoadUIBindingsFromFile(
+                        "Interface\\AddOns\\" ++ addon_name ++ "\\Bindings.xml",
+                        &md5ctx,
+                        error_handler,
+                    );
+                }
             }
         }
     }

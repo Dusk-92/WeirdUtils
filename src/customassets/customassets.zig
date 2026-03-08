@@ -5,8 +5,8 @@
 // 1. Patches patch-?.MPQ → patch-*.MPQ so multi-char patch names work
 // 2. NOPs two gates in File_FindInArchive so CheckFileExistence runs for
 //    all files, not just Interface/AddOns
-// 3. Hooks CheckFileExistence with an O(1) hash set of pre-indexed loose
-//    files so non-existent files skip GetFileAttributesA entirely
+// 3. Indexes loose Data/ files into an O(1) hash set; main.zig's
+//    CheckFileExistence hook calls looseFilesLookup() to serve them
 //
 // =============================================================================
 
@@ -161,55 +161,32 @@ fn looseFilesCleanup() void {
     arena.deinit();
 }
 
-fn looseFilesLookup(game_path_ptr: u32) ?[*]const u8 {
-    if (game_path_ptr == 0) return null;
+/// Check if a game path matches a loose disk file. If found and output_buffer_ptr
+/// is non-zero, writes the disk path into it. Returns true on hit.
+/// Called from main.zig's CheckFileExistence hook.
+pub fn looseFilesLookup(game_path_ptr: u32, output_buffer_ptr: u32) bool {
+    if (game_path_ptr == 0) return false;
     const raw: [*]const u8 = @ptrFromInt(game_path_ptr);
     const path = raw[0..cStrLen(raw)];
 
     var norm_buf: [MAX_PATH]u8 = undefined;
-    if (path.len > MAX_PATH) return null;
+    if (path.len > MAX_PATH) return false;
     @memcpy(norm_buf[0..path.len], path);
     normalizeInPlace(norm_buf[0..path.len]);
 
-    const result = loose_files.get(norm_buf[0..path.len]);
-    if (result) |disk_path| {
-        return disk_path.ptr;
-    }
-    return null;
-}
+    const disk_path = loose_files.get(norm_buf[0..path.len]) orelse return false;
 
-// =============================================================================
-// Hook: CheckFileExistence (0x654DD0)
-// =============================================================================
-// __fastcall(ECX=filename, EDX=flags, stack=outputBuffer) → EAX
+    con.fmt("[customassets] loose hit: \"{s}\"\n", .{path});
 
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const CheckFileExistenceFn = fn (u32, u32, u32) callconv(fc) u32;
-
-var cfe_hook: hook.Detour(CheckFileExistenceFn) = .{};
-
-fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(fc) u32 {
-    if (filename_ptr != 0) {
-        if (looseFilesLookup(filename_ptr)) |disk_path| {
-            const raw: [*]const u8 = @ptrFromInt(filename_ptr);
-            con.fmt("[customassets] loose hit: \"{s}\"\n", .{raw[0..cStrLen(raw)]});
-
-            if (output_buffer_ptr != 0) {
-                const disk_len = cStrLen(disk_path);
-                const out: [*]u8 = @ptrFromInt(output_buffer_ptr);
-                if (disk_len < MAX_PATH) {
-                    @memcpy(out[0..disk_len], disk_path[0..disk_len]);
-                    out[disk_len] = 0;
-                }
-            }
-            return 1;
+    if (output_buffer_ptr != 0) {
+        const disk_len = cStrLen(disk_path.ptr);
+        const out: [*]u8 = @ptrFromInt(output_buffer_ptr);
+        if (disk_len < MAX_PATH) {
+            @memcpy(out[0..disk_len], disk_path.ptr[0..disk_len]);
+            out[disk_len] = 0;
         }
     }
-    return cfe_hook.callOriginal(.{ filename_ptr, flags, output_buffer_ptr });
-}
-
-fn installHook() bool {
-    return cfe_hook.attach(0x654DD0, &checkFileExistenceDetour) == .ok;
+    return true;
 }
 
 // =============================================================================
@@ -299,13 +276,11 @@ pub fn installHooks() void {
     applyGlobPatch();
     applyLooseFilePatches();
     looseFilesInit();
-    if (!installHook()) return;
     installed = true;
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner and installed) {
-        cfe_hook.detach();
         revertLooseFilePatches();
         revertGlobPatch();
         looseFilesCleanup();
