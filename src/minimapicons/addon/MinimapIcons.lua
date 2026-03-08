@@ -199,6 +199,7 @@ end)
 -- Left-click opens dropdown, right-click cancels tracking (native behavior)
 MiniMapTrackingFrame:SetScript("OnMouseUp", function()
     if arg1 == "LeftButton" then
+        GameTooltip:Hide()
         scanSpellbook()
         ToggleDropDownMenu(1, nil, dropdown, MiniMapTrackingFrame, 0, 0)
     elseif arg1 == "RightButton" then
@@ -206,7 +207,7 @@ MiniMapTrackingFrame:SetScript("OnMouseUp", function()
     end
 end)
 
--- Keep native tooltip but add hint text
+-- Tooltip
 MiniMapTrackingFrame:SetScript("OnEnter", function()
     GameTooltip:SetOwner(this, "ANCHOR_BOTTOMLEFT")
     GameTooltip:SetTrackingSpell()
@@ -214,7 +215,9 @@ MiniMapTrackingFrame:SetScript("OnEnter", function()
         GameTooltip:AddLine("Tracking")
     end
     GameTooltip:AddLine("Click to select tracking", 0.5, 0.5, 0.5)
-    GameTooltip:AddLine("Right-click to cancel", 0.5, 0.5, 0.5)
+    if GetTrackingTexture() then
+        GameTooltip:AddLine("Right-click to cancel", 0.5, 0.5, 0.5)
+    end
     GameTooltip:Show()
 end)
 
