@@ -43,7 +43,6 @@ const ADDR = struct {
     const GxPrimDrawElements: usize = 0x58A2E0;
     const GxPrimUnlockVertexPtrs: usize = 0x58A340;
     const GetObjectByGUID: usize = 0x464870;
-    const QueryMapObjIDs: usize = 0x670540;
     const CGxTexFlagsInit: usize = 0x58A980;
     const CStatusDestructor: usize = 0x419E30;
 
@@ -58,7 +57,6 @@ const ADDR = struct {
     const OBJ_VTABLE: usize = 0x00;
     const OBJ_DATA: usize = 0x08; // m_data — update fields descriptor (starts at field 0)
     const OBJ_TYPE: usize = 0x14; // m_objectType
-    const OBJ_WORLD_DATA: usize = 0xE0; // m_worldData (CWorld*)
     const OBJ_CREATURE_CACHE: usize = 0xB30; // ptr to creature cache entry
 
     // Creature cache entry offsets (name[0..3] at +0x00..+0x0C, subname at +0x10)
@@ -70,8 +68,6 @@ const ADDR = struct {
     const DESC_GO_TYPE: usize = 0x15 * 4; // GAMEOBJECT_TYPE_ID
 
     // MINIMAPINFO struct offsets
-    const MI_WMO_ID: usize = 0x04;
-    const MI_MAP_OBJ_ID: usize = 0x08;
     const MI_POS: usize = 0x0C; // C3Vector
     const MI_RADIUS: usize = 0x18;
     const MI_LAYOUT_SCALE: usize = 0x1C;
@@ -116,7 +112,6 @@ const Blip = struct {
 const TrackedBlip = struct {
     pos: C2Vector,
     blip: Blip,
-    gray: bool,
 };
 
 const allocator = std.heap.page_allocator;
@@ -263,6 +258,7 @@ var g_go_tracking: [MAX_GO_ENTRIES]GoTypeEntry = .{GoTypeEntry{}} ** MAX_GO_ENTR
 var g_go_id_tracking: [MAX_GO_ID_ENTRIES]GoEntryEntry = .{GoEntryEntry{}} ** MAX_GO_ID_ENTRIES;
 var g_blips: [MAX_BLIPS]TrackedBlip = undefined;
 var g_blip_count: u32 = 0;
+var g_has_active_tracking: bool = false;
 var g_tex_cache: [MAX_TEXTURES]TextureEntry = .{TextureEntry{}} ** MAX_TEXTURES;
 var g_tex_cache_count: u32 = 0;
 var g_default_tex_flags: u32 = 0;
@@ -386,26 +382,6 @@ fn getObjectPosition(obj: u32) ?C3Vector {
           [func] "r" (get_pos_fn),
         : .{ .eax = true, .edx = true, .memory = true, .cc = true });
     return pos;
-}
-
-fn queryMapObjIDs(world_data: u32) struct { wmo_id: u32, map_obj_id: u32 } {
-    if (!isValidPtr(world_data)) return .{ .wmo_id = 0, .map_obj_id = 0 };
-    var wmo_id: u32 = 0;
-    var map_obj_id: u32 = 0;
-    var group_num: u32 = 0;
-    // __fastcall(world_ECX, &wmoID_EDX, &mapObjID, &groupNum) — RET 0x8
-    asm volatile (
-        \\push %[group]
-        \\push %[map]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (world_data),
-          [_] "{edx}" (@intFromPtr(&wmo_id)),
-          [map] "r" (@intFromPtr(&map_obj_id)),
-          [group] "r" (@intFromPtr(&group_num)),
-          [func] "r" (@as(u32, ADDR.QueryMapObjIDs)),
-        : .{ .eax = true, .memory = true, .cc = true });
-    return .{ .wmo_id = wmo_id, .map_obj_id = map_obj_id };
 }
 
 // =============================================================================
@@ -553,13 +529,10 @@ fn initTexFlags() u32 {
 // Blip drawing (port of VanillaHelpers DrawMinimapTexture)
 // =============================================================================
 
-fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32, gray: bool) void {
+fn drawMinimapTexture(texture: u32, pos: C2Vector, scale: f32) void {
     if (texture == 0) return;
 
-    const color: CImVector = if (gray)
-        .{ .b = 0xB0, .g = 0xB0, .r = 0xB0, .a = 0xFF }
-    else
-        .{ .b = 0xFF, .g = 0xFF, .r = 0xFF, .a = 0xFF };
+    const color: CImVector = .{ .b = 0xFF, .g = 0xFF, .r = 0xFF, .a = 0xFF };
 
     // Scale static blip vertex template by blip scale and offset by minimap position
     var vertices: [4]C3Vector = undefined;
@@ -724,20 +697,6 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
 fn trackObject(info: u32, obj: u32, blip: Blip) void {
     if (g_blip_count >= MAX_BLIPS) return;
 
-    // WMO indoor/outdoor filtering
-    const info_wmo = hook.readMem(u32, info + ADDR.MI_WMO_ID);
-    const info_map = hook.readMem(u32, info + ADDR.MI_MAP_OBJ_ID);
-    const world_data = hook.readMem(u32, obj + ADDR.OBJ_WORLD_DATA);
-
-    var is_different_area = false;
-    if (isValidPtr(world_data)) {
-        const ids = queryMapObjIDs(world_data);
-        // Hide outside blips when player is inside a WMO (replicating original behavior)
-        if (info_wmo != 0 and (ids.wmo_id != info_wmo or ids.map_obj_id != info_map))
-            return;
-        is_different_area = (ids.wmo_id != info_wmo);
-    }
-
     const pos = getObjectPosition(obj) orelse return;
 
     const cur = C3Vector{
@@ -755,22 +714,30 @@ fn trackObject(info: u32, obj: u32, blip: Blip) void {
     g_blips[g_blip_count] = .{
         .pos = minimap_pos,
         .blip = blip,
-        .gray = is_different_area,
     };
     g_blip_count += 1;
 }
 
-fn hasActiveTracking() bool {
+fn refreshActiveTrackingCache() void {
     for (&g_flag_tracking) |*entry| {
-        if (entry.active) return true;
+        if (entry.active) {
+            g_has_active_tracking = true;
+            return;
+        }
     }
     for (&g_go_tracking) |*entry| {
-        if (entry.active) return true;
+        if (entry.active) {
+            g_has_active_tracking = true;
+            return;
+        }
     }
     for (&g_go_id_tracking) |*entry| {
-        if (entry.active) return true;
+        if (entry.active) {
+            g_has_active_tracking = true;
+            return;
+        }
     }
-    return false;
+    g_has_active_tracking = false;
 }
 
 // =============================================================================
@@ -784,7 +751,7 @@ const EnumProcFn = fn (u32, u32, u32, u32) callconv(fc) i32;
 var enum_proc_hook: hook.Detour(EnumProcFn) = .{};
 
 fn objectEnumProcDetour(info: u32, _edx: u32, guid_lo: u32, guid_hi: u32) callconv(fc) i32 {
-    if (hasActiveTracking()) {
+    if (g_has_active_tracking) {
         if (checkObject(info, guid_lo, guid_hi)) {
             return 1; // Skip original — we draw our own icon
         }
@@ -806,7 +773,6 @@ fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(fc) v
             g_blips[i].blip.texture,
             g_blips[i].pos,
             g_blips[i].blip.scale,
-            g_blips[i].gray,
         );
     }
 }
@@ -839,6 +805,8 @@ fn luaStringToSlice(L: lua.State, idx: i32) ?[]const u8 {
 
 // SetObjectTypeBlip(typeName [, texturePath [, scale [, includeFilter [, excludeFilter]]]])
 pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
+    defer refreshActiveTrackingCache();
+
     if (!lua.isstring(L, 1)) {
         lua.luaError(L, "Usage: SetObjectTypeBlip(type [, texture [, scale [, include [, exclude]]]])");
         return 0;

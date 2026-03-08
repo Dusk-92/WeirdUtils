@@ -107,6 +107,22 @@ No configuration needed, install and forget.
 
 ---
 
+### Utility Minimap Trackings
+
+Adds custom minimap icons for NPC types (vendors, trainers, innkeepers, etc.) and game objects (mailboxes).  
+Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
+
+- Click the minimap tracking icon to open the dropdown
+- Check/uncheck NPC categories to toggle their minimap icons
+- Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
+
+Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more
+Supported game objects: Mailbox, Brainwasher
+
+**DLL:** `minimapicons.dll`
+
+---
+
 ### Log Sessions
 
 Organizes the combat, raw combat, and chat logs into per-character directories with timestamped filenames:

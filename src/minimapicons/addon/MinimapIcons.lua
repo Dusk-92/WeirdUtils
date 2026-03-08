@@ -79,7 +79,7 @@ local AMMO_FILTERS = {
 }
 
 -- NPC tracking categories (icons embedded from Wrath client)
--- trackingType maps to DLL SetObjectTypeBlip() type names.
+-- trackingType maps to DLL WeirdUtils.SetObjectTypeBlip() type names.
 -- Filter: pipe-delimited exact subname match (DLL matches ANY segment as substring).
 --   Filtered entries take priority over unfiltered catch-all entries with the same flag.
 --   "dynamic" filter is resolved at runtime via getFilter().
@@ -87,7 +87,7 @@ local NPC_CATEGORIES = {
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
     { name = "Battle Master", trackingType = "battlemaster", icon = "Interface\\Minimap\\Tracking\\BattleMaster" },
-    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.7, default = 1 },
+    { name = "Brainwasher",  trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.8, default = 1 },
     { name = "Class Trainer", trackingType = "trainer",      icon = "Interface\\Minimap\\Tracking\\Class",
         getFilter = function() return (UnitClass("player")) end },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
@@ -119,14 +119,14 @@ local activeNpcCategories = {} -- name -> 1/nil, loaded from WeirdUtils_MinimapI
 -- (e.g. Class Trainer filtering by player class) create filtered entries
 -- that take priority over unfiltered catch-all entries.
 local function updateDllTracking()
-    if not SetObjectTypeBlip then return end
+    if not WeirdUtils.SetObjectTypeBlip then return end
     for _, cat in ipairs(NPC_CATEGORIES) do
         local inc = cat.getFilter and cat.getFilter() or nil
         local exc = cat.getExclude and cat.getExclude() or nil
         if activeNpcCategories[cat.name] then
-            SetObjectTypeBlip(cat.trackingType, cat.icon, cat.scale or 1.5, inc, exc)
+            WeirdUtils.SetObjectTypeBlip(cat.trackingType, cat.icon, cat.scale or 1.5, inc, exc)
         else
-            SetObjectTypeBlip(cat.trackingType, nil, nil, inc, exc)
+            WeirdUtils.SetObjectTypeBlip(cat.trackingType, nil, nil, inc, exc)
         end
     end
 end

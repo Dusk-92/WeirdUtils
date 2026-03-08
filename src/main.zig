@@ -94,7 +94,11 @@ fn registerLuaFunctions() void {
         registerFunction("GetCursorScale", @intFromPtr(&bigcursor.luaGetCursorScale));
     }
     if (build_opts.minimapicons and minimapicons.isActive()) {
-        registerFunction("SetObjectTypeBlip", @intFromPtr(&minimapicons.luaSetObjectTypeBlip));
+        const lib = [_]lua.LuaReg{
+            .{ .name = "SetObjectTypeBlip", .func = @intFromPtr(&minimapicons.luaSetObjectTypeBlip) },
+            .{ .name = null, .func = 0 },
+        };
+        lua.openlib(lua.getContext(), "WeirdUtils", &lib, 0);
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
