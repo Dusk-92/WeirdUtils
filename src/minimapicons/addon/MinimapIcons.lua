@@ -89,6 +89,7 @@ local NPC_CATEGORIES = {
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair", default = 1 },
     { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox", default = 1 },
+    { name = "Oranges",       trackingType = "oranges",      icon = "Interface\\Minimap\\Tracking\\Orange", default = 1 },
     { name = "Brainwasher",   trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.8, default = 1 },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper", default = 1 },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },

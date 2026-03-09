@@ -1119,7 +1119,7 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
     const type_name = lua.tostring(L, 1) orelse return 0;
 
     const mapping = findTypeMapping(type_name) orelse {
-        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, brainwasher, flightmaster, innkeeper, repair, stablemaster, trainer, vendor, mailbox");
+        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, brainwasher, flightmaster, innkeeper, oranges, repair, stablemaster, trainer, vendor, mailbox");
         return 0;
     };
 
@@ -1254,6 +1254,7 @@ fn findTypeMapping(name: [*:0]const u8) ?TypeMapping {
         .{ .n = "trainer", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_TRAINER } },
         .{ .n = "vendor", .m = .{ .kind = .npc_flag, .value = NPC_FLAG_VENDOR } },
         .{ .n = "mailbox", .m = .{ .kind = .go_type, .value = GO_TYPE_MAILBOX } },
+        .{ .n = "oranges", .m = .{ .kind = .go_entry, .value = 1000084 } }, // Refreshment Table
         .{ .n = "brainwasher", .m = .{ .kind = .go_entry, .value = 1000333 } }, // Goblin Brainwashing Device
     };
 
