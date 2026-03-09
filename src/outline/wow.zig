@@ -195,7 +195,7 @@ pub fn isUnitFriendly(unit: u32, local_player: u32) bool {
         : [_] "{ecx}" (local_player),
           [unit] "r" (unit),
           [func] "r" (@as(u32, o.FN_UNIT_REACTION)),
-        : .{ .edx = true, .memory = true, .cc = true });
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
     return reaction >= 4;
 }
 

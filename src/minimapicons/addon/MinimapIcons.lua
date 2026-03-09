@@ -9,13 +9,14 @@ MINIMAPICONS_VERSION = 3
 -- =============================================================================
 
 local SPELL_CATEGORIES = {
-    { name = "Hunter Tracking", spells = {
+    { name = UnitClass("player") .. " Tracking", spells = {
         "Track Beasts", "Track Humanoids", "Track Undead", "Track Hidden",
         "Track Elementals", "Track Demons", "Track Giants", "Track Dragonkin",
-    }},
-    { name = "Class Abilities", spells = {
         "Sense Undead", "Sense Demons",
     }},
+    -- { name = "Class Abilities", spells = {
+        -- "Sense Undead", "Sense Demons",
+    -- }},
     { name = "Professions", spells = {
         "Find Herbs", "Find Minerals", "Find Treasure",
     }},

@@ -66,6 +66,13 @@ const ADDR = struct {
     const DESC_ENTRY: usize = 0x03 * 4; // OBJECT_FIELD_ENTRY
     const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END + 0x8D
     const DESC_GO_TYPE: usize = 0x15 * 4; // GAMEOBJECT_TYPE_ID
+    const DESC_SUMMONEDBY: usize = 0x0C * 4; // UNIT_FIELD_SUMMONEDBY (GUID, 8 bytes)
+    const DESC_FACTIONTEMPLATE: usize = 0x23 * 4; // UNIT_FIELD_FACTIONTEMPLATE
+    const DESC_GO_FLAGS: usize = 0x09 * 4; // GAMEOBJECT_FLAGS
+
+    // Function addresses
+    const ClntObjMgrGetActivePlayer: usize = 0x468550;
+    const UnitReaction: usize = 0x6061E0;
 
     // MINIMAPINFO struct offsets
     const MI_POS: usize = 0x0C; // C3Vector
@@ -92,6 +99,7 @@ const NPC_FLAG_STABLEMASTER: u32 = 0x00002000;
 const NPC_FLAG_REPAIR: u32 = 0x00004000;
 
 const GO_TYPE_MAILBOX: u32 = 19;
+const GO_FLAG_NO_INTERACT: u32 = 0x10;
 
 const OBJ_TYPE_UNIT: u32 = 3;
 const OBJ_TYPE_GAMEOBJECT: u32 = 5;
@@ -318,6 +326,7 @@ const MinimapInfoCache = struct {
     valid: bool = false,
 };
 var g_minimap_info: MinimapInfoCache = .{};
+var g_local_player: u32 = 0; // cached per enumeration cycle
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -399,6 +408,94 @@ fn isReagentVendorEntry(entry_id: u32) bool {
         if (e == entry_id) return true;
     }
     return false;
+}
+
+fn getGoFlags(obj: u32) u32 {
+    const desc = getDescriptor(obj);
+    if (!isValidPtr(desc)) return 0;
+    return hook.readMem(u32, desc + ADDR.DESC_GO_FLAGS);
+}
+
+fn getFactionTemplate(obj: u32) u32 {
+    const desc = getDescriptor(obj);
+    if (!isValidPtr(desc)) return 0;
+    return hook.readMem(u32, desc + ADDR.DESC_FACTIONTEMPLATE);
+}
+
+fn getSummonedByGUID(obj: u32) u64 {
+    const desc = getDescriptor(obj);
+    if (!isValidPtr(desc)) return 0;
+    const lo = hook.readMem(u32, desc + ADDR.DESC_SUMMONEDBY);
+    const hi = hook.readMem(u32, desc + ADDR.DESC_SUMMONEDBY + 4);
+    return (@as(u64, hi) << 32) | lo;
+}
+
+fn getActivePlayerObject() u32 {
+    var lo: u32 = undefined;
+    var hi: u32 = undefined;
+    asm volatile ("call *%[func]"
+        : [_] "={eax}" (lo),
+          [_] "={edx}" (hi),
+        : [func] "r" (@as(u32, ADDR.ClntObjMgrGetActivePlayer)),
+        : .{ .ecx = true, .memory = true, .cc = true });
+    const guid_lo = lo;
+    const guid_hi = hi;
+    if (guid_lo == 0 and guid_hi == 0) return 0;
+    return getObjectByGUID(guid_lo, guid_hi);
+}
+
+/// UnitReaction: __thiscall(localPlayer_ECX, unit_stack) -> int (>=4 = friendly).
+fn unitReaction(local_player: u32, unit: u32) i32 {
+    if (local_player == 0 or unit == 0) return 0;
+    return asm volatile (
+        \\push %[unit]
+        \\call *%[func]
+        : [ret] "={eax}" (-> i32),
+        : [_] "{ecx}" (local_player),
+          [unit] "r" (unit),
+          [func] "r" (@as(u32, ADDR.UnitReaction)),
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+}
+
+/// Check if a unit passes faction/friendliness filters.
+/// Returns false (reject) if:
+///   - Unit is hostile (reaction < 4)
+///   - Unit has an owner whose faction template differs from local player
+fn isUnitAllowed(obj: u32, local_player: u32) bool {
+    if (local_player == 0) return true; // can't check without player
+
+    // Check hostility via UnitReaction
+    const reaction = unitReaction(local_player, obj);
+    if (reaction < 4) {
+        con.fmt("[minimapicons] unit 0x{x} rejected: hostile (reaction={d}, faction={d})\n", .{ obj, reaction, getFactionTemplate(obj) });
+        return false;
+    }
+
+    // If unit has a summoner, their faction must match ours
+    const summoner_guid = getSummonedByGUID(obj);
+    if (summoner_guid != 0) {
+        const lo: u32 = @truncate(summoner_guid);
+        const hi: u32 = @truncate(summoner_guid >> 32);
+        const summoner = getObjectByGUID(lo, hi);
+        if (summoner != 0 and isValidPtr(summoner)) {
+            const our_faction = getFactionTemplate(local_player);
+            const their_faction = getFactionTemplate(summoner);
+            con.fmt("[minimapicons] unit 0x{x} summoner 0x{x}: our faction={d} their faction={d}\n", .{ obj, summoner, our_faction, their_faction });
+            if (our_faction != 0 and their_faction != 0 and our_faction != their_faction)
+                return false;
+        }
+    }
+    return true;
+}
+
+/// Check if a game object is interactable (GO_FLAG_NO_INTERACT not set).
+fn isGoInteractable(obj: u32) bool {
+    const flags = getGoFlags(obj);
+    if ((flags & GO_FLAG_NO_INTERACT) != 0) {
+        con.fmt("[minimapicons] GO 0x{x} rejected: GO_FLAG_NO_INTERACT (flags=0x{x})\n", .{ obj, flags });
+        return false;
+    }
+    return true;
 }
 
 fn containsInsensitive(haystack: [*:0]const u8, needle: []const u8) bool {
@@ -669,13 +766,25 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
 // =============================================================================
 
 fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
-    // Check GUID cache first — avoids all classification work for known objects
+    // GUID cache stores type classification (NPC flags/subname/GO type -> blip).
+    // Dynamic checks (faction, interactability) run every frame, even on cache hits,
+    // since these can change as players join/leave groups.
     if (guidCacheLookup(guid_lo, guid_hi)) |cached| {
-        if (cached.matched) {
-            trackObject(info, guid_lo, guid_hi, cached.blip);
-            return true;
+        if (!cached.matched) return false; // negative cache hit
+
+        // Dynamic checks on cached match
+        const obj = getObjectByGUID(guid_lo, guid_hi);
+        if (obj == 0 or !isValidPtr(obj)) return false;
+
+        const obj_type = getObjectType(obj);
+        if (obj_type == OBJ_TYPE_UNIT) {
+            if (!isUnitAllowed(obj, g_local_player)) return false;
+        } else if (obj_type == OBJ_TYPE_GAMEOBJECT) {
+            if (!isGoInteractable(obj)) return false;
         }
-        return false; // negative cache hit
+
+        trackObject(info, guid_lo, guid_hi, cached.blip);
+        return true;
     }
 
     const obj = getObjectByGUID(guid_lo, guid_hi);
@@ -740,6 +849,10 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         }
 
         if (best_flag != 0) {
+            // Classification matched — apply dynamic faction/friendliness check.
+            // Not negative-cached: faction can change (group join/leave).
+            if (!isUnitAllowed(obj, g_local_player)) return false;
+
             guidCacheStore(guid_lo, guid_hi, best_blip);
             trackObject(info, guid_lo, guid_hi, best_blip);
             return true;
@@ -750,6 +863,7 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         for (&g_go_id_tracking) |*entry| {
             if (!entry.active) continue;
             if (entry.entry_id == go_entry_id) {
+                if (!isGoInteractable(obj)) return false;
                 guidCacheStore(guid_lo, guid_hi, entry.blip);
                 trackObject(info, guid_lo, guid_hi, entry.blip);
                 return true;
@@ -760,6 +874,7 @@ fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
         for (&g_go_tracking) |*entry| {
             if (!entry.active) continue;
             if (entry.go_type == go_type) {
+                if (!isGoInteractable(obj)) return false;
                 guidCacheStore(guid_lo, guid_hi, entry.blip);
                 trackObject(info, guid_lo, guid_hi, entry.blip);
                 return true;
@@ -906,6 +1021,14 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
     if (callback == ADDR.ObjectEnumProc) {
         g_blip_count = 0;
         g_minimap_info.valid = false;
+        const prev = g_local_player;
+        g_local_player = getActivePlayerObject();
+        if (g_local_player != prev) {
+            con.fmt("[minimapicons] local player: 0x{x} faction={d}\n", .{
+                g_local_player,
+                if (g_local_player != 0) getFactionTemplate(g_local_player) else @as(u32, 0),
+            });
+        }
     }
     return enum_vis_hook.callOriginal(.{ callback, context });
 }
