@@ -61,31 +61,13 @@ const DISPLAY_INFO_TABLE_PTR: usize = 0x00c0de90;
 // =============================================================================
 
 fn unitGUID(unit_id: [*:0]const u8) u64 {
-    // __fastcall(ECX=str) → u64 in EDX:EAX
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile (
-        \\call *%[func]
-        : [lo] "={eax}" (lo),
-          [hi] "={edx}" (hi),
-        : [_] "{ecx}" (unit_id),
-          [func] "r" (@as(u32, ADDR_UnitGUID)),
-        : .{ .memory = true, .cc = true });
-    return @as(u64, hi) << 32 | lo;
+    return hook.call(fn ([*:0]const u8) callconv(fc) u64, ADDR_UnitGUID, .{unit_id});
 }
 
 fn getObjectByGUID(guid: u64) u32 {
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [lo] "r" (lo),
-          [hi] "r" (hi),
-          [func] "r" (@as(u32, ADDR_GetObjectByGUID)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32) callconv(sc) u32, ADDR_GetObjectByGUID, .{ lo, hi });
 }
 
 fn updateInventoryAlertStates() void {
@@ -172,6 +154,8 @@ pub fn isActive() bool {
 // =============================================================================
 
 const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
+const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 const SetBlockFn = fn (u32, u32, u32) callconv(tc) u32;
 const RefreshFn = fn (u32, u32, u32, u32) callconv(tc) void;
 const SceneEndFn = fn (u32) callconv(tc) void;

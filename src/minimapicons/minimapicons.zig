@@ -21,6 +21,7 @@ const mod_mutex = @import("../mutex.zig");
 
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 pub const module_name: [*:0]const u8 = "minimapicons";
 
@@ -364,15 +365,7 @@ fn isValidPtr(addr: u32) bool {
 
 fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
     if (guid_lo == 0 and guid_hi == 0) return 0;
-    return asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [lo] "r" (guid_lo),
-          [hi] "r" (guid_hi),
-          [func] "r" (@as(u32, ADDR.GetObjectByGUID)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32) callconv(sc) u32, ADDR.GetObjectByGUID, .{ guid_lo, guid_hi });
 }
 
 fn getObjectType(obj: u32) u32 {
@@ -468,14 +461,7 @@ fn getSummonedByGUID(obj: u32) u64 {
 }
 
 fn getActivePlayerGUID() u64 {
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile ("call *%[func]"
-        : [_] "={eax}" (lo),
-          [_] "={edx}" (hi),
-        : [func] "r" (@as(u32, ADDR.ClntObjMgrGetActivePlayer)),
-        : .{ .ecx = true, .memory = true, .cc = true });
-    return (@as(u64, hi) << 32) | lo;
+    return hook.call(fn () callconv(fc) u64, ADDR.ClntObjMgrGetActivePlayer, .{});
 }
 
 fn getActivePlayerObject() u32 {
@@ -487,14 +473,7 @@ fn getActivePlayerObject() u32 {
 /// UnitReaction: __thiscall(localPlayer_ECX, unit_stack) -> int (>=4 = friendly).
 fn unitReaction(local_player: u32, unit: u32) i32 {
     if (local_player == 0 or unit == 0) return 0;
-    return asm volatile (
-        \\push %[unit]
-        \\call *%[func]
-        : [ret] "={eax}" (-> i32),
-        : [_] "{ecx}" (local_player),
-          [unit] "r" (unit),
-          [func] "r" (@as(u32, ADDR.UnitReaction)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32) callconv(tc) i32, ADDR.UnitReaction, .{ local_player, unit });
 }
 
 /// Check if a unit passes faction/friendliness filters.
@@ -535,11 +514,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
 /// CallSpellCastHandler: __fastcall(obj_ECX) -> char (bool via virtual dispatch).
 /// This is what IsValidInteractionTarget uses for type 0x21 (GO).
 fn isGoInteractable(obj: u32) bool {
-    const result: u8 = @truncate(asm volatile ("call *%[func]"
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (obj),
-          [func] "r" (@as(u32, ADDR.CallSpellCastHandler)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true }));
+    const result: u8 = @truncate(hook.call(fn (u32) callconv(fc) u32, ADDR.CallSpellCastHandler, .{obj}));
     if (result == 0) {
         con.fmt("[minimapicons] GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
     }
@@ -574,14 +549,7 @@ fn getObjectPosition(obj: u32) ?C3Vector {
     if (!isValidPtr(get_pos_fn)) return null;
     var pos: C3Vector = undefined;
     // __thiscall(obj_ECX, &pos_stack) → C3Vector*
-    asm volatile (
-        \\push %[out]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (obj),
-          [out] "r" (@intFromPtr(&pos)),
-          [func] "r" (get_pos_fn),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    _ = hook.call(fn (u32, *C3Vector) callconv(tc) u32, get_pos_fn, .{ obj, &pos });
     return pos;
 }
 
@@ -600,32 +568,10 @@ fn worldPosToMinimapCoords(
 ) void {
     // WorldPosToMinimapFrameCoords: __fastcall(out_ECX, edx, C3Vector cur, float radius,
     //   float worldX, float worldY, float layoutScale, float unkScale)
-    // 8 stack params (32 bytes), callee cleanup
-    const args = [8]u32{
-        @bitCast(cur.x),
-        @bitCast(cur.y),
-        @bitCast(cur.z),
-        @bitCast(radius),
-        @bitCast(world_x),
-        @bitCast(world_y),
-        @bitCast(layout_scale),
-        @bitCast(unk_scale),
-    };
-    _ = asm volatile (
-        \\pushl 28(%[args])
-        \\pushl 24(%[args])
-        \\pushl 20(%[args])
-        \\pushl 16(%[args])
-        \\pushl 12(%[args])
-        \\pushl 8(%[args])
-        \\pushl 4(%[args])
-        \\pushl (%[args])
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@intFromPtr(out)),
-          [args] "r" (&args),
-          [func] "r" (@as(u32, ADDR.WorldPosToMinimapCoords)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    // EDX unused — use thiscall (ECX=this, rest on stack)
+    _ = hook.call(fn (*C2Vector, f32, f32, f32, f32, f32, f32, f32, f32) callconv(tc) u32, ADDR.WorldPosToMinimapCoords, .{
+        out, cur.x, cur.y, cur.z, radius, world_x, world_y, layout_scale, unk_scale,
+    });
 }
 
 fn getFrameUnkScale(info: u32) f32 {
@@ -637,12 +583,7 @@ fn getFrameUnkScale(info: u32) f32 {
     const fn_addr = hook.readMem(u32, vtable + 7 * 4);
     if (!isValidPtr(fn_addr)) return 1.0;
     // __thiscall(fsp_ECX) → f32 on FPU ST(0)
-    return asm volatile (
-        \\call *%[func]
-        : [ret] "={st}" (-> f32),
-        : [_] "{ecx}" (fsp),
-          [func] "r" (fn_addr),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32) callconv(tc) f32, fn_addr, .{fsp});
 }
 
 // =============================================================================
@@ -680,17 +621,9 @@ fn loadTexture(path: [*:0]const u8) u32 {
     defer status.deinit();
 
     // TextureCreate: __fastcall(filename_ECX, status_EDX, texFlags, unk1, unk2)
-    const texture: u32 = asm volatile (
-        \\pushl $1
-        \\pushl $0
-        \\push %[flags]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@intFromPtr(path)),
-          [_] "{edx}" (@intFromPtr(&status)),
-          [flags] "r" (g_default_tex_flags),
-          [func] "r" (@as(u32, ADDR.TextureCreate)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    const texture = hook.call(fn ([*:0]const u8, *CStatus, u32, u32, u32) callconv(fc) u32, ADDR.TextureCreate, .{
+        path, &status, g_default_tex_flags, 0, 1,
+    });
 
     if (!status.ok() or texture == 0) {
         con.print("[minimapicons] Failed to load texture\n");
@@ -709,20 +642,9 @@ fn initTexFlags() u32 {
     var flags: u32 = 0;
     // CGxTexFlags constructor: __thiscall(this, filter=0, wrapU=0, wrapV=0,
     //   forceMipTracking=0, generateMipMaps=0, renderTarget=0, maxAnisotropy=0, unknownFlag=1)
-    asm volatile (
-        \\pushl $1
-        \\pushl $0
-        \\pushl $0
-        \\pushl $0
-        \\pushl $0
-        \\pushl $0
-        \\pushl $0
-        \\pushl $0
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(&flags)),
-          [func] "r" (@as(u32, ADDR.CGxTexFlagsInit)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (*u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(tc) void, ADDR.CGxTexFlagsInit, .{
+        &flags, 0, 0, 0, 0, 0, 0, 0, 1,
+    });
     return flags;
 }
 
@@ -736,15 +658,9 @@ fn getGxTex(texture: u32) u32 {
     status.init();
     defer status.deinit();
 
-    const gx_tex: u32 = asm volatile (
-        \\push %[status]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (texture),
-          [_] "{edx}" (@as(u32, 1)),
-          [status] "r" (@intFromPtr(&status)),
-          [func] "r" (@as(u32, ADDR.TextureGetGxTex)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    const gx_tex = hook.call(fn (u32, u32, *CStatus) callconv(fc) u32, ADDR.TextureGetGxTex, .{
+        texture, 1, &status,
+    });
 
     if (!status.ok()) return 0;
     return gx_tex;
@@ -767,7 +683,9 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
 
     // GxPrimLockVertexPtrs(count=4, vertices, vertStride=12, normal, 0, color, 0,
     //   null, 0, texCoords, 8, null, 0)
-    const lock_args = [11]u32{
+    hook.call(fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(fc) void, ADDR.GxPrimLockVertexPtrs, .{
+        4, // count (ECX)
+        @intFromPtr(&vertices), // vertices (EDX)
         12, // vertStride
         @as(u32, ADDR.BlipNormal), // normal
         0, // normalStride
@@ -779,26 +697,7 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
         8, // texStride
         0, // texCoords2 (null)
         0, // tex2Stride
-    };
-    asm volatile (
-        \\pushl 40(%[args])
-        \\pushl 36(%[args])
-        \\pushl 32(%[args])
-        \\pushl 28(%[args])
-        \\pushl 24(%[args])
-        \\pushl 20(%[args])
-        \\pushl 16(%[args])
-        \\pushl 12(%[args])
-        \\pushl 8(%[args])
-        \\pushl 4(%[args])
-        \\pushl (%[args])
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@as(u32, 4)), // count
-          [_] "{edx}" (@intFromPtr(&vertices)), // vertices
-          [args] "r" (&lock_args),
-          [func] "r" (@as(u32, ADDR.GxPrimLockVertexPtrs)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    });
 
     // GxPrimDrawElements(TriangleStrip=4, count=4, indices)
     const drawElements: *const fn (u32, u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxPrimDrawElements);

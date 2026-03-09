@@ -127,16 +127,8 @@ pub fn pcall(L: State, nargs: i32, nresults: i32, errfunc: i32) i32 {
 }
 
 pub fn luaError(L: State, msg: [*:0]const u8) void {
-    asm volatile (
-        \\push %[msg]
-        \\push %[L]
-        \\call *%[func]
-        \\add $8, %%esp
-        :
-        : [L] "r" (@intFromPtr(L)),
-          [msg] "r" (@intFromPtr(msg)),
-          [func] "r" (@as(u32, 0x6F4940)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    const hook = @import("zhook");
+    hook.call(fn (*anyopaque, [*:0]const u8) callconv(.c) void, 0x6F4940, .{ L, msg });
 }
 
 pub const LuaReg = extern struct {

@@ -14,6 +14,9 @@ const types = @import("types.zig");
 // =============================================================================
 
 const WINAPI = std.builtin.CallingConvention.winapi;
+const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
+const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 extern "kernel32" fn IsBadReadPtr(
     lp: ?*const anyopaque,
@@ -140,35 +143,18 @@ pub fn resolveModelOwner(model: u32) u32 {
 // =============================================================================
 
 /// UnitGUID("player") / UnitGUID("target") → 64-bit GUID.
-/// __fastcall(unitIdStr_ECX) → EAX:EDX.
+/// __fastcall(unitIdStr_ECX) → EDX:EAX (u64).
 pub fn unitGUID(unit_id: [*:0]const u8) u64 {
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile ("call *%[func]"
-        : [_] "={eax}" (lo),
-          [_] "={edx}" (hi),
-        : [_] "{ecx}" (@intFromPtr(unit_id)),
-          [func] "r" (@as(u32, o.FN_UNIT_GUID)),
-        : .{ .memory = true, .cc = true });
-    return (@as(u64, hi) << 32) | lo;
+    return hook.call(fn ([*:0]const u8) callconv(fc) u64, o.FN_UNIT_GUID, .{unit_id});
 }
 
 /// Resolve a GUID → object pointer via the object manager hash table.
 /// Ghidra-verified: __stdcall(guidLow, guidHigh) with RET 8.
-/// NOT __fastcall - params are read from stack, not registers.
 pub fn getObjectByGUID(guid: u64) u32 {
     if (guid == 0) return 0;
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [lo] "r" (lo),
-          [hi] "r" (hi),
-          [func] "r" (@as(u32, o.FN_GET_OBJECT_BY_GUID)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32) callconv(sc) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
 }
 
 /// Get the local player's object pointer.
@@ -188,14 +174,7 @@ pub fn getTargetGUID() u64 {
 /// Reaction >= 4 means friendly.
 pub fn isUnitFriendly(unit: u32, local_player: u32) bool {
     if (unit == 0 or local_player == 0) return false;
-    const reaction: i32 = asm volatile (
-        \\push %[unit]
-        \\call *%[func]
-        : [ret] "={eax}" (-> i32),
-        : [_] "{ecx}" (local_player),
-          [unit] "r" (unit),
-          [func] "r" (@as(u32, o.FN_UNIT_REACTION)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    const reaction = hook.call(fn (u32, u32) callconv(tc) i32, o.FN_UNIT_REACTION, .{ local_player, unit });
     return reaction >= 4;
 }
 

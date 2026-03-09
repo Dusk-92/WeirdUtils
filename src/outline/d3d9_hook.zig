@@ -184,21 +184,10 @@ fn deviceGetPtr(dev: *anyopaque, idx: usize) ?*anyopaque {
     return ptr;
 }
 
-/// Set a COM pointer, handling the null case by passing 0 via raw write.
+/// Set a COM pointer, handling null via optional pointer (ABI-equivalent to passing 0).
 fn deviceSetPtrOrNull(dev: *anyopaque, idx: usize, ptr: ?*anyopaque) void {
-    if (ptr) |p| {
-        deviceSetPtr(dev, idx, p);
-    } else {
-        const func_addr = vt(dev)[idx];
-        asm volatile (
-            \\push $0
-            \\push %[self]
-            \\call *%[func]
-            :
-            : [self] "r" (@intFromPtr(dev)),
-              [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-    }
+    const f: *const fn (*anyopaque, ?*anyopaque) callconv(sc) i32 = @ptrFromInt(vt(dev)[idx]);
+    _ = @call(.never_tail, f, .{ dev, ptr });
 }
 
 fn deviceSetPSConstF(dev: *anyopaque, start: u32, data: *const [4]f32) void {
@@ -233,25 +222,10 @@ fn deviceGetRenderTarget(dev: *anyopaque, idx: u32) ?*anyopaque {
     return surf;
 }
 
-/// Set texture on a sampler stage. Handles NULL via inline asm.
 fn deviceSetTexture(dev: *anyopaque, stage: u32, tex: ?*anyopaque) void {
-    if (tex) |t| {
-        const f: *const fn (*anyopaque, u32, *anyopaque) callconv(sc) i32 =
-            @ptrFromInt(vt(dev)[types.VT.SetTexture]);
-        _ = f(dev, stage, t);
-    } else {
-        const func_addr = vt(dev)[types.VT.SetTexture];
-        asm volatile (
-            \\push $0
-            \\push %[stage]
-            \\push %[self]
-            \\call *%[func]
-            :
-            : [self] "r" (@intFromPtr(dev)),
-              [stage] "r" (stage),
-              [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-    }
+    const f: *const fn (*anyopaque, u32, ?*anyopaque) callconv(sc) i32 =
+        @ptrFromInt(vt(dev)[types.VT.SetTexture]);
+    _ = @call(.never_tail, f, .{ dev, stage, tex });
 }
 
 fn deviceSetFVF(dev: *anyopaque, fvf: u32) void {
@@ -281,27 +255,9 @@ fn deviceGetStreamSource(dev: *anyopaque, stream: u32, vb_out: *?*anyopaque, off
 }
 
 fn deviceSetStreamSource(dev: *anyopaque, stream: u32, vb: ?*anyopaque, offset: u32, stride: u32) void {
-    if (vb) |v| {
-        const f: *const fn (*anyopaque, u32, *anyopaque, u32, u32) callconv(sc) i32 =
-            @ptrFromInt(vt(dev)[types.VT.SetStreamSource]);
-        _ = f(dev, stream, v, offset, stride);
-    } else {
-        // Pass NULL VB via inline asm (Zig's *anyopaque is non-null)
-        const args = [_]u32{ stream, 0, offset, stride };
-        const func_addr = vt(dev)[types.VT.SetStreamSource];
-        asm volatile (
-            \\push 12(%[a])
-            \\push 8(%[a])
-            \\push 4(%[a])
-            \\push (%[a])
-            \\push %[self]
-            \\call *%[func]
-            :
-            : [self] "r" (@intFromPtr(dev)),
-              [a] "r" (&args),
-              [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-    }
+    const f: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32) callconv(sc) i32 =
+        @ptrFromInt(vt(dev)[types.VT.SetStreamSource]);
+    _ = @call(.never_tail, f, .{ dev, stream, vb, offset, stride });
 }
 
 fn deviceGetTexture(dev: *anyopaque, stage: u32) ?*anyopaque {
@@ -321,21 +277,9 @@ fn deviceGetIndices(dev: *anyopaque) ?*anyopaque {
 }
 
 fn deviceSetIndices(dev: *anyopaque, ib: ?*anyopaque) void {
-    if (ib) |i| {
-        const f: *const fn (*anyopaque, *anyopaque) callconv(sc) i32 =
-            @ptrFromInt(vt(dev)[types.VT.SetIndices]);
-        _ = f(dev, i);
-    } else {
-        const func_addr = vt(dev)[types.VT.SetIndices];
-        asm volatile (
-            \\push $0
-            \\push %[self]
-            \\call *%[func]
-            :
-            : [self] "r" (@intFromPtr(dev)),
-              [func] "r" (func_addr),
-            : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
-    }
+    const f: *const fn (*anyopaque, ?*anyopaque) callconv(sc) i32 =
+        @ptrFromInt(vt(dev)[types.VT.SetIndices]);
+    _ = @call(.never_tail, f, .{ dev, ib });
 }
 
 fn deviceGetVSConstF(dev: *anyopaque, start: u32, data: [*][4]f32, count: u32) void {

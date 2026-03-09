@@ -116,22 +116,16 @@ var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 
 const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
 const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
+const tc = std.builtin.CallingConvention{ .x86_thiscall = .{} };
 
 // =============================================================================
 // Permission check - leader or raid officer required
 // =============================================================================
 
 /// Get local player GUID via GetPlayerGUID (0x468550).
-/// __fastcall(), no params, returns EAX(low):EDX(high).
+/// __fastcall(), no params, returns u64 via EDX:EAX.
 fn getPlayerGUID() u64 {
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile ("call *%[func]"
-        : [_] "={eax}" (lo),
-          [_] "={edx}" (hi),
-        : [func] "r" (o.FN_GET_PLAYER_GUID),
-        : .{ .ecx = true, .memory = true, .cc = true });
-    return (@as(u64, hi) << 32) | lo;
+    return hook.call(fn () callconv(fc) u64, o.FN_GET_PLAYER_GUID, .{});
 }
 
 /// Look up a player name from the name cache by GUID.
@@ -139,27 +133,9 @@ fn getPlayerGUID() u64 {
 fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
     if (guid_lo == 0 and guid_hi == 0) return null;
     var name_buf: [2]u32 = .{ 0, 0 };
-    const stack_args = [6]u32{
-        guid_lo,
-        guid_hi,
-        @intFromPtr(&name_buf),
-        0,
-        0,
-        0,
-    };
-    const result: u32 = asm volatile (
-        \\ push 20(%[a])
-        \\ push 16(%[a])
-        \\ push 12(%[a])
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
-        \\ call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@as(u32, o.NAME_CACHE_OBJ)),
-          [a] "r" (&stack_args),
-          [func] "r" (@as(u32, o.FN_NAME_CACHE_LOOKUP)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(tc) u32, o.FN_NAME_CACHE_LOOKUP, .{
+        o.NAME_CACHE_OBJ, guid_lo, guid_hi, @intFromPtr(&name_buf), 0, 0, 0,
+    });
     return if (result != 0) @ptrFromInt(result) else null;
 }
 
@@ -310,39 +286,15 @@ fn getCursorTerrainPosition() ?Vec3 {
 
 /// CreateEntityInstance_WithAttachment - __fastcall, RET 0x14.
 fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u32, update_now: u32) ?*anyopaque {
-    const facing_bits: u32 = @bitCast(facing);
-    const stack_args = [5]u32{
-        facing_bits,
-        flags,
-        update_now,
-        0,
-        0,
-    };
-
-    const result: u32 = asm volatile (
-        \\ push 16(%[a])
-        \\ push 12(%[a])
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
-        \\ call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [_] "{ecx}" (@intFromPtr(path)),
-          [_] "{edx}" (@intFromPtr(pos)),
-          [a] "r" (&stack_args),
-          [func] "r" (o.FN_CREATE_ENTITY_INSTANCE),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
-
+    const result = hook.call(fn ([*:0]const u8, *[3]f32, f32, u32, u32, u32, u32) callconv(fc) u32, o.FN_CREATE_ENTITY_INSTANCE, .{
+        path, pos, facing, flags, update_now, 0, 0,
+    });
     return if (result != 0) @ptrFromInt(result) else null;
 }
 
 /// CleanupEntity_ProcessAttachments - __fastcall(ECX=entity), no stack params.
 fn cleanupEntity(obj: *anyopaque) void {
-    asm volatile ("call *%[func]"
-        :
-        : [_] "{ecx}" (@intFromPtr(obj)),
-          [func] "r" (o.FN_CLEANUP_ENTITY),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (*anyopaque) callconv(fc) void, o.FN_CLEANUP_ENTITY, .{obj});
 }
 
 // =============================================================================
@@ -356,31 +308,9 @@ fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
     const model = hook.readMem(u32, entity_addr + 0x88);
     if (model == 0 or model < 0x10000) return;
 
-    const speed_bits: u32 = @bitCast(@as(f32, 1.0));
-    const stack_args = [7]u32{
-        0xFFFFFFFF, // boneIndex: all bones
-        anim_id,
-        @bitCast(@as(i32, -1)), // seqIndex: random
-        0, // animData: NULL
-        speed_bits, // speed: 1.0
-        1, // blendMode: smooth blend
-        @intFromBool(queue),
-    };
-
-    asm volatile (
-        \\ push 24(%[a])
-        \\ push 20(%[a])
-        \\ push 16(%[a])
-        \\ push 12(%[a])
-        \\ push 8(%[a])
-        \\ push 4(%[a])
-        \\ push (%[a])
-        \\ call *%[func]
-        :
-        : [_] "{ecx}" (model),
-          [a] "r" (&stack_args),
-          [func] "r" (o.FN_PLAY_BONE_ANIMATION),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32, u32, u32, i32, u32, u32, u32, u32) callconv(tc) void, o.FN_PLAY_BONE_ANIMATION, .{
+        model, 0xFFFFFFFF, anim_id, -1, 0, @as(u32, @bitCast(@as(f32, 1.0))), 1, @intFromBool(queue),
+    });
 }
 
 /// Clean up despawning entities whose Decay animation has finished.
@@ -475,16 +405,7 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
 
 /// SetUnitPositionAndOrientation - __fastcall(ECX=positionData, EDX=pos), 1 stack param.
 fn setUnitPositionAndOrientation(entity: *anyopaque, pos: *[3]f32, facing: f32) void {
-    const facing_bits: u32 = @bitCast(facing);
-    asm volatile (
-        \\ push %[facing]
-        \\ call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(entity)),
-          [_] "{edx}" (@intFromPtr(pos)),
-          [facing] "r" (facing_bits),
-          [func] "r" (@as(u32, 0x698e20)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (*anyopaque, *[3]f32, f32) callconv(fc) void, 0x698e20, .{ entity, pos, facing });
 }
 
 /// Remove only the live entity for a marker slot (def untouched).

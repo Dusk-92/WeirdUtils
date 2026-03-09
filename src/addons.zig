@@ -343,12 +343,7 @@ fn hideAddonFromList(name: [*:0]const u8) void {
 }
 
 fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
-    asm volatile (
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(addon_name)),
-          [func] "{eax}" (@as(u32, 0x0051c9b0)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn ([*:0]const u8) callconv(fc) void, 0x0051c9b0, .{addon_name});
 }
 
 // =============================================================================

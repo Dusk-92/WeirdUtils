@@ -52,22 +52,20 @@ const C3Vector = struct {
 };
 
 // =============================================================================
+// Calling Conventions
+// =============================================================================
+
+const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+
+// =============================================================================
 // Game API
 // =============================================================================
 
 fn getObjectPointer(guid: u64) u32 {
-    // __stdcall(u32 guidLow, u32 guidHigh): both on stack, callee cleans (ret 8)
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        : [ret] "={eax}" (-> u32),
-        : [lo] "r" (lo),
-          [hi] "r" (hi),
-          [func] "r" (@as(u32, Offsets.FUN_GET_OBJECT_POINTER)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32) callconv(sc) u32, Offsets.FUN_GET_OBJECT_POINTER, .{ lo, hi });
 }
 
 fn isInWorld() bool {
@@ -106,30 +104,13 @@ fn isUnitSkinnable(unit: u32) bool {
 }
 
 fn setTarget(guid: u64) void {
-    // __stdcall(uint64_t guid): push hi, push lo, callee cleans 8
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        :
-        : [lo] "r" (lo),
-          [hi] "r" (hi),
-          [func] "r" (@as(u32, Offsets.FUN_SET_TARGET)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32, u32) callconv(sc) void, Offsets.FUN_SET_TARGET, .{ lo, hi });
 }
 
 fn rightClickInteract(pointer: u32, autoloot: i32, fun_ptr: usize) void {
-    // __thiscall: ECX=this (pointer), push autoloot, callee cleans 4
-    asm volatile (
-        \\push %[autoloot]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (pointer),
-          [autoloot] "r" (autoloot),
-          [func] "r" (fun_ptr),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32, i32) callconv(tc) void, fun_ptr, .{ pointer, autoloot });
 }
 
 // =============================================================================
@@ -165,17 +146,7 @@ fn luaToNumber(L: *anyopaque, idx: i32) f64 {
 }
 
 fn luaPrintError(L: *anyopaque, msg: [*:0]const u8) void {
-    // __cdecl(lua_State*, const char*): both on stack, caller cleans
-    asm volatile (
-        \\push %[msg]
-        \\push %[L]
-        \\call *%[func]
-        \\add $8, %%esp
-        :
-        : [L] "r" (@intFromPtr(L)),
-          [msg] "r" (@intFromPtr(msg)),
-          [func] "r" (@as(u32, Offsets.LUA_ERROR)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (*anyopaque, [*:0]const u8) callconv(.c) void, Offsets.LUA_ERROR, .{ L, msg });
 }
 
 // =============================================================================
@@ -393,7 +364,6 @@ pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
 // Per-frame hook for processing the loot queue.
 // =============================================================================
 
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 const SceneEndFn = fn (u32) callconv(tc) void;
 var scene_end_hook: hook.Detour(SceneEndFn) = .{};
 

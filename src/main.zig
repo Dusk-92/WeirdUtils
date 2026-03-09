@@ -59,17 +59,9 @@ fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
 }
 
 fn allocateGameBuffer(size: u32) ?[*]u8 {
-    return asm volatile (
-        \\push $0
-        \\push $0
-        \\push %[src]
-        \\push %[size]
-        \\call *%[func]
-        : [ret] "={eax}" (-> ?[*]u8),
-        : [size] "r" (size),
-          [src] "r" (@intFromPtr(@as([*:0]const u8, "weirdutils"))),
-          [func] "r" (@as(u32, 0x6462E0)),
-        : .{ .ecx = true, .edx = true, .memory = true, .cc = true });
+    return hook.call(fn (u32, u32, u32, u32) callconv(sc) ?[*]u8, 0x6462E0, .{
+        size, @intFromPtr(@as([*:0]const u8, "weirdutils")), 0, 0,
+    });
 }
 
 // =============================================================================
@@ -207,38 +199,19 @@ fn isFakeFileContext(ctx_addr: u32) bool {
 
 /// Call initializeFileContext (0x647290) - __thiscall(ECX=ctx, type)
 fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
-    asm volatile (
-        \\push %[ftype]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(ctx)),
-          [ftype] "r" (file_type),
-          [func] "r" (@as(u32, 0x647290)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32, u32) callconv(tc) void, 0x647290, .{ @intFromPtr(ctx), file_type });
 }
 
 /// Call cleanupFileContext (0x6472d0) - __thiscall(ECX=ctx)
 fn callCleanupFileContext(ctx: [*]u8) void {
-    asm volatile (
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (@intFromPtr(ctx)),
-          [func] "r" (@as(u32, 0x6472d0)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32) callconv(tc) void, 0x6472d0, .{@intFromPtr(ctx)});
 }
 
 /// Free a buffer via FreeMemory/SMemFree (0x646430) - __stdcall(ptr, src, flags)
 fn freeGameBuffer(ptr: [*]u8) void {
-    asm volatile (
-        \\push $0xffffffff
-        \\push %[src]
-        \\push %[ptr]
-        \\call *%[func]
-        :
-        : [ptr] "r" (@intFromPtr(ptr)),
-          [src] "r" (@intFromPtr(@as([*:0]const u8, "weirdutils"))),
-          [func] "r" (@as(u32, 0x646430)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (u32, u32, u32) callconv(sc) void, 0x646430, .{
+        @intFromPtr(ptr), @intFromPtr(@as([*:0]const u8, "weirdutils")), 0xffffffff,
+    });
 }
 
 // --- Hook 1: openFileWithOptions (0x6477c0) ---

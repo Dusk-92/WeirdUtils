@@ -15,6 +15,7 @@ const mod_mutex = @import("../mutex.zig");
 const WINAPI = std.builtin.CallingConvention.winapi;
 const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
+const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 pub const module_name: [*:0]const u8 = "bigcursor";
 
@@ -556,17 +557,7 @@ fn hkShowCursor(device: *anyopaque, bShow: i32) callconv(sc) i32 {
 // =============================================================================
 
 fn luaPushNumber(L_ptr: usize, n: f64) void {
-    const raw: [2]u32 = @bitCast(n);
-    asm volatile (
-        \\push %[hi]
-        \\push %[lo]
-        \\call *%[func]
-        :
-        : [_] "{ecx}" (L_ptr),
-          [lo] "r" (raw[0]),
-          [hi] "r" (raw[1]),
-          [func] "r" (@as(u32, 0x6F3810)),
-        : .{ .eax = true, .ecx = true, .edx = true, .memory = true, .cc = true });
+    hook.call(fn (usize, f64) callconv(tc) void, 0x6F3810, .{ L_ptr, n });
 }
 
 pub fn luaSetCursorScale(L: *anyopaque) callconv(.c) u32 {
