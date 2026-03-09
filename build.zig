@@ -13,7 +13,7 @@ const ModuleDesc = struct {
 /// Single source of truth for all modules. Adding a module here is enough
 /// to wire up the build option, build_options passthrough, and DLL variant.
 const module_list = [_]ModuleDesc{
-    .{ .name = "pngscreenshot", .desc = "Enable screenshot module", .src_dir = "screenshot" },
+    .{ .name = "pngscreenshots", .desc = "Enable screenshot module", .src_dir = "screenshot" },
     .{ .name = "interact", .desc = "Enable interact module", .addon_name = "Interact" },
     .{ .name = "outline", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
     .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers" },

@@ -34,7 +34,7 @@ static const char *const WeirdUtils__DllNames[] = {
     "worldmarkers.dll",
     "outline.dll",
     "interact.dll",
-    "pngscreenshot.dll",
+    "pngscreenshots.dll",
     "framecrash.dll",
     "transmogfix.dll",
     "customassets.dll",

@@ -11,7 +11,7 @@ On Turtle WoW, place your chosen DLLs next to your `WoW.exe` and add them to you
 
 ### World Markers
 
-Place up to 5 animated colored markers at any position in the world, useful for raid positioning, pull planning, or route marking. Requires party/raid leader or raid assist.
+Place up to 5 animated colored markers (Cataclysm style) at any position in the world, useful for raid positioning, pull planning, or route marking. Requires party/raid leader or raid assist.
 
 - `/worldmarker 1` through `/worldmarker 5` (or `/wm 1`) -- place a marker where your cursor is pointing
 - `/worldmarker 1 target` -- place a marker on a unit (player, target, mouseover, etc.)
@@ -73,7 +73,7 @@ Controlled via the `screenshotQuality` CVar (saved to config.wtf):
 - `/script SetCVar("screenshotQuality", "6")` -- set compression level (1 = fast, 9 = smallest, default 6)
 - `/script SetCVar("screenshotQuality", "0")` -- disable PNG, use original TGA format
 
-**DLL:** `pngscreenshot.dll`
+**DLL:** `pngscreenshots.dll`
 
 ---
 
@@ -109,7 +109,7 @@ No configuration needed, install and forget.
 
 ### Utility Minimap Trackings
 
-Adds custom minimap icons for NPC types (vendors, trainers, innkeepers, etc.) and game objects (mailboxes).  
+Adds TBC-style minimap tracking icons for NPC types (vendors, trainers, innkeepers, etc.) and game objects (mailboxes).  
 Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
 Can be disabled easily from normal AddOn menu.  
 
@@ -197,11 +197,11 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 | `WeirdUtils_DisableModule` | `int __cdecl (const char *name)` | Unhooks the named module. Returns 1 if found, 0 otherwise |
 | `WeirdUtils_DisableAll` | `int __cdecl (void)` | Unhooks all modules and core hooks. Returns count of modules disabled |
 
-Module names are case-insensitive and match the build option names:
+Module names are case-insensitive and match the released dll names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshot`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`
 
-There is no re-enable API - re-hooking after unhook is unsafe.
+There is no re-enable API.
 
 #### C/C++ Header
 
