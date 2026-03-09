@@ -67,12 +67,14 @@ const ADDR = struct {
     const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END + 0x8D
     const DESC_GO_TYPE: usize = 0x15 * 4; // GAMEOBJECT_TYPE_ID
     const DESC_SUMMONEDBY: usize = 0x0C * 4; // UNIT_FIELD_SUMMONEDBY (GUID, 8 bytes)
-    const DESC_FACTIONTEMPLATE: usize = 0x23 * 4; // UNIT_FIELD_FACTIONTEMPLATE
+    const DESC_BYTES_0: usize = 0x24 * 4; // UNIT_FIELD_BYTES_0: race|class|gender|power
     const DESC_GO_FLAGS: usize = 0x09 * 4; // GAMEOBJECT_FLAGS
+    const DESC_GO_DYN_FLAGS: usize = 0x13 * 4; // GAMEOBJECT_DYN_FLAGS
 
     // Function addresses
     const ClntObjMgrGetActivePlayer: usize = 0x468550;
     const UnitReaction: usize = 0x6061E0;
+    const CallSpellCastHandler: usize = 0x5f8800;
 
     // MINIMAPINFO struct offsets
     const MI_POS: usize = 0x0C; // C3Vector
@@ -99,7 +101,6 @@ const NPC_FLAG_STABLEMASTER: u32 = 0x00002000;
 const NPC_FLAG_REPAIR: u32 = 0x00004000;
 
 const GO_TYPE_MAILBOX: u32 = 19;
-const GO_FLAG_NO_INTERACT: u32 = 0x10;
 
 const OBJ_TYPE_UNIT: u32 = 3;
 const OBJ_TYPE_GAMEOBJECT: u32 = 5;
@@ -416,10 +417,32 @@ fn getGoFlags(obj: u32) u32 {
     return hook.readMem(u32, desc + ADDR.DESC_GO_FLAGS);
 }
 
-fn getFactionTemplate(obj: u32) u32 {
+fn getGoDynFlags(obj: u32) u32 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_FACTIONTEMPLATE);
+    return hook.readMem(u32, desc + ADDR.DESC_GO_DYN_FLAGS);
+}
+
+fn getRace(obj: u32) u8 {
+    const desc = getDescriptor(obj);
+    if (!isValidPtr(desc)) return 0;
+    return @truncate(hook.readMem(u32, desc + ADDR.DESC_BYTES_0));
+}
+
+// Alliance: Human(1), Dwarf(3), Night Elf(4), Gnome(7), High Elf(10)
+// Horde: Orc(2), Undead(5), Tauren(6), Troll(8), Goblin(9)
+const ALLIANCE_RACES: u16 = (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 10);
+const HORDE_RACES: u16 = (1 << 2) | (1 << 5) | (1 << 6) | (1 << 8) | (1 << 9);
+
+fn isSameFaction(race_a: u8, race_b: u8) bool {
+    if (race_a == 0 or race_b == 0) return false;
+    if (race_a > 10 or race_b > 10) return false;
+    const mask_a: u16 = @as(u16, 1) << @intCast(race_a);
+    const mask_b: u16 = @as(u16, 1) << @intCast(race_b);
+    // Both alliance or both horde
+    if ((mask_a & ALLIANCE_RACES) != 0 and (mask_b & ALLIANCE_RACES) != 0) return true;
+    if ((mask_a & HORDE_RACES) != 0 and (mask_b & HORDE_RACES) != 0) return true;
+    return false;
 }
 
 fn getSummonedByGUID(obj: u32) u64 {
@@ -467,35 +490,40 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
     // Check hostility via UnitReaction
     const reaction = unitReaction(local_player, obj);
     if (reaction < 4) {
-        con.fmt("[minimapicons] unit 0x{x} rejected: hostile (reaction={d}, faction={d})\n", .{ obj, reaction, getFactionTemplate(obj) });
+        con.fmt("[minimapicons] unit 0x{x} rejected: hostile (reaction={d}, race={d})\n", .{ obj, reaction, getRace(obj) });
         return false;
     }
 
-    // If unit has a summoner, their faction must match ours
+    // If unit has a summoner, their race must be same faction as ours
     const summoner_guid = getSummonedByGUID(obj);
     if (summoner_guid != 0) {
         const lo: u32 = @truncate(summoner_guid);
         const hi: u32 = @truncate(summoner_guid >> 32);
         const summoner = getObjectByGUID(lo, hi);
         if (summoner != 0 and isValidPtr(summoner)) {
-            const our_faction = getFactionTemplate(local_player);
-            const their_faction = getFactionTemplate(summoner);
-            con.fmt("[minimapicons] unit 0x{x} summoner 0x{x}: our faction={d} their faction={d}\n", .{ obj, summoner, our_faction, their_faction });
-            if (our_faction != 0 and their_faction != 0 and our_faction != their_faction)
+            const our_race = getRace(local_player);
+            const their_race = getRace(summoner);
+            con.fmt("[minimapicons] unit 0x{x} summoner 0x{x}: our race={d} their race={d}\n", .{ obj, summoner, our_race, their_race });
+            if (!isSameFaction(our_race, their_race))
                 return false;
         }
     }
     return true;
 }
 
-/// Check if a game object is interactable (GO_FLAG_NO_INTERACT not set).
+/// Check if a game object is interactable using the game's own handler.
+/// CallSpellCastHandler: __fastcall(obj_ECX) -> char (bool via virtual dispatch).
+/// This is what IsValidInteractionTarget uses for type 0x21 (GO).
 fn isGoInteractable(obj: u32) bool {
-    const flags = getGoFlags(obj);
-    if ((flags & GO_FLAG_NO_INTERACT) != 0) {
-        con.fmt("[minimapicons] GO 0x{x} rejected: GO_FLAG_NO_INTERACT (flags=0x{x})\n", .{ obj, flags });
-        return false;
+    const result: u8 = @truncate(asm volatile ("call *%[func]"
+        : [ret] "={eax}" (-> u32),
+        : [_] "{ecx}" (obj),
+          [func] "r" (@as(u32, ADDR.CallSpellCastHandler)),
+        : .{ .ecx = true, .edx = true, .memory = true, .cc = true }));
+    if (result == 0) {
+        con.fmt("[minimapicons] GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
     }
-    return true;
+    return result != 0;
 }
 
 fn containsInsensitive(haystack: [*:0]const u8, needle: []const u8) bool {
@@ -1024,9 +1052,9 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
         const prev = g_local_player;
         g_local_player = getActivePlayerObject();
         if (g_local_player != prev) {
-            con.fmt("[minimapicons] local player: 0x{x} faction={d}\n", .{
+            con.fmt("[minimapicons] local player: 0x{x} race={d}\n", .{
                 g_local_player,
-                if (g_local_player != 0) getFactionTemplate(g_local_player) else @as(u32, 0),
+                if (g_local_player != 0) @as(u32, getRace(g_local_player)) else @as(u32, 0),
             });
         }
     }

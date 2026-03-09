@@ -85,10 +85,10 @@ local AMMO_FILTERS = {
 --   Filtered entries take priority over unfiltered catch-all entries with the same flag.
 --   "dynamic" filter is resolved at runtime via getFilter().
 local NPC_CATEGORIES = {
-    { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker" },
+    { name = "Banker",        trackingType = "banker",       icon = "Interface\\Minimap\\Tracking\\Banker", default = 1 },
     { name = "Auctioneer",    trackingType = "auctioneer",   icon = "Interface\\Minimap\\Tracking\\Auctioneer" },
     { name = "Repair",        trackingType = "repair",       icon = "Interface\\Minimap\\Tracking\\Repair", default = 1 },
-    { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox" },
+    { name = "Mailbox",       trackingType = "mailbox",      icon = "Interface\\Minimap\\Tracking\\Mailbox", default = 1 },
     { name = "Brainwasher",   trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.8, default = 1 },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper", default = 1 },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
