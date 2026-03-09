@@ -96,6 +96,7 @@ fn registerLuaFunctions() void {
     if (build_opts.minimapicons and minimapicons.isActive()) {
         const lib = [_]lua.LuaReg{
             .{ .name = "SetObjectTypeBlip", .func = @intFromPtr(&minimapicons.luaSetObjectTypeBlip) },
+            .{ .name = "SetMinimapCityToggle", .func = @intFromPtr(&minimapicons.luaSetCityToggle) },
             .{ .name = null, .func = 0 },
         };
         lua.openlib(lua.getContext(), "WeirdUtils", &lib, 0);

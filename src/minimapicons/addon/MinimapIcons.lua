@@ -121,6 +121,9 @@ local activeNpcCategories = {} -- name -> 1/nil, loaded from WeirdUtils_MinimapI
 -- that take priority over unfiltered catch-all entries.
 local function updateDllTracking()
     if not WeirdUtils.SetObjectTypeBlip then return end
+    if WeirdUtils.SetMinimapCityToggle then
+        WeirdUtils.SetMinimapCityToggle(activeNpcCategories["City Toggle"] and 1 or 0)
+    end
     for _, cat in ipairs(NPC_CATEGORIES) do
         local inc = cat.getFilter and cat.getFilter() or nil
         local exc = cat.getExclude and cat.getExclude() or nil
@@ -219,6 +222,23 @@ UIDropDownMenu_Initialize(dropdown, function()
     npcTitle.isTitle = 1
     npcTitle.notCheckable = 1
     UIDropDownMenu_AddButton(npcTitle)
+
+    -- City Toggle: suppress NPC/GO tracking in capital cities
+    local cityInfo = {}
+    cityInfo.text = "Hide in Cities"
+    cityInfo.icon = "Interface\\Minimap\\Tracking\\City"
+    cityInfo.checked = activeNpcCategories["City Toggle"]
+    cityInfo.keepShownOnClick = 1
+    cityInfo.func = function()
+        if activeNpcCategories["City Toggle"] then
+            activeNpcCategories["City Toggle"] = nil
+        else
+            activeNpcCategories["City Toggle"] = 1
+        end
+        WeirdUtils_MinimapIconsSettings = activeNpcCategories
+        updateDllTracking()
+    end
+    UIDropDownMenu_AddButton(cityInfo)
 
     for _, cat in ipairs(NPC_CATEGORIES) do
         local catName = cat.name

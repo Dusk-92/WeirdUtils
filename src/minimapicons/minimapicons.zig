@@ -268,6 +268,19 @@ var g_go_id_tracking: [MAX_GO_ID_ENTRIES]GoEntryEntry = .{GoEntryEntry{}} ** MAX
 var g_blips: [MAX_BLIPS]TrackedBlip = undefined;
 var g_blip_count: u32 = 0;
 var g_has_active_tracking: bool = false;
+var g_city_toggle: bool = false; // when true, suppress tracking in cities
+
+// Capital city zone IDs
+const CITY_ZONES = [_]u32{
+    1519, // Stormwind City
+    1537, // Ironforge
+    1657, // Darnassus
+    1637, // Orgrimmar
+    1638, // Thunder Bluff
+    1497, // Undercity
+    2040, // Alah'Thalas
+};
+const ZONE_AREA_ID: usize = 0x00B4E314;
 var g_has_active_unit_tracking: bool = false;
 var g_has_active_go_tracking: bool = false;
 var g_has_any_filters: bool = false;
@@ -985,8 +998,16 @@ fn refreshActiveTrackingCache() void {
 const EnumProcFn = fn (u32, u32, u32, u32) callconv(fc) i32;
 var enum_proc_hook: hook.Detour(EnumProcFn) = .{};
 
+fn isInCity() bool {
+    const zone = hook.readMem(u32, ZONE_AREA_ID);
+    for (CITY_ZONES) |city| {
+        if (zone == city) return true;
+    }
+    return false;
+}
+
 fn objectEnumProcDetour(info: u32, _edx: u32, guid_lo: u32, guid_hi: u32) callconv(fc) i32 {
-    if (g_has_active_tracking) {
+    if (g_has_active_tracking and !(g_city_toggle and isInCity())) {
         if (checkObject(info, guid_lo, guid_hi)) {
             return 1; // Skip original — we draw our own icon
         }
@@ -1195,6 +1216,12 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
         },
     }
 
+    return 0;
+}
+
+// SetMinimapCityToggle(enabled) — suppress NPC/GO tracking in capital cities
+pub fn luaSetCityToggle(L: lua.State) callconv(fc) i32 {
+    g_city_toggle = lua.isnumber(L, 1) and lua.tonumber(L, 1) != 0;
     return 0;
 }
 
