@@ -25,15 +25,14 @@ const wow = @import("wow.zig");
 // Calling convention constants
 // =============================================================================
 
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 // =============================================================================
 // Hook state
 // =============================================================================
 
-const RenderDrawFn = fn (u32, u32, u32, u32, u32) callconv(tc) void;
-const ManageRenderFn = fn (u32, u32) callconv(tc) void;
-const DrawBatchFn = fn (u32) callconv(tc) void;
+const RenderDrawFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) void;
+const ManageRenderFn = fn (u32, u32) callconv(hook.cc.thiscall) void;
+const DrawBatchFn = fn (u32) callconv(hook.cc.thiscall) void;
 
 var render_draw_hook: hook.Detour(RenderDrawFn) = .{};
 var manage_render_hook: hook.Detour(ManageRenderFn) = .{};
@@ -75,7 +74,7 @@ var reordered_indices: [MAX_REORDER]i32 = undefined;
 // through other players and gear (since those aren't in depth when stencil
 // is written). The outline composites on top of everything in EndScene.
 
-fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(tc) void {
+fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices: u32, batch_count: u32) callconv(hook.cc.thiscall) void {
     // One-time: install D3D9 hooks now that the game is actively rendering.
     if (d3d9_deferred_pending) {
         d3d9_deferred_pending = false;
@@ -147,7 +146,7 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
 // __thiscall(model_ECX, addToList_stack)
 // Native thiscall detour - no thunk needed.
 
-fn manageRenderDetour(model: u32, add_to_list: u32) callconv(tc) void {
+fn manageRenderDetour(model: u32, add_to_list: u32) callconv(hook.cc.thiscall) void {
     // Classify the model when it's being ADDED to the render list
     if (add_to_list == 1 and model != 0 and tracker.enabled and tracker.hasTargets()) {
         tracker.classifyModel(model);
@@ -165,7 +164,7 @@ fn manageRenderDetour(model: u32, add_to_list: u32) callconv(tc) void {
 // wrong ret instructions for functions with ≤2 register params.  The naked
 // function bridges fastcall → cdecl and calls the implementation function.
 
-fn drawBatchProjDetour(ctx: u32) callconv(tc) void {
+fn drawBatchProjDetour(ctx: u32) callconv(hook.cc.thiscall) void {
     // Fast path: no tracking enabled or nothing tracked → just call original
     if (!tracker.enabled or !tracker.hasTargets()) {
         draw_batch_hook.callOriginal(.{ctx});

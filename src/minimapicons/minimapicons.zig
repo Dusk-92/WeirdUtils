@@ -19,9 +19,6 @@ const lua = @import("../lua.zig");
 const con = @import("../console.zig");
 const mod_mutex = @import("../mutex.zig");
 
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 pub const module_name: [*:0]const u8 = "minimapicons";
 
@@ -248,7 +245,7 @@ const CStatus = extern struct {
     }
 
     fn deinit(self: *CStatus) void {
-        const f: *const fn (*CStatus) callconv(tc) void = @ptrFromInt(ADDR.CStatusDestructor);
+        const f: *const fn (*CStatus) callconv(hook.cc.thiscall) void = @ptrFromInt(ADDR.CStatusDestructor);
         f(self);
     }
 };
@@ -365,7 +362,7 @@ fn isValidPtr(addr: u32) bool {
 
 fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
     if (guid_lo == 0 and guid_hi == 0) return 0;
-    return hook.call(fn (u32, u32) callconv(sc) u32, ADDR.GetObjectByGUID, .{ guid_lo, guid_hi });
+    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR.GetObjectByGUID, .{ guid_lo, guid_hi });
 }
 
 fn getObjectType(obj: u32) u32 {
@@ -461,7 +458,7 @@ fn getSummonedByGUID(obj: u32) u64 {
 }
 
 fn getActivePlayerGUID() u64 {
-    return hook.call(fn () callconv(fc) u64, ADDR.ClntObjMgrGetActivePlayer, .{});
+    return hook.call(fn () callconv(hook.cc.fastcall) u64, ADDR.ClntObjMgrGetActivePlayer, .{});
 }
 
 fn getActivePlayerObject() u32 {
@@ -473,7 +470,7 @@ fn getActivePlayerObject() u32 {
 /// UnitReaction: __thiscall(localPlayer_ECX, unit_stack) -> int (>=4 = friendly).
 fn unitReaction(local_player: u32, unit: u32) i32 {
     if (local_player == 0 or unit == 0) return 0;
-    return hook.call(fn (u32, u32) callconv(tc) i32, ADDR.UnitReaction, .{ local_player, unit });
+    return hook.call(fn (u32, u32) callconv(hook.cc.thiscall) i32, ADDR.UnitReaction, .{ local_player, unit });
 }
 
 /// Check if a unit passes faction/friendliness filters.
@@ -514,7 +511,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
 /// CallSpellCastHandler: __fastcall(obj_ECX) -> char (bool via virtual dispatch).
 /// This is what IsValidInteractionTarget uses for type 0x21 (GO).
 fn isGoInteractable(obj: u32) bool {
-    const result: u8 = @truncate(hook.call(fn (u32) callconv(fc) u32, ADDR.CallSpellCastHandler, .{obj}));
+    const result: u8 = @truncate(hook.call(fn (u32) callconv(hook.cc.fastcall) u32, ADDR.CallSpellCastHandler, .{obj}));
     if (result == 0) {
         con.fmt("[minimapicons] GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
     }
@@ -549,7 +546,7 @@ fn getObjectPosition(obj: u32) ?C3Vector {
     if (!isValidPtr(get_pos_fn)) return null;
     var pos: C3Vector = undefined;
     // __thiscall(obj_ECX, &pos_stack) → C3Vector*
-    _ = hook.call(fn (u32, *C3Vector) callconv(tc) u32, get_pos_fn, .{ obj, &pos });
+    _ = hook.call(fn (u32, *C3Vector) callconv(hook.cc.thiscall) u32, get_pos_fn, .{ obj, &pos });
     return pos;
 }
 
@@ -569,7 +566,7 @@ fn worldPosToMinimapCoords(
     // WorldPosToMinimapFrameCoords: __fastcall(out_ECX, edx, C3Vector cur, float radius,
     //   float worldX, float worldY, float layoutScale, float unkScale)
     // EDX unused — use thiscall (ECX=this, rest on stack)
-    _ = hook.call(fn (*C2Vector, f32, f32, f32, f32, f32, f32, f32, f32) callconv(tc) u32, ADDR.WorldPosToMinimapCoords, .{
+    _ = hook.call(fn (*C2Vector, f32, f32, f32, f32, f32, f32, f32, f32) callconv(hook.cc.thiscall) u32, ADDR.WorldPosToMinimapCoords, .{
         out, cur.x, cur.y, cur.z, radius, world_x, world_y, layout_scale, unk_scale,
     });
 }
@@ -583,7 +580,7 @@ fn getFrameUnkScale(info: u32) f32 {
     const fn_addr = hook.readMem(u32, vtable + 7 * 4);
     if (!isValidPtr(fn_addr)) return 1.0;
     // __thiscall(fsp_ECX) → f32 on FPU ST(0)
-    return hook.call(fn (u32) callconv(tc) f32, fn_addr, .{fsp});
+    return hook.call(fn (u32) callconv(hook.cc.thiscall) f32, fn_addr, .{fsp});
 }
 
 // =============================================================================
@@ -621,7 +618,7 @@ fn loadTexture(path: [*:0]const u8) u32 {
     defer status.deinit();
 
     // TextureCreate: __fastcall(filename_ECX, status_EDX, texFlags, unk1, unk2)
-    const texture = hook.call(fn ([*:0]const u8, *CStatus, u32, u32, u32) callconv(fc) u32, ADDR.TextureCreate, .{
+    const texture = hook.call(fn ([*:0]const u8, *CStatus, u32, u32, u32) callconv(hook.cc.fastcall) u32, ADDR.TextureCreate, .{
         path, &status, g_default_tex_flags, 0, 1,
     });
 
@@ -642,7 +639,7 @@ fn initTexFlags() u32 {
     var flags: u32 = 0;
     // CGxTexFlags constructor: __thiscall(this, filter=0, wrapU=0, wrapV=0,
     //   forceMipTracking=0, generateMipMaps=0, renderTarget=0, maxAnisotropy=0, unknownFlag=1)
-    hook.call(fn (*u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(tc) void, ADDR.CGxTexFlagsInit, .{
+    hook.call(fn (*u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) void, ADDR.CGxTexFlagsInit, .{
         &flags, 0, 0, 0, 0, 0, 0, 0, 1,
     });
     return flags;
@@ -658,7 +655,7 @@ fn getGxTex(texture: u32) u32 {
     status.init();
     defer status.deinit();
 
-    const gx_tex = hook.call(fn (u32, u32, *CStatus) callconv(fc) u32, ADDR.TextureGetGxTex, .{
+    const gx_tex = hook.call(fn (u32, u32, *CStatus) callconv(hook.cc.fastcall) u32, ADDR.TextureGetGxTex, .{
         texture, 1, &status,
     });
 
@@ -683,7 +680,7 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
 
     // GxPrimLockVertexPtrs(count=4, vertices, vertStride=12, normal, 0, color, 0,
     //   null, 0, texCoords, 8, null, 0)
-    hook.call(fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(fc) void, ADDR.GxPrimLockVertexPtrs, .{
+    hook.call(fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void, ADDR.GxPrimLockVertexPtrs, .{
         4, // count (ECX)
         @intFromPtr(&vertices), // vertices (EDX)
         12, // vertStride
@@ -700,7 +697,7 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
     });
 
     // GxPrimDrawElements(TriangleStrip=4, count=4, indices)
-    const drawElements: *const fn (u32, u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxPrimDrawElements);
+    const drawElements: *const fn (u32, u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(ADDR.GxPrimDrawElements);
     drawElements(4, 4, ADDR.BlipVertIndices);
 
     // GxPrimUnlockVertexPtrs()
@@ -901,7 +898,7 @@ fn refreshActiveTrackingCache() void {
 // ObjectEnumProc: __fastcall(MINIMAPINFO* ECX, unused EDX, u64 guid on stack)
 // When guid is u64, MSVC fastcall skips EDX and puts the 8 bytes on stack.
 // In Zig fastcall with 4 u32 params: ECX=info, EDX=_edx, stack=guid_lo,guid_hi → RET 8.
-const EnumProcFn = fn (u32, u32, u32, u32) callconv(fc) i32;
+const EnumProcFn = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) i32;
 var enum_proc_hook: hook.Detour(EnumProcFn) = .{};
 
 fn isInCity() bool {
@@ -912,7 +909,7 @@ fn isInCity() bool {
     return false;
 }
 
-fn objectEnumProcDetour(info: u32, _edx: u32, guid_lo: u32, guid_hi: u32) callconv(fc) i32 {
+fn objectEnumProcDetour(info: u32, _edx: u32, guid_lo: u32, guid_hi: u32) callconv(hook.cc.fastcall) i32 {
     if (g_has_active_tracking and !(g_city_toggle and isInCity())) {
         if (checkObject(info, guid_lo, guid_hi)) {
             return 1; // Skip original — we draw our own icon
@@ -923,10 +920,10 @@ fn objectEnumProcDetour(info: u32, _edx: u32, guid_lo: u32, guid_hi: u32) callco
 
 // RenderObjectBlips: __thiscall(CGMinimapFrame* ECX, DNInfo* stack)
 // Hooked via fastcall with explicit EDX placeholder.
-const RenderBlipsFn = fn (u32, u32, u32) callconv(fc) void;
+const RenderBlipsFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
 var render_blips_hook: hook.Detour(RenderBlipsFn) = .{};
 
-fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(fc) void {
+fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(hook.cc.fastcall) void {
     render_blips_hook.callOriginal(.{ thisptr, _edx, dn_info });
 
     const count = g_blip_count;
@@ -957,7 +954,7 @@ fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(fc) v
             continue;
         }
 
-        const gxRsSet: *const fn (u32, u32) callconv(fc) void = @ptrFromInt(ADDR.GxRsSet);
+        const gxRsSet: *const fn (u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(ADDR.GxRsSet);
         gxRsSet(23, gx_tex);
 
         // Draw all blips sharing this texture
@@ -968,10 +965,10 @@ fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(fc) v
 }
 
 // ClntObjMgrEnumVisibleObjects: __fastcall(callback ECX, context EDX)
-const EnumVisFn = fn (u32, u32) callconv(fc) i32;
+const EnumVisFn = fn (u32, u32) callconv(hook.cc.fastcall) i32;
 var enum_vis_hook: hook.Detour(EnumVisFn) = .{};
 
-fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
+fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(hook.cc.fastcall) i32 {
     // Clear tracked blips when the minimap's own callback is about to enumerate
     if (callback == ADDR.ObjectEnumProc) {
         g_blip_count = 0;
@@ -1007,7 +1004,7 @@ fn luaStringToSlice(L: lua.State, idx: i32) ?[]const u8 {
 }
 
 // SetObjectTypeBlip(typeName [, texturePath [, scale [, includeFilter [, excludeFilter]]]])
-pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
+pub fn luaSetObjectTypeBlip(L: lua.State) callconv(hook.cc.fastcall) i32 {
     defer refreshActiveTrackingCache();
 
     if (!lua.isstring(L, 1)) {
@@ -1130,7 +1127,7 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(fc) i32 {
 }
 
 // SetMinimapCityToggle(enabled) — suppress NPC/GO tracking in capital cities
-pub fn luaSetCityToggle(L: lua.State) callconv(fc) i32 {
+pub fn luaSetCityToggle(L: lua.State) callconv(hook.cc.fastcall) i32 {
     g_city_toggle = lua.isnumber(L, 1) and lua.tonumber(L, 1) != 0;
     return 0;
 }

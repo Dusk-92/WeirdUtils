@@ -20,7 +20,6 @@ const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 // =============================================================================
 // Windows / D3D9 externs
@@ -39,7 +38,7 @@ inline fn vt(obj: *anyopaque) [*]usize {
 
 /// Call a COM method that takes only (self) and returns HRESULT.
 fn comCall0(obj: *anyopaque, idx: usize) i32 {
-    const f: *const fn (*anyopaque) callconv(sc) i32 = @ptrFromInt(vt(obj)[idx]);
+    const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(obj)[idx]);
     return f(obj);
 }
 
@@ -86,7 +85,7 @@ const D3DXAssembleShaderFn = *const fn (
     u32, // Flags
     *?*anyopaque, // ppShader (ID3DXBuffer**)
     *?*anyopaque, // ppErrorMsgs (ID3DXBuffer**)
-) callconv(sc) i32;
+) callconv(hook.cc.stdcall) i32;
 
 // =============================================================================
 // Render target resources
@@ -161,108 +160,108 @@ const QuadVertex = extern struct {
 // =============================================================================
 
 fn deviceSetRS(dev: *anyopaque, state: u32, value: u32) void {
-    const f: *const fn (*anyopaque, u32, u32) callconv(sc) i32 = @ptrFromInt(vt(dev)[types.VT.SetRenderState]);
+    const f: *const fn (*anyopaque, u32, u32) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(dev)[types.VT.SetRenderState]);
     _ = f(dev, state, value);
 }
 
 fn deviceGetRS(dev: *anyopaque, state: u32) u32 {
     var val: u32 = 0;
-    const f: *const fn (*anyopaque, u32, *u32) callconv(sc) i32 = @ptrFromInt(vt(dev)[types.VT.GetRenderState]);
+    const f: *const fn (*anyopaque, u32, *u32) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(dev)[types.VT.GetRenderState]);
     _ = f(dev, state, &val);
     return val;
 }
 
 fn deviceSetPtr(dev: *anyopaque, idx: usize, ptr: *anyopaque) void {
-    const f: *const fn (*anyopaque, *anyopaque) callconv(sc) i32 = @ptrFromInt(vt(dev)[idx]);
+    const f: *const fn (*anyopaque, *anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(dev)[idx]);
     _ = f(dev, ptr);
 }
 
 fn deviceGetPtr(dev: *anyopaque, idx: usize) ?*anyopaque {
     var ptr: ?*anyopaque = null;
-    const f: *const fn (*anyopaque, *?*anyopaque) callconv(sc) i32 = @ptrFromInt(vt(dev)[idx]);
+    const f: *const fn (*anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(dev)[idx]);
     _ = f(dev, &ptr);
     return ptr;
 }
 
 /// Set a COM pointer, handling null via optional pointer (ABI-equivalent to passing 0).
 fn deviceSetPtrOrNull(dev: *anyopaque, idx: usize, ptr: ?*anyopaque) void {
-    const f: *const fn (*anyopaque, ?*anyopaque) callconv(sc) i32 = @ptrFromInt(vt(dev)[idx]);
+    const f: *const fn (*anyopaque, ?*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vt(dev)[idx]);
     _ = @call(.never_tail, f, .{ dev, ptr });
 }
 
 fn deviceSetPSConstF(dev: *anyopaque, start: u32, data: *const [4]f32) void {
-    const f: *const fn (*anyopaque, u32, *const [4]f32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *const [4]f32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetPixelShaderConstantF]);
     _ = f(dev, start, data, 1);
 }
 
 fn deviceGetPSConstF(dev: *anyopaque, start: u32, data: *[4]f32) void {
-    const f: *const fn (*anyopaque, u32, *[4]f32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *[4]f32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetPixelShaderConstantF]);
     _ = f(dev, start, data, 1);
 }
 
 fn deviceGetViewport(dev: *anyopaque, vp_out: *types.D3DVIEWPORT9) void {
-    const f: *const fn (*anyopaque, *types.D3DVIEWPORT9) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, *types.D3DVIEWPORT9) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetViewport]);
     _ = f(dev, vp_out);
 }
 
 fn deviceSetRenderTarget(dev: *anyopaque, idx: u32, surf: *anyopaque) void {
-    const f: *const fn (*anyopaque, u32, *anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetRenderTarget]);
     _ = f(dev, idx, surf);
 }
 
 fn deviceGetRenderTarget(dev: *anyopaque, idx: u32) ?*anyopaque {
     var surf: ?*anyopaque = null;
-    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetRenderTarget]);
     _ = f(dev, idx, &surf);
     return surf;
 }
 
 fn deviceSetTexture(dev: *anyopaque, stage: u32, tex: ?*anyopaque) void {
-    const f: *const fn (*anyopaque, u32, ?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, ?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetTexture]);
     _ = @call(.never_tail, f, .{ dev, stage, tex });
 }
 
 fn deviceSetFVF(dev: *anyopaque, fvf: u32) void {
-    const f: *const fn (*anyopaque, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetFVF]);
     _ = f(dev, fvf);
 }
 
 fn deviceGetSamplerState(dev: *anyopaque, sampler: u32, state_type: u32) u32 {
     var val: u32 = 0;
-    const f: *const fn (*anyopaque, u32, u32, *u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, u32, *u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetSamplerState]);
     _ = f(dev, sampler, state_type, &val);
     return val;
 }
 
 fn deviceSetSamplerState(dev: *anyopaque, sampler: u32, state_type: u32, value: u32) void {
-    const f: *const fn (*anyopaque, u32, u32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, u32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetSamplerState]);
     _ = f(dev, sampler, state_type, value);
 }
 
 fn deviceGetStreamSource(dev: *anyopaque, stream: u32, vb_out: *?*anyopaque, offset_out: *u32, stride_out: *u32) void {
-    const f: *const fn (*anyopaque, u32, *?*anyopaque, *u32, *u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *?*anyopaque, *u32, *u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetStreamSource]);
     _ = f(dev, stream, vb_out, offset_out, stride_out);
 }
 
 fn deviceSetStreamSource(dev: *anyopaque, stream: u32, vb: ?*anyopaque, offset: u32, stride: u32) void {
-    const f: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetStreamSource]);
     _ = @call(.never_tail, f, .{ dev, stream, vb, offset, stride });
 }
 
 fn deviceGetTexture(dev: *anyopaque, stage: u32) ?*anyopaque {
     var tex: ?*anyopaque = null;
-    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetTexture]);
     _ = f(dev, stage, &tex);
     return tex;
@@ -270,38 +269,38 @@ fn deviceGetTexture(dev: *anyopaque, stage: u32) ?*anyopaque {
 
 fn deviceGetIndices(dev: *anyopaque) ?*anyopaque {
     var ib: ?*anyopaque = null;
-    const f: *const fn (*anyopaque, *?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetIndices]);
     _ = f(dev, &ib);
     return ib;
 }
 
 fn deviceSetIndices(dev: *anyopaque, ib: ?*anyopaque) void {
-    const f: *const fn (*anyopaque, ?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, ?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetIndices]);
     _ = @call(.never_tail, f, .{ dev, ib });
 }
 
 fn deviceGetVSConstF(dev: *anyopaque, start: u32, data: [*][4]f32, count: u32) void {
-    const f: *const fn (*anyopaque, u32, [*][4]f32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, [*][4]f32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.GetVertexShaderConstantF]);
     _ = f(dev, start, data, count);
 }
 
 fn deviceSetVSConstF(dev: *anyopaque, start: u32, data: [*]const [4]f32, count: u32) void {
-    const f: *const fn (*anyopaque, u32, [*]const [4]f32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, [*]const [4]f32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetVertexShaderConstantF]);
     _ = f(dev, start, data, count);
 }
 
 fn deviceDrawPrimitiveUP(dev: *anyopaque, prim_type: u32, prim_count: u32, data: *const anyopaque, stride: u32) void {
-    const f: *const fn (*anyopaque, u32, u32, *const anyopaque, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, u32, *const anyopaque, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.DrawPrimitiveUP]);
     _ = f(dev, prim_type, prim_count, data, stride);
 }
 
 fn deviceCreateTexture(dev: *anyopaque, w: u32, h: u32, levels: u32, usage: u32, fmt: u32, pool: u32, out: *?*anyopaque) i32 {
-    const f: *const fn (*anyopaque, u32, u32, u32, u32, u32, u32, *?*anyopaque, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, u32, u32, u32, u32, u32, *?*anyopaque, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.CreateTexture]);
     return f(dev, w, h, levels, usage, fmt, pool, out, 0);
 }
@@ -310,7 +309,7 @@ fn deviceCreateTexture(dev: *anyopaque, w: u32, h: u32, levels: u32, usage: u32,
 fn textureGetSurfaceLevel(tex: *anyopaque) ?*anyopaque {
     // IDirect3DTexture9::GetSurfaceLevel is vtable index 18
     var surf: ?*anyopaque = null;
-    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(tex)[18]);
     if (f(tex, 0, &surf) < 0) return null;
     return surf;
@@ -318,7 +317,7 @@ fn textureGetSurfaceLevel(tex: *anyopaque) ?*anyopaque {
 
 /// Clear the current render target to a colour.
 fn clearRenderTarget(dev: *anyopaque, color: u32) void {
-    const f: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(sc) i32 =
+    const f: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.Clear]);
     _ = f(dev, 0, null, types.D3DCLEAR_TARGET, color, 1.0, 0);
 }
@@ -618,10 +617,10 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 
     // ID3DXBuffer::GetBufferPointer is vtable[3]
     const buf_ptr: *anyopaque = @ptrFromInt(
-        @as(*const fn (*anyopaque) callconv(sc) usize, @ptrFromInt(vt(code.?)[3]))(code.?),
+        @as(*const fn (*anyopaque) callconv(hook.cc.stdcall) usize, @ptrFromInt(vt(code.?)[3]))(code.?),
     );
     var ps_out: ?*anyopaque = null;
-    const create: *const fn (*anyopaque, *anyopaque, *?*anyopaque) callconv(sc) i32 =
+    const create: *const fn (*anyopaque, *anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.CreatePixelShader]);
     if (create(device, buf_ptr, &ps_out) < 0) return null;
     return ps_out;
@@ -657,7 +656,7 @@ fn buildFullscreenQuad(w: u32, h: u32) [4]QuadVertex {
 // EndScene hook
 // =============================================================================
 
-fn hkEndScene(device: *anyopaque) callconv(sc) i32 {
+fn hkEndScene(device: *anyopaque) callconv(hook.cc.stdcall) i32 {
     // One-time: check if depth/stencil surface has stencil bits.
     if (need_force_reset) {
         need_force_reset = false;
@@ -686,7 +685,7 @@ fn hkEndScene(device: *anyopaque) callconv(sc) i32 {
     frame_has_outlines = false;
 
     // Call original EndScene
-    const f: *const fn (*anyopaque) callconv(sc) i32 = @ptrFromInt(orig_endscene);
+    const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(orig_endscene);
     return f(device);
 }
 
@@ -694,7 +693,7 @@ fn hkEndScene(device: *anyopaque) callconv(sc) i32 {
 // Reset hook - force D24S8 depth/stencil format, release resources
 // =============================================================================
 
-fn hkReset(device: *anyopaque, pp: *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 {
+fn hkReset(device: *anyopaque, pp: *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 {
     if (pp.EnableAutoDepthStencil != 0) {
         const fmt = pp.AutoDepthStencilFormat;
         if (fmt != types.D3DFMT_D24S8 and fmt != types.D3DFMT_D24FS8 and
@@ -709,7 +708,7 @@ fn hkReset(device: *anyopaque, pp: *types.D3DPRESENT_PARAMETERS) callconv(sc) i3
     releaseShaders();
     releaseResources();
 
-    const f: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 = @ptrFromInt(orig_reset);
+    const f: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 = @ptrFromInt(orig_reset);
     return f(device, pp);
 }
 
@@ -732,8 +731,8 @@ fn hkDIP(
     num_verts: u32,
     start_idx: u32,
     prim_count: u32,
-) callconv(sc) i32 {
-    const OrigDIP = *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(sc) i32;
+) callconv(hook.cc.stdcall) i32 {
+    const OrigDIP = *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(hook.cc.stdcall) i32;
     const origFn: OrigDIP = @ptrFromInt(orig_dip);
 
     // ---- Cache outline draws for EndScene replay ----
@@ -885,7 +884,7 @@ fn runJfaPipeline(device: *anyopaque) void {
 
     // Depth-stencil surface
     var saved_ds: ?*anyopaque = null;
-    const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(sc) i32 =
+    const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.GetDepthStencilSurface]);
     _ = getDS(device, &saved_ds);
 
@@ -935,7 +934,7 @@ fn runJfaPipeline(device: *anyopaque) void {
     // =====================================================================
 
     if (cached_draw_count > 0) {
-        const origFn: *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(sc) i32 =
+        const origFn: *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(hook.cc.stdcall) i32 =
             @ptrFromInt(orig_dip);
 
         deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
@@ -985,7 +984,7 @@ fn runJfaPipeline(device: *anyopaque) void {
 
         // Clear stencil marks to avoid affecting next frame's rendering
         deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
-        const clearFn: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(sc) i32 =
+        const clearFn: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(hook.cc.stdcall) i32 =
             @ptrFromInt(vt(device)[types.VT.Clear]);
         _ = clearFn(device, 0, null, types.D3DCLEAR_STENCIL, 0, 1.0, 0);
     }
@@ -1177,28 +1176,28 @@ fn hasStencilBits(fmt: u32) bool {
 
 fn forceD24S8IfNeeded(device: *anyopaque) void {
     var pDS: ?*anyopaque = null;
-    const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(sc) i32 =
+    const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.GetDepthStencilSurface]);
     if (getDS(device, &pDS) < 0) return;
     const ds = pDS orelse return;
     defer comRelease(ds);
 
     var desc: types.D3DSURFACE_DESC = .{};
-    const getDesc: *const fn (*anyopaque, *types.D3DSURFACE_DESC) callconv(sc) i32 =
+    const getDesc: *const fn (*anyopaque, *types.D3DSURFACE_DESC) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(ds)[12]);
     if (getDesc(ds, &desc) < 0) return;
 
     if (hasStencilBits(desc.Format)) return;
 
     var pSwap: ?*anyopaque = null;
-    const getSC: *const fn (*anyopaque, u32, *?*anyopaque) callconv(sc) i32 =
+    const getSC: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.GetSwapChain]);
     if (getSC(device, 0, &pSwap) < 0) return;
     const swap = pSwap orelse return;
     defer comRelease(swap);
 
     var pp: types.D3DPRESENT_PARAMETERS = .{};
-    const getPP: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 =
+    const getPP: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(swap)[9]);
     if (getPP(swap, &pp) < 0) return;
 
@@ -1208,7 +1207,7 @@ fn forceD24S8IfNeeded(device: *anyopaque) void {
     releaseShaders();
     releaseResources();
 
-    const resetFn: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(sc) i32 =
+    const resetFn: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.Reset]);
     _ = resetFn(device, &pp);
 }

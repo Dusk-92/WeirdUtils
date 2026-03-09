@@ -61,13 +61,13 @@ const DISPLAY_INFO_TABLE_PTR: usize = 0x00c0de90;
 // =============================================================================
 
 fn unitGUID(unit_id: [*:0]const u8) u64 {
-    return hook.call(fn ([*:0]const u8) callconv(fc) u64, ADDR_UnitGUID, .{unit_id});
+    return hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u64, ADDR_UnitGUID, .{unit_id});
 }
 
 fn getObjectByGUID(guid: u64) u32 {
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(sc) u32, ADDR_GetObjectByGUID, .{ lo, hi });
+    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR_GetObjectByGUID, .{ lo, hi });
 }
 
 fn updateInventoryAlertStates() void {
@@ -76,11 +76,11 @@ fn updateInventoryAlertStates() void {
 }
 
 fn refreshAppearanceAndEquipment(unit: u32) void {
-    hook.fastcall(void, ADDR_RefreshAppearance, unit, @as(u32, 0));
+    hook.call(fn (u32) callconv(hook.cc.fastcall) void, ADDR_RefreshAppearance, .{unit});
 }
 
 fn refreshEquipmentDisplay(unit: u32) void {
-    hook.fastcall(void, ADDR_RefreshEquipmentDisplay, unit, @as(u32, 0));
+    hook.call(fn (u32) callconv(hook.cc.fastcall) void, ADDR_RefreshEquipmentDisplay, .{unit});
 }
 
 // =============================================================================
@@ -153,12 +153,9 @@ pub fn isActive() bool {
 // Hooks
 // =============================================================================
 
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
-const SetBlockFn = fn (u32, u32, u32) callconv(tc) u32;
-const RefreshFn = fn (u32, u32, u32, u32) callconv(tc) void;
-const SceneEndFn = fn (u32) callconv(tc) void;
+const SetBlockFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
+const RefreshFn = fn (u32, u32, u32, u32) callconv(hook.cc.thiscall) void;
+const SceneEndFn = fn (u32) callconv(hook.cc.thiscall) void;
 
 var set_block_hook: hook.Detour(SetBlockFn) = .{};
 var refresh_hook: hook.Detour(RefreshFn) = .{};
@@ -473,7 +470,7 @@ fn processTimeouts(now: u32) void {
 // Hook 1: SetBlock (0x6142E0)
 // =============================================================================
 
-fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
+fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32 {
     const val = value;
 
     // VISIBLE_ITEM writes
@@ -648,7 +645,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(tc) u32 {
 // Hook 2: RefreshVisualAppearance (0x5fb880)
 // =============================================================================
 
-fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, force_update: u32) callconv(tc) void {
+fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, force_update: u32) callconv(hook.cc.thiscall) void {
     if (!g_enabled or refresh_hook.inner.trampoline == 0) {
         if (refresh_hook.inner.trampoline != 0) {
             callOriginalRefresh(unit, event_data, extra_data, force_update);
@@ -754,7 +751,7 @@ fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, forc
 // Hook 3: SceneEnd (0x5a17a0)
 // =============================================================================
 
-fn hookSceneEnd(device: u32) callconv(tc) void {
+fn hookSceneEnd(device: u32) callconv(hook.cc.thiscall) void {
     if (g_enabled and (g_local_pending_count > 0 or g_other_pending_count > 0)) {
         processTimeouts(GetTickCount());
     }

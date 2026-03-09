@@ -17,7 +17,6 @@ const con = @import("../console.zig");
 const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
 
-const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
 const WINAPI = std.builtin.CallingConvention.winapi;
 
 // =============================================================================
@@ -334,12 +333,12 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
 // HandleCharacterSelection hook - set up paths before world loading
 // =============================================================================
 
-var enter_world_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var enter_world_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
 /// Fires when the player clicks Enter World on the character select screen.
 /// Character name and realm are available from the select screen data.
 /// Sets up paths BEFORE the world loading sequence calls InitializeLogBuffer.
-fn enterWorldDetour() callconv(sc) void {
+fn enterWorldDetour() callconv(hook.cc.stdcall) void {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     if (!g_paths_configured) {
@@ -373,9 +372,9 @@ fn restorePathPointers() void {
 // InitializeLogBuffer hook - lazy setup + path redirect
 // =============================================================================
 
-var init_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) u32) = .{};
+var init_log_hook: hook.Detour(fn (u32, u32, u32) callconv(hook.cc.stdcall) u32) = .{};
 
-fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
+fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(hook.cc.stdcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     const path_ptr: [*:0]const u8 = @ptrFromInt(file_path);
@@ -405,9 +404,9 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(sc) u32 {
 // WriteFormattedLogMessage hook - inject session markers on first write per log
 // =============================================================================
 
-var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(sc) void) = .{};
+var write_log_hook: hook.Detour(fn (u32, u32, u32) callconv(hook.cc.stdcall) void) = .{};
 
-fn writeLogDetour(handle: u32, fmt: u32, va_list: u32) callconv(sc) void {
+fn writeLogDetour(handle: u32, fmt: u32, va_list: u32) callconv(hook.cc.stdcall) void {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     if (g_session_char_len > 0) {

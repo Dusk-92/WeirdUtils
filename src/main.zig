@@ -33,16 +33,14 @@ const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") e
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 // =============================================================================
 // Lua Protection Bypass
 // =============================================================================
 
-var protection_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var protection_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
-fn luaProtectionDetour() callconv(sc) void {}
+fn luaProtectionDetour() callconv(hook.cc.stdcall) void {}
 
 // =============================================================================
 // Lua C API wrappers (WoW 1.12.1 - all __fastcall, L in ECX)
@@ -55,11 +53,11 @@ pub const lua = @import("lua.zig");
 // =============================================================================
 
 fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
-    hook.fastcall(void, 0x704120, @intFromPtr(name), func_addr);
+    hook.call(fn ([*:0]const u8, usize) callconv(hook.cc.fastcall) void, 0x704120, .{ name, func_addr });
 }
 
 fn allocateGameBuffer(size: u32) ?[*]u8 {
-    return hook.call(fn (u32, u32, u32, u32) callconv(sc) ?[*]u8, 0x6462E0, .{
+    return hook.call(fn (u32, u32, u32, u32) callconv(hook.cc.stdcall) ?[*]u8, 0x6462E0, .{
         size, @intFromPtr(@as([*:0]const u8, "weirdutils")), 0, 0,
     });
 }
@@ -122,7 +120,7 @@ const findEmbeddedFile = addons.findEmbeddedFile;
 // Hook: LoadFileWithTextureResourceFallback (0x648620)
 // =============================================================================
 
-const LoadFileFn = fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(sc) u32;
+const LoadFileFn = fn (u32, [*:0]const u8, *?[*]u8, ?*u32, u32, u32, u32) callconv(hook.cc.stdcall) u32;
 var file_hook: hook.Detour(LoadFileFn) = .{};
 
 fn loadFileDetour(
@@ -133,7 +131,7 @@ fn loadFileDetour(
     extra_alloc: u32,
     flags: u32,
     async_ptr: u32,
-) callconv(sc) u32 {
+) callconv(hook.cc.stdcall) u32 {
     if (findEmbeddedFile(path)) |entry| {
         const data_len: u32 = @intCast(entry.data.len);
         const total = data_len + extra_alloc;
@@ -165,23 +163,22 @@ fn loadFileDetour(
 //
 // Fake context detection: type==0, handle(+0x04)==NULL, embedded_ptr(+0x30)!=0
 
-const OpenFileFn = fn (u32, [*:0]const u8, u32, *u32) callconv(sc) u32;
+const OpenFileFn = fn (u32, [*:0]const u8, u32, *u32) callconv(hook.cc.stdcall) u32;
 var open_file_hook: hook.Detour(OpenFileFn) = .{};
 
-const GetFileSizeFn = fn (u32, ?*u32) callconv(sc) u32;
+const GetFileSizeFn = fn (u32, ?*u32) callconv(hook.cc.stdcall) u32;
 var get_file_size_hook: hook.Detour(GetFileSizeFn) = .{};
 
-const ReadFileFn = fn (u32, [*]u8, u32, ?*u32, u32, u32) callconv(sc) u32;
+const ReadFileFn = fn (u32, [*]u8, u32, ?*u32, u32, u32) callconv(hook.cc.stdcall) u32;
 var read_file_hook: hook.Detour(ReadFileFn) = .{};
 
-const CleanupFileFn = fn (u32) callconv(sc) void;
+const CleanupFileFn = fn (u32) callconv(hook.cc.stdcall) void;
 var cleanup_file_handle_hook: hook.Detour(CleanupFileFn) = .{};
 
-const ProcessAsyncFn = fn (u32) callconv(fc) void;
+const ProcessAsyncFn = fn (u32) callconv(hook.cc.fastcall) void;
 var process_async_hook: hook.Detour(ProcessAsyncFn) = .{};
 
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
-const LoadModelFn = fn (u32, u32, u32) callconv(tc) u32;
+const LoadModelFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var model_load_hook: hook.Detour(LoadModelFn) = .{};
 
 // Windows API imports for async handling
@@ -199,17 +196,17 @@ fn isFakeFileContext(ctx_addr: u32) bool {
 
 /// Call initializeFileContext (0x647290) - __thiscall(ECX=ctx, type)
 fn callInitFileContext(ctx: [*]u8, file_type: u32) void {
-    hook.call(fn (u32, u32) callconv(tc) void, 0x647290, .{ @intFromPtr(ctx), file_type });
+    hook.call(fn (u32, u32) callconv(hook.cc.thiscall) void, 0x647290, .{ @intFromPtr(ctx), file_type });
 }
 
 /// Call cleanupFileContext (0x6472d0) - __thiscall(ECX=ctx)
 fn callCleanupFileContext(ctx: [*]u8) void {
-    hook.call(fn (u32) callconv(tc) void, 0x6472d0, .{@intFromPtr(ctx)});
+    hook.call(fn (u32) callconv(hook.cc.thiscall) void, 0x6472d0, .{@intFromPtr(ctx)});
 }
 
 /// Free a buffer via FreeMemory/SMemFree (0x646430) - __stdcall(ptr, src, flags)
 fn freeGameBuffer(ptr: [*]u8) void {
-    hook.call(fn (u32, u32, u32) callconv(sc) void, 0x646430, .{
+    hook.call(fn (u32, u32, u32) callconv(hook.cc.stdcall) void, 0x646430, .{
         @intFromPtr(ptr), @intFromPtr(@as([*:0]const u8, "weirdutils")), 0xffffffff,
     });
 }
@@ -221,7 +218,7 @@ fn openFileDetour(
     path: [*:0]const u8,
     flags: u32,
     handle_out: *u32,
-) callconv(sc) u32 {
+) callconv(hook.cc.stdcall) u32 {
     if (findEmbeddedFile(path)) |entry| {
         // Allocate and zero-fill 0x60-byte file context
         const ctx = allocateGameBuffer(0x60) orelse {
@@ -259,7 +256,7 @@ fn openFileDetour(
 fn getFileSizeDetour(
     file_ctx: u32,
     high_size_out: ?*u32,
-) callconv(sc) u32 {
+) callconv(hook.cc.stdcall) u32 {
     if (isFakeFileContext(file_ctx)) {
         if (high_size_out) |h| h.* = 0;
         const size = hook.readMem(u32, file_ctx + 0x34);
@@ -279,7 +276,7 @@ fn readFileDetour(
     bytes_read_out: ?*u32,
     async_ptr: u32,
     param6: u32,
-) callconv(sc) u32 {
+) callconv(hook.cc.stdcall) u32 {
     if (isFakeFileContext(ctx)) {
         const data_ptr = hook.readMem(u32, ctx + 0x30);
         const data_size = hook.readMem(u32, ctx + 0x34);
@@ -308,7 +305,7 @@ fn readFileDetour(
 
 // --- Hook 4: processAsyncFileOperation (0x647350) ---
 
-fn processAsyncDetour(param1: u32) callconv(fc) void {
+fn processAsyncDetour(param1: u32) callconv(hook.cc.fastcall) void {
     const ctx_addr = hook.readMem(u32, param1 + 0x08);
 
     if (isFakeFileContext(ctx_addr)) {
@@ -360,7 +357,7 @@ fn processAsyncDetour(param1: u32) callconv(fc) void {
 
 // --- Hook 6: CleanupFileHandleResources (0x648730) ---
 
-fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
+fn cleanupFileHandleDetour(file_ctx: u32) callconv(hook.cc.stdcall) void {
     const fake = isFakeFileContext(file_ctx);
     if (fake) {
         const path_ptr = hook.readMem(u32, file_ctx + 0x0C);
@@ -381,7 +378,7 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(sc) void {
 
 // --- Hook 5: loadModelFromFileAsync (0x71d4e0) ---
 
-fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) callconv(tc) u32 {
+fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) callconv(hook.cc.thiscall) u32 {
 
     // file_handle IS the file context address directly (Ghidra shows pointer* but
     // the assembly pushes it directly to GetFileSizeFromHandle - no dereference)
@@ -404,7 +401,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
 
         // Allocate buffer via setCullMode (0x71f9a0) - same as original path
         // setCullMode is __fastcall(ECX=size), returns buffer pointer
-        const buffer_addr = hook.fastcall(u32, 0x71f9a0, data_size, 0);
+        const buffer_addr = hook.call(fn (u32) callconv(hook.cc.fastcall) u32, 0x71f9a0, .{data_size});
         if (buffer_addr == 0) {
             con.print("[file]   setCullMode alloc failed\n");
             return 0;
@@ -445,7 +442,7 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
 
         // Call processLoadedModelData directly - __fastcall(ECX=model)
         con.fmt("[file]   calling processLoadedModelData(0x{x})...\n", .{model});
-        const result = hook.fastcall(u32, 0x71d640, model, 0);
+        const result = hook.call(fn (u32) callconv(hook.cc.fastcall) u32, 0x71d640, .{model});
         con.print("[file]   processLoadedModelData returned\n");
         con.fmt("[file]   result=0x{x}\n", .{result});
 
@@ -473,10 +470,10 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
 // files are invisible to preloadFileWithFlags, so LoadAddonRecursive skips
 // Bindings.xml (and SavedVariables) for our addons.
 
-const CheckFileExistenceFn = fn (u32, u32, u32) callconv(fc) u32;
+const CheckFileExistenceFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
 var cfe_hook: hook.Detour(CheckFileExistenceFn) = .{};
 
-fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(fc) u32 {
+fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u32) callconv(hook.cc.fastcall) u32 {
     if (filename_ptr != 0) {
         // Embedded DLL files
         const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
@@ -516,9 +513,9 @@ fn removeFileHooks() void {
 // Hook: LoadScriptFunctions (0x490250)
 // =============================================================================
 
-var lsf_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var lsf_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
-fn loadScriptFunctionsDetour() callconv(sc) void {
+fn loadScriptFunctionsDetour() callconv(hook.cc.stdcall) void {
     lsf_hook.callOriginal(.{});
     registerLuaFunctions();
 }
@@ -528,9 +525,9 @@ fn loadScriptFunctionsDetour() callconv(sc) void {
 // Hook: GameEngine_MainInitialize (0x46a400)
 // =============================================================================
 
-var engine_init_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var engine_init_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
-fn engineInitDetour() callconv(sc) void {
+fn engineInitDetour() callconv(hook.cc.stdcall) void {
     engine_init_hook.callOriginal(.{});
 
     if (build_opts.screenshot) {
@@ -552,9 +549,9 @@ fn engineInitDetour() callconv(sc) void {
 // Fires on real character logout/disconnect only - NOT on /reload or map change.
 // =============================================================================
 
-var logout_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var logout_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
-fn logoutDetour() callconv(sc) void {
+fn logoutDetour() callconv(hook.cc.stdcall) void {
     con.print("[weirdutils] World_HandleLogoutCleanup -- player logout\n");
 
     // Reset per-session state - only on real logout/disconnect, not /reload.
@@ -580,7 +577,7 @@ fn logoutDetour() callconv(sc) void {
 // Hook: CGGameUI_Shutdown (0x490BD0)
 // =============================================================================
 
-var shutdown_hook: hook.Detour(fn () callconv(sc) void) = .{};
+var shutdown_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
 // =============================================================================
 // Module lifecycle - single table drives install, shutdown, and uninstall.
@@ -615,7 +612,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
 };
 
-fn shutdownDetour() callconv(sc) void {
+fn shutdownDetour() callconv(hook.cc.stdcall) void {
     con.print("[weirdutils] CGGameUI_Shutdown\n");
     // Per-session resets and remove_on_shutdown cleanup live in logoutDetour
     // (World_HandleLogoutCleanup) - fires on real logout/disconnect only, not /reload.

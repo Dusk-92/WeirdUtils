@@ -14,9 +14,6 @@ const types = @import("types.zig");
 // =============================================================================
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 extern "kernel32" fn IsBadReadPtr(
     lp: ?*const anyopaque,
@@ -145,7 +142,7 @@ pub fn resolveModelOwner(model: u32) u32 {
 /// UnitGUID("player") / UnitGUID("target") → 64-bit GUID.
 /// __fastcall(unitIdStr_ECX) → EDX:EAX (u64).
 pub fn unitGUID(unit_id: [*:0]const u8) u64 {
-    return hook.call(fn ([*:0]const u8) callconv(fc) u64, o.FN_UNIT_GUID, .{unit_id});
+    return hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u64, o.FN_UNIT_GUID, .{unit_id});
 }
 
 /// Resolve a GUID → object pointer via the object manager hash table.
@@ -154,7 +151,7 @@ pub fn getObjectByGUID(guid: u64) u32 {
     if (guid == 0) return 0;
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(sc) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
+    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
 }
 
 /// Get the local player's object pointer.
@@ -174,7 +171,7 @@ pub fn getTargetGUID() u64 {
 /// Reaction >= 4 means friendly.
 pub fn isUnitFriendly(unit: u32, local_player: u32) bool {
     if (unit == 0 or local_player == 0) return false;
-    const reaction = hook.call(fn (u32, u32) callconv(tc) i32, o.FN_UNIT_REACTION, .{ local_player, unit });
+    const reaction = hook.call(fn (u32, u32) callconv(hook.cc.thiscall) i32, o.FN_UNIT_REACTION, .{ local_player, unit });
     return reaction >= 4;
 }
 

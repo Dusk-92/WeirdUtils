@@ -114,9 +114,7 @@ const DespawningEntity = struct {
 };
 var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 
-const fc = std.builtin.CallingConvention{ .x86_fastcall = .{} };
-const sc = std.builtin.CallingConvention{ .x86_stdcall = .{} };
-const tc = std.builtin.CallingConvention{ .x86_thiscall = .{} };
+
 
 // =============================================================================
 // Permission check - leader or raid officer required
@@ -125,7 +123,7 @@ const tc = std.builtin.CallingConvention{ .x86_thiscall = .{} };
 /// Get local player GUID via GetPlayerGUID (0x468550).
 /// __fastcall(), no params, returns u64 via EDX:EAX.
 fn getPlayerGUID() u64 {
-    return hook.call(fn () callconv(fc) u64, o.FN_GET_PLAYER_GUID, .{});
+    return hook.call(fn () callconv(hook.cc.fastcall) u64, o.FN_GET_PLAYER_GUID, .{});
 }
 
 /// Look up a player name from the name cache by GUID.
@@ -133,7 +131,7 @@ fn getPlayerGUID() u64 {
 fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
     if (guid_lo == 0 and guid_hi == 0) return null;
     var name_buf: [2]u32 = .{ 0, 0 };
-    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(tc) u32, o.FN_NAME_CACHE_LOOKUP, .{
+    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32, o.FN_NAME_CACHE_LOOKUP, .{
         o.NAME_CACHE_OBJ, guid_lo, guid_hi, @intFromPtr(&name_buf), 0, 0, 0,
     });
     return if (result != 0) @ptrFromInt(result) else null;
@@ -247,7 +245,7 @@ fn getCursorTerrainPosition() ?Vec3 {
     @as(*align(1) u32, @ptrFromInt(world_frame + o.WF_HIT_TERRAIN_Z)).* = 0;
 
     // UpdateHitTest - __fastcall(ECX=worldFrame)
-    hook.fastcall(void, o.FN_UPDATE_HIT_TEST, world_frame, 0);
+    hook.call(fn (u32) callconv(hook.cc.fastcall) void, o.FN_UPDATE_HIT_TEST, .{world_frame});
 
     const hit_type = hook.readMem(u32, world_frame + o.WF_HIT_TYPE);
     const x = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_X);
@@ -286,7 +284,7 @@ fn getCursorTerrainPosition() ?Vec3 {
 
 /// CreateEntityInstance_WithAttachment - __fastcall, RET 0x14.
 fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u32, update_now: u32) ?*anyopaque {
-    const result = hook.call(fn ([*:0]const u8, *[3]f32, f32, u32, u32, u32, u32) callconv(fc) u32, o.FN_CREATE_ENTITY_INSTANCE, .{
+    const result = hook.call(fn ([*:0]const u8, *[3]f32, f32, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32, o.FN_CREATE_ENTITY_INSTANCE, .{
         path, pos, facing, flags, update_now, 0, 0,
     });
     return if (result != 0) @ptrFromInt(result) else null;
@@ -294,7 +292,7 @@ fn createEntityInstance(path: [*:0]const u8, pos: *[3]f32, facing: f32, flags: u
 
 /// CleanupEntity_ProcessAttachments - __fastcall(ECX=entity), no stack params.
 fn cleanupEntity(obj: *anyopaque) void {
-    hook.call(fn (*anyopaque) callconv(fc) void, o.FN_CLEANUP_ENTITY, .{obj});
+    hook.call(fn (*anyopaque) callconv(hook.cc.fastcall) void, o.FN_CLEANUP_ENTITY, .{obj});
 }
 
 // =============================================================================
@@ -308,7 +306,7 @@ fn playAnimation(entity: *anyopaque, anim_id: u32, queue: bool) void {
     const model = hook.readMem(u32, entity_addr + 0x88);
     if (model == 0 or model < 0x10000) return;
 
-    hook.call(fn (u32, u32, u32, i32, u32, u32, u32, u32) callconv(tc) void, o.FN_PLAY_BONE_ANIMATION, .{
+    hook.call(fn (u32, u32, u32, i32, u32, u32, u32, u32) callconv(hook.cc.thiscall) void, o.FN_PLAY_BONE_ANIMATION, .{
         model, 0xFFFFFFFF, anim_id, -1, 0, @as(u32, @bitCast(@as(f32, 1.0))), 1, @intFromBool(queue),
     });
 }
@@ -405,7 +403,7 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
 
 /// SetUnitPositionAndOrientation - __fastcall(ECX=positionData, EDX=pos), 1 stack param.
 fn setUnitPositionAndOrientation(entity: *anyopaque, pos: *[3]f32, facing: f32) void {
-    hook.call(fn (*anyopaque, *[3]f32, f32) callconv(fc) void, 0x698e20, .{ entity, pos, facing });
+    hook.call(fn (*anyopaque, *[3]f32, f32) callconv(hook.cc.fastcall) void, 0x698e20, .{ entity, pos, facing });
 }
 
 /// Remove only the live entity for a marker slot (def untouched).
@@ -517,7 +515,7 @@ pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     }
 
     const nargs = lua.gettop(L);
-    const lua_type: *const fn (lua.State, i32) callconv(fc) i32 = @ptrFromInt(0x6F3400);
+    const lua_type: *const fn (lua.State, i32) callconv(hook.cc.fastcall) i32 = @ptrFromInt(0x6F3400);
 
     if (nargs == 0 or lua_type(L, 1) == 0) {
         // No args or nil - clear all
@@ -729,12 +727,12 @@ pub fn luaCanSetMarkers(L: lua.State) callconv(.c) u32 {
 // World teardown hook
 // =============================================================================
 
-var world_cleanup_hook: hook.Detour(fn () callconv(sc) void) = .{};
-var world_update_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
+var world_cleanup_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+var world_update_hook: hook.Detour(fn (u32) callconv(hook.cc.fastcall) void) = .{};
 
 /// OnWorldUpdate hook - per-frame tick while world is active.
 /// Drives animation state (Hold queue after Stand, despawn cleanup).
-fn worldUpdateDetour(frame: u32) callconv(fc) void {
+fn worldUpdateDetour(frame: u32) callconv(hook.cc.fastcall) void {
     tickAnimations();
     world_update_hook.callOriginal(.{frame});
 }
@@ -744,7 +742,7 @@ fn worldUpdateDetour(frame: u32) callconv(fc) void {
 /// game's teardown runs - the same pattern every native caller uses (e.g.
 /// processCinematicExit, DestroyPathObjectIfPresent). This unlinks them from
 /// the WDOODADDEF hash table so the atexit handler never touches freed memory.
-fn worldCleanupDetour() callconv(sc) void {
+fn worldCleanupDetour() callconv(hook.cc.stdcall) void {
     con.print("[worldmarkers] >>> worldCleanupDetour FIRING <<<\n");
     destroyAllEntities();
     world_cleanup_hook.callOriginal(.{});

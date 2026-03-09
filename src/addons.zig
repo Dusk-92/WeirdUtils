@@ -16,8 +16,6 @@ const hook = @import("zhook");
 const con = @import("console.zig");
 const build_options = @import("build_options");
 
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 // Build option convenience aliases
 const build_opts = struct {
@@ -300,9 +298,9 @@ pub fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
 // DLL-embedded addon to register them in the game's addon hash table.
 // =============================================================================
 
-var setup_addons_hook: hook.Detour(fn (u32) callconv(fc) void) = .{};
+var setup_addons_hook: hook.Detour(fn (u32) callconv(hook.cc.fastcall) void) = .{};
 
-fn setupAddonsDetour(mgr_ptr: u32) callconv(fc) void {
+fn setupAddonsDetour(mgr_ptr: u32) callconv(hook.cc.fastcall) void {
     setup_addons_hook.callOriginal(.{mgr_ptr});
 
     inline for (embed_modules) |mod| {
@@ -343,7 +341,7 @@ fn hideAddonFromList(name: [*:0]const u8) void {
 }
 
 fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
-    hook.call(fn ([*:0]const u8) callconv(fc) void, 0x0051c9b0, .{addon_name});
+    hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) void, 0x0051c9b0, .{addon_name});
 }
 
 // =============================================================================

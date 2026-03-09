@@ -72,13 +72,13 @@ pub fn isEnabled() bool {
 ///   OutlineCommand("on")      → enable outlines
 ///   OutlineCommand("off")     → disable outlines
 pub fn outlineCommand(L: *anyopaque) callconv(.c) u32 {
-    const nargs = hook.fastcall(i32, 0x6F3070, @intFromPtr(L), @as(u32, 0)); // lua_gettop
+    const nargs = hook.call(fn (usize) callconv(hook.cc.fastcall) i32, 0x6F3070, .{@intFromPtr(L)}); // lua_gettop
 
     if (nargs >= 1) {
         // Check if first arg is a string
-        const is_str = hook.fastcall(u32, 0x6F3510, @intFromPtr(L), @as(u32, 1)); // lua_isstring
+        const is_str = hook.call(fn (usize, u32) callconv(hook.cc.fastcall) u32, 0x6F3510, .{ @intFromPtr(L), 1 }); // lua_isstring
         if (is_str != 0) {
-            const str_ptr = hook.fastcall(u32, 0x6F3690, @intFromPtr(L), @as(u32, 1)); // lua_tostring
+            const str_ptr = hook.call(fn (usize, u32) callconv(hook.cc.fastcall) u32, 0x6F3690, .{ @intFromPtr(L), 1 }); // lua_tostring
             if (str_ptr != 0) {
                 const s: [*:0]const u8 = @ptrFromInt(str_ptr);
                 const span = @import("std").mem.span(s);
@@ -92,7 +92,7 @@ pub fn outlineCommand(L: *anyopaque) callconv(.c) u32 {
     }
 
     // Push current state as boolean
-    hook.fastcall(void, 0x6F39F0, @intFromPtr(L), @as(u32, if (isEnabled()) 1 else 0)); // lua_pushboolean
+    hook.call(fn (usize, u32) callconv(hook.cc.fastcall) void, 0x6F39F0, .{ @intFromPtr(L), @as(u32, if (isEnabled()) 1 else 0) }); // lua_pushboolean
     return 1;
 }
 

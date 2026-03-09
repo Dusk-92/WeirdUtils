@@ -24,8 +24,6 @@ const hook = @import("zhook");
 const con = @import("../console.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 
 extern "kernel32" fn IsBadReadPtr(lp: ?*const anyopaque, ucb: usize) callconv(WINAPI) i32;
 extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
@@ -94,7 +92,7 @@ const G_PARENT_FRAME_TYPE_ID: usize = 0x00cf0c10;
 
 const CLEANUP_TARGET: usize = 0x767720;
 
-const CleanupFn = fn (u32) callconv(tc) void;
+const CleanupFn = fn (u32) callconv(hook.cc.thiscall) void;
 var cleanup_hook: hook.Detour(CleanupFn) = .{};
 
 // =============================================================================
@@ -111,7 +109,7 @@ var cleanup_hook: hook.Detour(CleanupFn) = .{};
 
 const DESTROY_UI_TARGET: usize = 0x7645a0;
 
-const DestroyUIFn = fn (u32, u32) callconv(tc) u32;
+const DestroyUIFn = fn (u32, u32) callconv(hook.cc.thiscall) u32;
 var destroy_ui_hook: hook.Detour(DestroyUIFn) = .{};
 
 // =============================================================================
@@ -125,7 +123,7 @@ var destroy_ui_hook: hook.Detour(DestroyUIFn) = .{};
 
 const PROCESS_UI_TARGET: usize = 0x772ec0;
 
-const ProcessUIFn = fn (u32, u32) callconv(tc) u32;
+const ProcessUIFn = fn (u32, u32) callconv(hook.cc.thiscall) u32;
 var process_ui_hook: hook.Detour(ProcessUIFn) = .{};
 
 // =============================================================================
@@ -143,7 +141,7 @@ var process_ui_hook: hook.Detour(ProcessUIFn) = .{};
 
 const PAUSE_ANIM_TARGET: usize = 0x767ee0;
 
-const PauseAnimFn = fn (u32, u32, u32) callconv(tc) void;
+const PauseAnimFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) void;
 var pause_anim_hook: hook.Detour(PauseAnimFn) = .{};
 
 // =============================================================================
@@ -162,7 +160,7 @@ var pause_anim_hook: hook.Detour(PauseAnimFn) = .{};
 
 const SET_ANIM_TARGET: usize = 0x767c70;
 
-const SetAnimFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(tc) void;
+const SetAnimFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) void;
 var set_anim_hook: hook.Detour(SetAnimFn) = .{};
 
 // =============================================================================
@@ -286,7 +284,7 @@ fn fmtStaleInfo(relativeTo: u32) struct { name: []const u8, saw_destroy: bool } 
 
 /// Detour for cleanup_linked_list_structures. Runs before the original to
 /// walk the dying frame's dependency list and destroy referencing anchors.
-fn cleanupDetour(frame: u32) callconv(tc) void {
+fn cleanupDetour(frame: u32) callconv(hook.cc.thiscall) void {
     recordDestruction(frame);
     cleanupReverseDependencies(frame);
     cleanup_hook.callOriginal(.{frame});
@@ -296,7 +294,7 @@ fn cleanupDetour(frame: u32) callconv(tc) void {
 /// called from cleanupGraphicsResources during UI teardown/reload. The original
 /// frees frames without walking the dependency list, leaving stale anchors.
 /// Signature: void* __thiscall destroyUIElement(void* this, byte free_flag)
-fn destroyUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
+fn destroyUIDetour(frame: u32, free_flag: u32) callconv(hook.cc.thiscall) u32 {
     recordDestruction(frame);
     if (IsBadReadPtr(@ptrFromInt(frame + 0x24), 4) == 0) {
         recordDestruction(frame + 0x24);
@@ -307,7 +305,7 @@ fn destroyUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
 }
 
 /// Detour for ProcessUIUpdateEvent - third destruction path, called via vtable.
-fn processUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
+fn processUIDetour(frame: u32, free_flag: u32) callconv(hook.cc.thiscall) u32 {
     recordDestruction(frame);
     if (IsBadReadPtr(@ptrFromInt(frame + 0x24), 4) == 0) {
         recordDestruction(frame + 0x24);
@@ -321,7 +319,7 @@ fn processUIDetour(frame: u32, free_flag: u32) callconv(tc) u32 {
 /// This tells us whether a stale relativeTo was ever registered through the
 /// normal dependency tracking system.
 /// Signature: void __thiscall PauseAnimationGroup(ECX=relativeTo_frame, owner_frame, bitmask)
-fn pauseAnimDetour(relativeTo_frame: u32, owner_frame: u32, bitmask: u32) callconv(tc) void {
+fn pauseAnimDetour(relativeTo_frame: u32, owner_frame: u32, bitmask: u32) callconv(hook.cc.thiscall) void {
     // Silently record - queried later by vtable hooks via logRegistrationStatus()
     recordRegistration(relativeTo_frame, owner_frame, bitmask);
 
@@ -330,7 +328,7 @@ fn pauseAnimDetour(relativeTo_frame: u32, owner_frame: u32, bitmask: u32) callco
 
 /// Detour for SetAnimationOrder - validates relativeTo param before anchor creation.
 /// Float params (xOfs, yOfs) are passed as raw u32 bit patterns on the stack.
-fn setAnimOrderDetour(frame: u32, point_enum: u32, relativeTo: u32, rel_point: u32, x_ofs: u32, y_ofs: u32, param_6: u32) callconv(tc) void {
+fn setAnimOrderDetour(frame: u32, point_enum: u32, relativeTo: u32, rel_point: u32, x_ofs: u32, y_ofs: u32, param_6: u32) callconv(hook.cc.thiscall) void {
     var fixed_relativeTo = relativeTo;
 
     // Validate relativeTo BEFORE the original creates the anchor.
@@ -481,7 +479,7 @@ fn getLiveUIParent() u32 {
     const type_id = readAligned(G_PARENT_FRAME_TYPE_ID);
     if (type_id == 0) return 0;
 
-    const cframe_base = hook.fastcall(u32, GET_FRAME_FROM_LUA, @intFromPtr(@as([*:0]const u8, "UIParent")), type_id);
+    const cframe_base = hook.call(fn ([*:0]const u8, u32) callconv(hook.cc.fastcall) u32, GET_FRAME_FROM_LUA, .{ "UIParent", type_id });
     if (cframe_base == 0) return 0;
 
     // Validate the returned pointer
@@ -549,8 +547,8 @@ fn isRelativeToValid(relativeTo: u32) bool {
 
 /// Hook for vtable[3] GetRelativeTo. Validates the stored pointer.
 /// If stale, NULLs anchor+0x0C and returns 0 (safe "no relativeTo" path).
-fn getRelativeToHook(this: u32) callconv(tc) u32 {
-    const orig: *const fn (u32) callconv(tc) u32 = @ptrFromInt(orig_get_relative_to);
+fn getRelativeToHook(this: u32) callconv(hook.cc.thiscall) u32 {
+    const orig: *const fn (u32) callconv(hook.cc.thiscall) u32 = @ptrFromInt(orig_get_relative_to);
     const result = orig(this);
 
     if (result == 0) return 0;
@@ -573,14 +571,14 @@ fn getRelativeToHook(this: u32) callconv(tc) u32 {
 /// Hook for vtable[1] GetWidth. Checks anchor+0x0C before calling original.
 /// Returns sentinel if relativeTo is NULL or dangling.
 /// Signature: f32 __thiscall GetWidth(this, u32 param) - callee cleans 1 stack arg.
-fn getWidthHook(this: u32, param: u32) callconv(tc) f32 {
+fn getWidthHook(this: u32, param: u32) callconv(hook.cc.thiscall) f32 {
     const relativeTo: u32 = readAligned(this + 0x0C);
     if (!isRelativeToValid(relativeTo)) {
         if (relativeTo != 0) {
             // Try to substitute live UIParent instead of NULLing
             if (tryFixStaleRelativeTo(this, relativeTo)) {
                 // Fixed - call original with the healed pointer
-                const orig: *const fn (u32, u32) callconv(tc) f32 = @ptrFromInt(orig_get_width);
+                const orig: *const fn (u32, u32) callconv(hook.cc.thiscall) f32 = @ptrFromInt(orig_get_width);
                 return orig(this, param);
             }
             const field: *align(1) u32 = @ptrFromInt(this + 0x0C);
@@ -589,19 +587,19 @@ fn getWidthHook(this: u32, param: u32) callconv(tc) f32 {
         return @as(*align(1) const f32, @ptrFromInt(SENTINEL_ADDR)).*;
     }
 
-    const orig: *const fn (u32, u32) callconv(tc) f32 = @ptrFromInt(orig_get_width);
+    const orig: *const fn (u32, u32) callconv(hook.cc.thiscall) f32 = @ptrFromInt(orig_get_width);
     return orig(this, param);
 }
 
 /// Hook for vtable[2] GetHeight. Same pattern as GetWidth.
 /// Signature: f32 __thiscall GetHeight(this, u32 param) - callee cleans 1 stack arg.
-fn getHeightHook(this: u32, param: u32) callconv(tc) f32 {
+fn getHeightHook(this: u32, param: u32) callconv(hook.cc.thiscall) f32 {
     const relativeTo: u32 = readAligned(this + 0x0C);
     if (!isRelativeToValid(relativeTo)) {
         if (relativeTo != 0) {
             // Try to substitute live UIParent instead of NULLing
             if (tryFixStaleRelativeTo(this, relativeTo)) {
-                const orig: *const fn (u32, u32) callconv(tc) f32 = @ptrFromInt(orig_get_height);
+                const orig: *const fn (u32, u32) callconv(hook.cc.thiscall) f32 = @ptrFromInt(orig_get_height);
                 return orig(this, param);
             }
             const field: *align(1) u32 = @ptrFromInt(this + 0x0C);
@@ -610,7 +608,7 @@ fn getHeightHook(this: u32, param: u32) callconv(tc) f32 {
         return @as(*align(1) const f32, @ptrFromInt(SENTINEL_ADDR)).*;
     }
 
-    const orig: *const fn (u32, u32) callconv(tc) f32 = @ptrFromInt(orig_get_height);
+    const orig: *const fn (u32, u32) callconv(hook.cc.thiscall) f32 = @ptrFromInt(orig_get_height);
     return orig(this, param);
 }
 

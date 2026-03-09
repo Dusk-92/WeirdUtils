@@ -55,8 +55,6 @@ const C3Vector = struct {
 // Calling Conventions
 // =============================================================================
 
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 // =============================================================================
 // Game API
@@ -65,7 +63,7 @@ const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 fn getObjectPointer(guid: u64) u32 {
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(sc) u32, Offsets.FUN_GET_OBJECT_POINTER, .{ lo, hi });
+    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, Offsets.FUN_GET_OBJECT_POINTER, .{ lo, hi });
 }
 
 fn isInWorld() bool {
@@ -106,11 +104,11 @@ fn isUnitSkinnable(unit: u32) bool {
 fn setTarget(guid: u64) void {
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    hook.call(fn (u32, u32) callconv(sc) void, Offsets.FUN_SET_TARGET, .{ lo, hi });
+    hook.call(fn (u32, u32) callconv(hook.cc.stdcall) void, Offsets.FUN_SET_TARGET, .{ lo, hi });
 }
 
 fn rightClickInteract(pointer: u32, autoloot: i32, fun_ptr: usize) void {
-    hook.call(fn (u32, i32) callconv(tc) void, fun_ptr, .{ pointer, autoloot });
+    hook.call(fn (u32, i32) callconv(hook.cc.thiscall) void, fun_ptr, .{ pointer, autoloot });
 }
 
 // =============================================================================
@@ -134,15 +132,15 @@ fn isBlacklisted(id: u32) bool {
 }
 
 // =============================================================================
-// Lua helpers (hook.fastcall to avoid broken callconv(fc) codegen)
+// Lua helpers
 // =============================================================================
 
 fn luaIsNumber(L: *anyopaque, idx: i32) bool {
-    return hook.fastcall(u32, Offsets.LUA_ISNUMBER, @intFromPtr(L), idx) != 0;
+    return hook.call(fn (usize, i32) callconv(hook.cc.fastcall) u32, Offsets.LUA_ISNUMBER, .{ @intFromPtr(L), idx }) != 0;
 }
 
 fn luaToNumber(L: *anyopaque, idx: i32) f64 {
-    return hook.fastcall(f64, Offsets.LUA_TONUMBER, @intFromPtr(L), idx);
+    return hook.call(fn (usize, i32) callconv(hook.cc.fastcall) f64, Offsets.LUA_TONUMBER, .{ @intFromPtr(L), idx });
 }
 
 fn luaPrintError(L: *anyopaque, msg: [*:0]const u8) void {
@@ -364,10 +362,10 @@ pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
 // Per-frame hook for processing the loot queue.
 // =============================================================================
 
-const SceneEndFn = fn (u32) callconv(tc) void;
+const SceneEndFn = fn (u32) callconv(hook.cc.thiscall) void;
 var scene_end_hook: hook.Detour(SceneEndFn) = .{};
 
-fn hookSceneEnd(device: u32) callconv(tc) void {
+fn hookSceneEnd(device: u32) callconv(hook.cc.thiscall) void {
     if (loot_active) {
         processLootQueue();
     }

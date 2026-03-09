@@ -13,9 +13,6 @@ const con = @import("../console.zig");
 const mod_mutex = @import("../mutex.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-const sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 pub const module_name: [*:0]const u8 = "bigcursor";
 
@@ -172,21 +169,19 @@ const IconInfo = extern struct {
 const CVAR_LOOKUP: usize = 0x0063DEC0;
 
 // RegisterCVar: __fastcall(ECX=name, EDX=help, stack: unk1, default, callback, category, unk2, unk3)
-const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(fc) u32;
+const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
 const registerCVar: RegisterCVarFn = @ptrFromInt(0x0063DB90);
 
 const CVAR_NAME = "cursorScale";
 
 /// Read CVar integer value (tenths: 15 = 1.5x). Returns f32 scale.
 fn readCVarScaleInit() f32 {
-    const cvar_ptr = hook.fastcall(u32, CVAR_LOOKUP, @intFromPtr(@as([*:0]const u8, CVAR_NAME)), @as(u32, 0));
+    const cvar_ptr = hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u32, CVAR_LOOKUP, .{CVAR_NAME});
     if (cvar_ptr == 0) return g_scale_f;
     // CVar struct: integer value at offset +40 bytes (10 pointer-sized fields)
     const val = hook.readMem(i32, cvar_ptr + 40);
-    if (val >= 10 and val <= 40) {
-        return @as(f32, @floatFromInt(val)) / 10.0;
-    }
-    return g_scale_f;
+    const clamped = std.math.clamp(val, 5, 40);
+    return @as(f32, @floatFromInt(clamped)) / 10.0;
 }
 
 // =============================================================================
@@ -277,17 +272,17 @@ const D3DSURFACE_DESC = extern struct {
 };
 
 fn surfaceGetDesc(surface: *anyopaque, desc: *D3DSURFACE_DESC) i32 {
-    const f: *const fn (*anyopaque, *D3DSURFACE_DESC) callconv(sc) i32 = @ptrFromInt(vtbl(surface)[SVT_GetDesc]);
+    const f: *const fn (*anyopaque, *D3DSURFACE_DESC) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vtbl(surface)[SVT_GetDesc]);
     return f(surface, desc);
 }
 
 fn surfaceLockRect(surface: *anyopaque, locked: *D3DLOCKED_RECT, rect: ?*anyopaque, flags: u32) i32 {
-    const f: *const fn (*anyopaque, *D3DLOCKED_RECT, ?*anyopaque, u32) callconv(sc) i32 = @ptrFromInt(vtbl(surface)[SVT_LockRect]);
+    const f: *const fn (*anyopaque, *D3DLOCKED_RECT, ?*anyopaque, u32) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vtbl(surface)[SVT_LockRect]);
     return f(surface, locked, rect, flags);
 }
 
 fn surfaceUnlockRect(surface: *anyopaque) i32 {
-    const f: *const fn (*anyopaque) callconv(sc) i32 = @ptrFromInt(vtbl(surface)[SVT_UnlockRect]);
+    const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(vtbl(surface)[SVT_UnlockRect]);
     return f(surface);
 }
 
@@ -468,8 +463,8 @@ fn cacheClear() void {
 // Hook: IDirect3DDevice9::SetCursorProperties (VT slot 10)
 // =============================================================================
 
-fn hkSetCursorProperties(device: *anyopaque, x_hotspot: u32, y_hotspot: u32, cursor_surface: *anyopaque) callconv(sc) i32 {
-    const origFn: *const fn (*anyopaque, u32, u32, *anyopaque) callconv(sc) i32 =
+fn hkSetCursorProperties(device: *anyopaque, x_hotspot: u32, y_hotspot: u32, cursor_surface: *anyopaque) callconv(hook.cc.stdcall) i32 {
+    const origFn: *const fn (*anyopaque, u32, u32, *anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(orig_set_cursor_props);
 
     if (g_scale_f <= 1.0) return origFn(device, x_hotspot, y_hotspot, cursor_surface);
@@ -532,8 +527,8 @@ fn hkSetCursorProperties(device: *anyopaque, x_hotspot: u32, y_hotspot: u32, cur
 // Hook: IDirect3DDevice9::ShowCursor (VT slot 12)
 // =============================================================================
 
-fn hkShowCursor(device: *anyopaque, bShow: i32) callconv(sc) i32 {
-    const origFn: *const fn (*anyopaque, i32) callconv(sc) i32 =
+fn hkShowCursor(device: *anyopaque, bShow: i32) callconv(hook.cc.stdcall) i32 {
+    const origFn: *const fn (*anyopaque, i32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(orig_show_cursor);
 
     g_cursor_visible = bShow != 0;
@@ -557,19 +552,19 @@ fn hkShowCursor(device: *anyopaque, bShow: i32) callconv(sc) i32 {
 // =============================================================================
 
 fn luaPushNumber(L_ptr: usize, n: f64) void {
-    hook.call(fn (usize, f64) callconv(tc) void, 0x6F3810, .{ L_ptr, n });
+    hook.call(fn (usize, f64) callconv(hook.cc.thiscall) void, 0x6F3810, .{ L_ptr, n });
 }
 
 pub fn luaSetCursorScale(L: *anyopaque) callconv(.c) u32 {
     const L_ptr = @intFromPtr(L);
-    const nargs = hook.fastcall(i32, 0x6F3070, L_ptr, @as(u32, 0)); // lua_gettop
+    const nargs = hook.call(fn (usize) callconv(hook.cc.fastcall) i32, 0x6F3070, .{L_ptr}); // lua_gettop
     if (nargs < 1) return 0;
 
-    const val: f32 = @floatCast(hook.fastcall(f64, 0x6F3620, L_ptr, @as(i32, 1))); // lua_tonumber
-    if (val < 1.0 or val > 4.0) return 0;
+    const val: f32 = @floatCast(hook.call(fn (usize, i32) callconv(hook.cc.fastcall) f64, 0x6F3620, .{ L_ptr, 1 })); // lua_tonumber
+    const clamped = std.math.clamp(val, 0.5, 4.0);
 
-    if (val != g_scale_f) {
-        g_scale_f = val;
+    if (clamped != g_scale_f) {
+        g_scale_f = clamped;
         cacheClear();
         g_hcursor = null;
         logFmt("[bigcursor] scale set to {d:.2}\n", .{g_scale_f});

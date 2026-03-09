@@ -53,23 +53,21 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 // State
 // =============================================================================
 
-const tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
-const fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 
 // CVar for compression level persistence (0–9, default 6)
 const CVAR_NAME = "screenshotQuality";
 const CVAR_LOOKUP: usize = 0x0063DEC0;
-const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(fc) u32;
+const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
 const registerCVar: RegisterCVarFn = @ptrFromInt(0x0063DB90);
 
 fn readCVarQuality() i32 {
-    const cvar_ptr = hook.fastcall(u32, CVAR_LOOKUP, @intFromPtr(@as([*:0]const u8, CVAR_NAME)), @as(u32, 0));
+    const cvar_ptr = hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u32, CVAR_LOOKUP, .{CVAR_NAME});
     if (cvar_ptr == 0) return 6;
     const val = hook.readMem(i32, cvar_ptr + 40);
     return std.math.clamp(val, 0, 9);
 }
 
-const TgaWriteFn = fn (u32, u32) callconv(tc) i32;
+const TgaWriteFn = fn (u32, u32) callconv(hook.cc.thiscall) i32;
 var tga_hook: hook.Detour(TgaWriteFn) = .{};
 var screenshot_dir: [260]u8 = undefined;
 var screenshot_dir_len: usize = 0;
@@ -153,7 +151,7 @@ fn callOriginal(self: u32, filename: u32) i32 {
 // Thunked from __fastcall(self_ECX, _EDX, filename_stack) → cdecl
 // =============================================================================
 
-fn tgaWriteDetour(self: u32, filename: u32) callconv(tc) i32 {
+fn tgaWriteDetour(self: u32, filename: u32) callconv(hook.cc.thiscall) i32 {
     // CVar 0 = disabled, fall through to original TGA write
     const quality = readCVarQuality();
     if (quality == 0) return callOriginal(self, filename);
