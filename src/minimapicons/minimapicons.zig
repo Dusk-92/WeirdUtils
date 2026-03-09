@@ -341,6 +341,7 @@ const MinimapInfoCache = struct {
 };
 var g_minimap_info: MinimapInfoCache = .{};
 var g_local_player: u32 = 0; // cached per enumeration cycle
+var g_local_player_guid: u64 = 0; // cached per enumeration cycle
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -466,7 +467,7 @@ fn getSummonedByGUID(obj: u32) u64 {
     return (@as(u64, hi) << 32) | lo;
 }
 
-fn getActivePlayerObject() u32 {
+fn getActivePlayerGUID() u64 {
     var lo: u32 = undefined;
     var hi: u32 = undefined;
     asm volatile ("call *%[func]"
@@ -474,10 +475,13 @@ fn getActivePlayerObject() u32 {
           [_] "={edx}" (hi),
         : [func] "r" (@as(u32, ADDR.ClntObjMgrGetActivePlayer)),
         : .{ .ecx = true, .memory = true, .cc = true });
-    const guid_lo = lo;
-    const guid_hi = hi;
-    if (guid_lo == 0 and guid_hi == 0) return 0;
-    return getObjectByGUID(guid_lo, guid_hi);
+    return (@as(u64, hi) << 32) | lo;
+}
+
+fn getActivePlayerObject() u32 {
+    const guid = getActivePlayerGUID();
+    if (guid == 0) return 0;
+    return getObjectByGUID(@truncate(guid), @truncate(guid >> 32));
 }
 
 /// UnitReaction: __thiscall(localPlayer_ECX, unit_stack) -> int (>=4 = friendly).
@@ -507,9 +511,12 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
         return false;
     }
 
-    // If unit has a summoner, their race must be same faction as ours
+    // If unit has a summoner, check ownership and faction
     const summoner_guid = getSummonedByGUID(obj);
     if (summoner_guid != 0) {
+        // Hide our own summons (e.g. our own repair bot)
+        if (summoner_guid == g_local_player_guid) return false;
+
         const lo: u32 = @truncate(summoner_guid);
         const hi: u32 = @truncate(summoner_guid >> 32);
         const summoner = getObjectByGUID(lo, hi);
@@ -1071,7 +1078,11 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(fc) i32 {
         g_blip_count = 0;
         g_minimap_info.valid = false;
         const prev = g_local_player;
-        g_local_player = getActivePlayerObject();
+        g_local_player_guid = getActivePlayerGUID();
+        g_local_player = if (g_local_player_guid != 0)
+            getObjectByGUID(@truncate(g_local_player_guid), @truncate(g_local_player_guid >> 32))
+        else
+            0;
         if (g_local_player != prev) {
             con.fmt("[minimapicons] local player: 0x{x} race={d}\n", .{
                 g_local_player,
