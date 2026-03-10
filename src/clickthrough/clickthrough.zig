@@ -1,9 +1,9 @@
-//! GO click-through module.
+//! Click-through module.
 //!
-//! Makes game objects (mailboxes, soulwells, etc.) clickable through players
-//! and units by hooking WorldIntersectionTest (0x480DF0). When the normal
-//! raycast hits a player/unit, we re-call the original with GO-only flags.
-//! If a GO is found, we return that result instead.
+//! Makes interactable objects clickable through players and units by hooking
+//! WorldIntersectionTest (0x480DF0). When the raycast hits a player, we
+//! re-raycast without players to find interactable NPCs or GOs behind them.
+//! When it hits a unit, we re-raycast GO-only to find interactable GOs.
 //!
 //! Hooks:
 //!   WorldIntersectionTest (0x480DF0) -- sole raycast entry, called from HitTestPoint
@@ -42,11 +42,13 @@ const TYPE_PLAYER: u32 = 0x19;
 const FLAG_GO: u32 = 0x04;
 
 // =============================================================================
-// Target GO filtering
+// Object filtering
 // =============================================================================
 
 const OBJ_TYPE: usize = 0x14;
+const OBJ_TYPE_UNIT: u32 = 3;
 const OBJ_TYPE_GO: u32 = 5;
+const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END(0x06) + 0x8D = 0x93
 const ADDR_CallSpellCastHandler: usize = 0x5F8800;
 
 fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
@@ -54,7 +56,7 @@ fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
     return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR_GetObjectByGUID, .{ guid_lo, guid_hi });
 }
 
-/// Check if the GUID refers to an interactable GO.
+/// Check if the GUID refers to an interactable GO (mailbox, soulwell, etc.)
 fn isInteractableGO(guid_lo: u32, guid_hi: u32) bool {
     const obj = getObjectByGUID(guid_lo, guid_hi);
     if (obj == 0) return false;
@@ -62,6 +64,34 @@ fn isInteractableGO(guid_lo: u32, guid_hi: u32) bool {
     if (obj_type != OBJ_TYPE_GO) return false;
     // CallSpellCastHandler: __fastcall(obj_ECX) -> bool
     return hook.call(fn (u32) callconv(hook.cc.fastcall) u8, ADDR_CallSpellCastHandler, .{obj}) != 0;
+}
+
+/// Check if the GUID refers to an NPC with interaction flags (vendor, quest giver, etc.)
+fn isInteractableNPC(guid_lo: u32, guid_hi: u32) bool {
+    const obj = getObjectByGUID(guid_lo, guid_hi);
+    if (obj == 0) return false;
+    const obj_type = hook.readMem(u32, obj + OBJ_TYPE);
+    if (obj_type != OBJ_TYPE_UNIT) return false;
+    const desc = hook.readMem(u32, obj + OBJ_DESCRIPTOR);
+    if (desc < 0x10000 or desc >= 0x7F000000) return false;
+    return hook.readMem(u32, desc + DESC_NPC_FLAGS) != 0;
+}
+
+/// Check if the second raycast result is something we should click through to.
+fn isClickthroughTarget(guid_lo: u32, guid_hi: u32, allow_npcs: bool) bool {
+    if (guid_lo == 0 and guid_hi == 0) return false;
+    if (isInteractableGO(guid_lo, guid_hi)) return true;
+    if (allow_npcs) {
+        const obj = getObjectByGUID(guid_lo, guid_hi);
+        if (obj != 0) {
+            const obj_type = hook.readMem(u32, obj + OBJ_TYPE);
+            const desc = hook.readMem(u32, obj + OBJ_DESCRIPTOR);
+            const npc_flags: u32 = if (desc >= 0x10000 and desc < 0x7F000000) hook.readMem(u32, desc + DESC_NPC_FLAGS) else 0;
+            log.fmt("[ct] NPC check: obj=0x{x} type={d} desc=0x{x} npc_flags=0x{x}\n", .{ obj, obj_type, desc, npc_flags });
+        }
+        if (isInteractableNPC(guid_lo, guid_hi)) return true;
+    }
+    return false;
 }
 
 // =============================================================================
@@ -104,34 +134,41 @@ fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u
     if (desc_ptr < 0x10000 or desc_ptr >= 0x7F000000) return hit_type;
 
     const type_mask = hook.readMem(u32, desc_ptr + OBJ_TYPE_MASK_OFFSET);
-    if (type_mask != TYPE_UNIT and type_mask != TYPE_PLAYER) return hit_type;
 
-    // Hit a unit/player. Re-call original with unit/player flags stripped.
-    const go_flags: u32 = 0x04; // GOs only
-    var go_result = [_]u8{0} ** HIT_RESULT_SIZE;
-    const go_hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, go_flags, @intFromPtr(&go_result) });
+    // Determine re-raycast flags and whether NPCs are valid targets:
+    //   Player hit → remove player flag, allow NPCs + GOs
+    //   Unit hit   → GO-only flags, only allow GOs
+    const recast_flags: u32 = switch (type_mask) {
+        TYPE_PLAYER => flags & ~@as(u32, 0x10), // everything except players
+        TYPE_UNIT => FLAG_GO, // GOs only
+        else => return hit_type,
+    };
+    const allow_npcs = (type_mask == TYPE_PLAYER);
+
+    var recast_result = [_]u8{0} ** HIT_RESULT_SIZE;
+    const recast_hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, recast_flags, @intFromPtr(&recast_result) });
 
     g_log_counter +%= 1;
     if (g_log_counter % 60 == 0) {
-        const go_lo = std.mem.readInt(u32, go_result[HIT_GUID_LO..][0..4], .little);
-        const go_hi = std.mem.readInt(u32, go_result[HIT_GUID_HI..][0..4], .little);
-        log.fmt("[ct] unit/player mask=0x{x}, GO re-raycast: type={d} guid=0x{x}:{x}\n", .{ type_mask, go_hit_type, go_hi, go_lo });
+        const r_lo = std.mem.readInt(u32, recast_result[HIT_GUID_LO..][0..4], .little);
+        const r_hi = std.mem.readInt(u32, recast_result[HIT_GUID_HI..][0..4], .little);
+        log.fmt("[ct] mask=0x{x} recast(flags=0x{x}): type={d} guid=0x{x}:{x}\n", .{ type_mask, recast_flags, recast_hit_type, r_hi, r_lo });
     }
 
-    if (go_hit_type < 2) return hit_type;
+    if (recast_hit_type < 2) return hit_type;
 
-    const go_guid_lo = std.mem.readInt(u32, go_result[HIT_GUID_LO..][0..4], .little);
-    const go_guid_hi = std.mem.readInt(u32, go_result[HIT_GUID_HI..][0..4], .little);
+    const r_guid_lo = std.mem.readInt(u32, recast_result[HIT_GUID_LO..][0..4], .little);
+    const r_guid_hi = std.mem.readInt(u32, recast_result[HIT_GUID_HI..][0..4], .little);
 
-    if (!isInteractableGO(go_guid_lo, go_guid_hi)) return hit_type;
+    if (!isClickthroughTarget(r_guid_lo, r_guid_hi, allow_npcs)) return hit_type;
 
-    log.fmt("[ct] GO click-through: 0x{x}:{x} replaces unit/player 0x{x}:{x}\n", .{ go_guid_hi, go_guid_lo, buf_hi, buf_lo });
+    log.fmt("[ct] click-through: 0x{x}:{x} replaces 0x{x}:{x}\n", .{ r_guid_hi, r_guid_lo, buf_hi, buf_lo });
 
-    // Replace the caller's hitResult with the GO result
+    // Replace the caller's hitResult with the recast result
     const dst: [*]u8 = @ptrFromInt(hit_result);
-    @memcpy(dst[0..HIT_RESULT_SIZE], &go_result);
+    @memcpy(dst[0..HIT_RESULT_SIZE], &recast_result);
 
-    return go_hit_type;
+    return recast_hit_type;
 }
 
 // =============================================================================
