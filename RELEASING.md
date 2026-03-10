@@ -14,7 +14,8 @@ local `DLL_README.md`). This must be set up once when creating the repo:
 tea repo create --name WeirdUtils --description "Vanilla WoW 1.12.1 utility DLLs" --login MarcelineVQ
 ```
 
-Codeberg disables releases on new repos by default. Enable via API:
+Codeberg disables releases on new repos by default. Enable via API
+(get your token from `grep 'token:' ~/.config/tea/config.yml | head -1 | awk '{print $2}'`):
 
 ```sh
 curl -s -X PATCH \
@@ -139,9 +140,9 @@ asset upload in one command. The tag is created on the remote automatically.
 Run from a clone of the remote repo, or specify `--repo` explicitly.
 Only attach the combined DLL and the variant DLLs for modules in this release.
 
-Also include a release-specific copy of `include/weirdutils_api.h` with the
-DLL names list trimmed to only released modules. Non-released DLL names must
-NOT appear in the header.
+Only attach DLLs to the release - do NOT attach `weirdutils_api.h` as a
+release asset. The header belongs in the repo itself (pushed to `main`),
+not in the release downloads.
 
 ```sh
 # Example: transmogfix + customassets + healtextfix release
@@ -157,18 +158,26 @@ tea release create \
   --asset zig-out/variants/healtextfix.dll
 ```
 
-Upload the header separately via API after creating the release:
+### Replacing a DLL on an existing release
+
+Delete the old asset by name, then upload the new one:
 
 ```sh
-curl -s -X POST \
-  -H "Authorization: token <your-token>" \
-  -F "attachment=@/path/to/weirdutils_api.h" \
-  "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils/releases/<release-id>/assets"
+tea release assets delete --repo MarcelineVQ/WeirdUtils -y v0.4.0 minimapicons.dll
+tea release assets create --repo MarcelineVQ/WeirdUtils v0.4.0 zig-out/variants/minimapicons.dll
 ```
 
 ## 5. Hide source archives
 
 Codeberg attaches empty source tar/zip by default. Hide them via API:
+
+Get your token from the tea config:
+
+```sh
+grep 'token:' ~/.config/tea/config.yml | head -1 | awk '{print $2}'
+```
+
+Then hide the archives:
 
 ```sh
 curl -s -X PATCH \
@@ -178,7 +187,16 @@ curl -s -X PATCH \
   "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils/releases/<release-id>"
 ```
 
-Get the release ID from `tea release list --repo MarcelineVQ/WeirdUtils --output json`.
+Get the release ID using the API (not `tea release list --output json`, which
+mangles keys like `tag-_name`):
+
+```sh
+tea api repos/MarcelineVQ/WeirdUtils/releases | python3 -c "
+import sys,json; releases=json.load(sys.stdin)
+r=[x for x in releases if x['tag_name']=='vX.Y.Z']
+print(r[0]['id']) if r else print('not found')
+"
+```
 
 ## Checklist
 
