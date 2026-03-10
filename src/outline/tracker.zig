@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
+const logging = @import("../logging.zig");
 const wow = @import("wow.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");
@@ -307,11 +308,13 @@ pub const Diag = struct {
 };
 
 pub var diag: Diag = .{};
+var log: logging.Logger = .{};
 
-const WINAPI = std.builtin.CallingConvention.winapi;
-extern "kernel32" fn OutputDebugStringA(lpOutputString: [*:0]const u8) callconv(WINAPI) void;
+pub fn initLogger() void {
+    log = logging.Logger.open("outline", .console);
+}
 
-/// Log diagnostic counters via OutputDebugStringA. Called from EndScene.
+/// Log diagnostic counters. Called from EndScene.
 /// Only logs when outline activity is detected, limited to first 20 events.
 pub fn logDiagnostics(cached_draw_count: u32) void {
     const has_activity = diag.scan_targets > 0 or diag.scan_raid_marks > 0 or
@@ -322,8 +325,7 @@ pub fn logDiagnostics(cached_draw_count: u32) void {
     if (!has_activity or diag.log_count >= 20) return;
     diag.log_count += 1;
 
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "[Outline] scan t={d} r={d} d={d} | classify t={d} r={d} d={d} | cached={d}\x00", .{
+    log.fmt("scan t={d} r={d} d={d} | classify t={d} r={d} d={d} | cached={d}\n", .{
         diag.scan_targets,
         diag.scan_raid_marks,
         diag.scan_dead_players,
@@ -331,8 +333,7 @@ pub fn logDiagnostics(cached_draw_count: u32) void {
         diag.classify_raid_mark,
         diag.classify_dead_player,
         cached_draw_count,
-    }) catch return;
-    OutputDebugStringA(@ptrCast(msg.ptr));
+    });
 }
 
 /// Reset per-frame diagnostic counters. Called at start of scanObjects.

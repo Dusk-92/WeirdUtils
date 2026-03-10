@@ -1,5 +1,5 @@
 const std = @import("std");
-const con = @import("console.zig");
+const con = @import("logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: ?[*:0]const u8) callconv(WINAPI) ?*anyopaque;

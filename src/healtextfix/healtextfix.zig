@@ -38,7 +38,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(WINAPI) ?*anyopaque;
@@ -86,11 +86,11 @@ const patch_sets = [_]PatchSet{
 };
 
 fn printHex(prefix: []const u8, bytes: []const u8) void {
-    con.print(prefix);
+    log.print(prefix);
     for (bytes) |b| {
-        con.fmt("{x:0>2} ", .{b});
+        log.fmt("{x:0>2} ", .{b});
     }
-    con.print("\n");
+    log.print("\n");
 }
 
 /// Convert a file offset to a virtual address by walking PE section headers.
@@ -131,6 +131,7 @@ pub const module_name: [*:0]const u8 = "healtextfix";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 var g_applied_set: ?*const PatchSet = null;
 
 pub fn isActive() bool {
@@ -152,11 +153,11 @@ fn detectVersion(base: [*]const u8) ?[]const u8 {
 }
 
 pub fn installHooks() void {
-    con.print("[healtextfix] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
+    if (g_is_hook_owner) log = logging.Logger.open(module_name, .console);
 }
 
 /// Called from engineInitDetour (GameEngine_MainInitialize hook) - late enough
@@ -165,33 +166,33 @@ pub fn lateInit() void {
     if (!g_is_hook_owner) return;
     const superwow_base = GetModuleHandleA("SuperWoWhook.dll");
     if (superwow_base == null) {
-        con.print("[healtextfix] SuperWoWhook.dll not found, skipping\n");
+        log.print("SuperWoWhook.dll not found, skipping\n");
         return;
     }
 
     const base: [*]const u8 = @ptrCast(superwow_base.?);
-    con.fmt("[healtextfix] SuperWoWhook.dll at 0x{x}\n", .{@intFromPtr(base)});
+    log.fmt("SuperWoWhook.dll at 0x{x}\n", .{@intFromPtr(base)});
 
     // Detect SuperWoW version
     const version = detectVersion(base) orelse {
-        con.print("[healtextfix] Could not detect SuperWoW version, skipping\n");
+        log.print("Could not detect SuperWoW version, skipping\n");
         return;
     };
-    con.fmt("[healtextfix] Detected SuperWoW version: {s}\n", .{version});
+    log.fmt("Detected SuperWoW version: {s}\n", .{version});
 
     // Find matching patch set
     const set: *const PatchSet = blk: {
         for (&patch_sets) |*ps| {
             if (std.mem.eql(u8, ps.version, version)) break :blk ps;
         }
-        con.fmt("[healtextfix] No patches for version \"{s}\", skipping\n", .{version});
+        log.fmt("No patches for version \"{s}\", skipping\n", .{version});
         return;
     };
 
     var applied: u32 = 0;
     for (set.patches, 0..) |patch, idx| {
         const va = fileOffsetToVA(base, patch.file_offset) orelse {
-            con.fmt("[healtextfix] Patch {d}: failed to resolve file offset 0x{x}\n", .{ idx, patch.file_offset });
+            log.fmt("Patch {d}: failed to resolve file offset 0x{x}\n", .{ idx, patch.file_offset });
             continue;
         };
 
@@ -217,10 +218,10 @@ pub fn lateInit() void {
                 }
             }
             if (already) {
-                con.fmt("[healtextfix] Patch {d}: already applied\n", .{idx});
+                log.fmt("Patch {d}: already applied\n", .{idx});
                 applied += 1;
             } else {
-                con.fmt("[healtextfix] Patch {d}: unexpected bytes at VA 0x{x}\n", .{ idx, @intFromPtr(target) });
+                log.fmt("Patch {d}: unexpected bytes at VA 0x{x}\n", .{ idx, @intFromPtr(target) });
                 printHex("[healtextfix]   expected: ", patch.old);
                 printHex("[healtextfix]   found:    ", target[0..patch.old.len]);
             }
@@ -230,17 +231,18 @@ pub fn lateInit() void {
         // Apply patch
         hook.writeProtected(@intFromPtr(target), patch.new);
         applied += 1;
-        con.fmt("[healtextfix] Patch {d}: applied at VA 0x{x}\n", .{ idx, @intFromPtr(target) });
+        log.fmt("Patch {d}: applied at VA 0x{x}\n", .{ idx, @intFromPtr(target) });
     }
 
     if (applied > 0) g_applied_set = set;
-    con.fmt("[healtextfix] {d}/{d} patches applied\n", .{ applied, set.patches.len });
+    log.fmt("{d}/{d} patches applied\n", .{ applied, set.patches.len });
 }
 
 pub fn removeHooks() void {
     if (!g_is_hook_owner) return;
 
     const set = g_applied_set orelse {
+        log.close();
         mod_mutex.release(&g_mutex);
         g_is_hook_owner = false;
         return;
@@ -267,12 +269,13 @@ pub fn removeHooks() void {
 
         if (is_patched) {
             hook.writeProtected(@intFromPtr(target), patch.old);
-            con.fmt("[healtextfix] Patch {d}: restored\n", .{idx});
+            log.fmt("Patch {d}: restored\n", .{idx});
         }
     }
 
     g_applied_set = null;
+    log.print("All patches restored\n");
+    log.close();
     mod_mutex.release(&g_mutex);
     g_is_hook_owner = false;
-    con.print("[healtextfix] All patches restored\n");
 }

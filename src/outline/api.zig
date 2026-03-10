@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");
 const d3d9_hook = @import("d3d9_hook.zig");
@@ -14,6 +14,7 @@ const WINAPI = std.builtin.CallingConvention.winapi;
 const mod_mutex = @import("../mutex.zig");
 
 pub const module_name: [*:0]const u8 = "outline";
+var log: logging.Logger = .{};
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -27,13 +28,14 @@ pub fn isActive() bool {
 /// dummy D3D9 device during engine init corrupts the d3d9 proxy's state and
 /// causes model rendering to stutter at ~10fps.
 pub fn init() bool {
-    con.print("[outline] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return true;
 
+    log = logging.Logger.open(module_name, .console);
+    tracker.initLogger();
     if (!model_hook.installHooks()) return false;
     return true;
 }
@@ -50,6 +52,7 @@ pub fn cleanup() void {
     if (g_is_hook_owner) {
         d3d9_hook.removeHooks();
         model_hook.removeHooks();
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

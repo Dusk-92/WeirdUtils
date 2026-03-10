@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 
 // =============================================================================
 // Windows API (project-specific - not in hook lib)
@@ -176,7 +176,7 @@ pub fn looseFilesLookup(game_path_ptr: u32, output_buffer_ptr: u32) bool {
 
     const disk_path = loose_files.get(norm_buf[0..path.len]) orelse return false;
 
-    con.fmt("[customassets] loose hit: \"{s}\"\n", .{path});
+    log.fmt("loose hit: \"{s}\"\n", .{path});
 
     if (output_buffer_ptr != 0) {
         const disk_len = cStrLen(disk_path.ptr);
@@ -260,18 +260,20 @@ pub const module_name: [*:0]const u8 = "customassets";
 var installed: bool = false;
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
 }
 
 pub fn installHooks() void {
-    con.print("[customassets] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
+
+    log = logging.Logger.open(module_name, .console);
 
     applyGlobPatch();
     applyLooseFilePatches();
@@ -288,6 +290,7 @@ pub fn removeHooks() void {
     }
 
     if (g_is_hook_owner) {
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

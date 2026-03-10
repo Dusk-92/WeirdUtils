@@ -13,9 +13,9 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("console.zig");
+const logging = @import("logging.zig");
+var log: logging.Logger = .{};
 const build_options = @import("build_options");
-
 
 // Build option convenience aliases
 const build_opts = struct {
@@ -310,7 +310,7 @@ fn setupAddonsDetour(mgr_ptr: u32) callconv(hook.cc.fastcall) void {
         const active = if (mod.is_active) |f| f() else true;
         if (active) {
             const name: [*:0]const u8 = comptime (mod.addon_name.? ++ "\x00").ptr;
-            con.fmt("[addons] registering embedded addon: {s}\n", .{name});
+            log.fmt("registering embedded addon: {s}\n", .{name});
             callLoadAddonTOC(name);
 
             if (mod.hidden) {
@@ -332,12 +332,12 @@ fn hideAddonFromList(name: [*:0]const u8) void {
         const node_name = hook.readMem([*:0]const u8, node + 0x14);
         if (std.mem.orderZ(u8, node_name, name) == .eq) {
             hook.writeMem(node + 0x29, &[_]u8{1});
-            con.fmt("[addons] hidden addon {s} excluded from list (+0x29=1)\n", .{name});
+            log.fmt("hidden addon {s} excluded from list (+0x29=1)\n", .{name});
             return;
         }
         node = hook.readMem(u32, list_base + 4 + node);
     }
-    con.fmt("[addons] WARNING: could not find {s} in addon list\n", .{name});
+    log.fmt("WARNING: could not find {s} in addon list\n", .{name});
 }
 
 fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
@@ -359,6 +359,7 @@ const has_addons = blk: {
 
 pub fn install() void {
     if (!has_addons) return;
+    log = logging.Logger.open("addons", .console);
     _ = setup_addons_hook.attach(0x51C740, &setupAddonsDetour);
 }
 

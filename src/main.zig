@@ -1,6 +1,7 @@
 const std = @import("std");
 const hook = @import("zhook");
-pub const con = @import("console.zig");
+const logging = @import("logging.zig");
+var log: logging.Logger = .{};
 
 // Build options for conditional module compilation
 const build_opts = struct {
@@ -15,6 +16,7 @@ const build_opts = struct {
     const customassets = @import("build_options").enable_customassets;
     const healtextfix = @import("build_options").enable_healtextfix;
     const bigcursor = @import("build_options").enable_bigcursor;
+    const clickthrough = @import("build_options").enable_clickthrough;
     const dpslog = @import("build_options").enable_dpslog;
 };
 
@@ -30,6 +32,7 @@ const transmogfix = if (build_opts.transmogfix) @import("transmogfix/transmogfix
 const customassets = if (build_opts.customassets) @import("customassets/customassets.zig") else struct {};
 const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix.zig") else struct {};
 const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") else struct {};
+const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthrough.zig") else struct {};
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -145,7 +148,7 @@ fn loadFileDetour(
 
         buf_out.* = buf;
         if (size_out) |s| s.* = data_len;
-        con.fmt("[file] served embedded: {s} ({d} bytes)\n", .{ std.mem.span(path), data_len });
+        log.fmt("served embedded: {s} ({d} bytes)\n", .{ std.mem.span(path), data_len });
         return 1;
     }
 
@@ -244,7 +247,7 @@ fn openFileDetour(
         }
 
         handle_out.* = @intFromPtr(ctx);
-        con.fmt("[file] fake ctx @0x{x}: {s} ({d} bytes)\n", .{ @intFromPtr(ctx), path_span, entry.data.len });
+        log.fmt("fake ctx @0x{x}: {s} ({d} bytes)\n", .{ @intFromPtr(ctx), path_span, entry.data.len });
         return 2; // success (non-zero type code)
     }
 
@@ -260,7 +263,7 @@ fn getFileSizeDetour(
     if (isFakeFileContext(file_ctx)) {
         if (high_size_out) |h| h.* = 0;
         const size = hook.readMem(u32, file_ctx + 0x34);
-        con.fmt("[file] getFileSize fake @0x{x} = {d}\n", .{ file_ctx, size });
+        log.fmt("getFileSize fake @0x{x} = {d}\n", .{ file_ctx, size });
         return size;
     }
 
@@ -282,7 +285,7 @@ fn readFileDetour(
         const data_size = hook.readMem(u32, ctx + 0x34);
         const read_size = @min(size, data_size);
 
-        con.fmt("[file] readFile fake @0x{x} size={d}/{d} async=0x{x}\n", .{ ctx, read_size, data_size, async_ptr });
+        log.fmt("readFile fake @0x{x} size={d}/{d} async=0x{x}\n", .{ ctx, read_size, data_size, async_ptr });
 
         const src: [*]const u8 = @ptrFromInt(data_ptr);
         @memcpy(buffer[0..read_size], src[0..read_size]);
@@ -363,9 +366,9 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(hook.cc.stdcall) void {
         const path_ptr = hook.readMem(u32, file_ctx + 0x0C);
         if (path_ptr != 0) {
             const path: [*:0]const u8 = @ptrFromInt(path_ptr);
-            con.fmt("[file] cleanup FAKE @0x{x}: {s}\n", .{ file_ctx, std.mem.span(path) });
+            log.fmt("cleanup FAKE @0x{x}: {s}\n", .{ file_ctx, std.mem.span(path) });
         } else {
-            con.fmt("[file] cleanup FAKE @0x{x}: (no path)\n", .{file_ctx});
+            log.fmt("cleanup FAKE @0x{x}: (no path)\n", .{file_ctx});
         }
     }
 
@@ -373,7 +376,7 @@ fn cleanupFileHandleDetour(file_ctx: u32) callconv(hook.cc.stdcall) void {
     // (NULL-safe checks on +0x04/+0x3C/+0x40/+0x08, then cleanupFileContext + FreeMemory).
     cleanup_file_handle_hook.callOriginal(.{file_ctx});
 
-    if (fake) con.fmt("[file] cleanup FAKE @0x{x} done\n", .{file_ctx});
+    if (fake) log.fmt("cleanup FAKE @0x{x} done\n", .{file_ctx});
 }
 
 // --- Hook 5: loadModelFromFileAsync (0x71d4e0) ---
@@ -383,10 +386,10 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
     // file_handle IS the file context address directly (Ghidra shows pointer* but
     // the assembly pushes it directly to GetFileSizeFromHandle - no dereference)
     if (isFakeFileContext(file_handle)) {
-        con.fmt("[file] loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
+        log.fmt("loadModelAsync: model=0x{x} fh=0x{x} cb={d}\n", .{ model, file_handle, should_use_callback });
         const data_ptr = hook.readMem(u32, file_handle + 0x30);
         const data_size = hook.readMem(u32, file_handle + 0x34);
-        con.fmt("[file]   embed_ptr=0x{x} embed_size={d}\n", .{ data_ptr, data_size });
+        log.fmt("  embed_ptr=0x{x} embed_size={d}\n", .{ data_ptr, data_size });
 
         // Toggle callback flag (bit 1 of model+8) based on shouldUseCallback
         const flags = hook.readMem(u32, model + 0x08);
@@ -403,10 +406,10 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         // setCullMode is __fastcall(ECX=size), returns buffer pointer
         const buffer_addr = hook.call(fn (u32) callconv(hook.cc.fastcall) u32, 0x71f9a0, .{data_size});
         if (buffer_addr == 0) {
-            con.print("[file]   setCullMode alloc failed\n");
+            log.print("  setCullMode alloc failed\n");
             return 0;
         }
-        con.fmt("[file]   buffer=0x{x}\n", .{buffer_addr});
+        log.fmt("  buffer=0x{x}\n", .{buffer_addr});
 
         // Store buffer in model object
         @as(*align(1) u32, @ptrFromInt(model + 0x130)).* = buffer_addr;
@@ -415,11 +418,11 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         const buffer: [*]u8 = @ptrFromInt(buffer_addr);
         const src: [*]const u8 = @ptrFromInt(data_ptr);
         @memcpy(buffer[0..data_size], src[0..data_size]);
-        con.print("[file]   memcpy done\n");
+        log.print("  memcpy done\n");
 
         // No async task - set task pointer to NULL
         @as(*align(1) u32, @ptrFromInt(model + 0x0c)).* = 0;
-        con.print("[file]   task=0 set\n");
+        log.print("  task=0 set\n");
 
         // Match onModelLoadComplete ordering: clean up file handle BEFORE processing.
         // The original async flow does: CleanupFileHandleResources → ReturnAsyncTaskToPool
@@ -428,12 +431,12 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         // async tasks that interact with the file I/O system.
         // Call original CleanupFileHandleResources through the trampoline (bypasses our
         // detour). Must clean up file context before processLoadedModelData runs.
-        con.fmt("[file]   cleanup via trampoline fh=0x{x}\n", .{file_handle});
+        log.fmt("  cleanup via trampoline fh=0x{x}\n", .{file_handle});
         cleanup_file_handle_hook.callOriginal(.{file_handle});
-        con.print("[file]   cleanup done\n");
+        log.print("  cleanup done\n");
 
         // Dump model fields before processLoadedModelData
-        con.fmt("[file]   PRE  model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
+        log.fmt("  PRE  model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
             hook.readMem(u32, model + 0x0c),
             hook.readMem(u32, model + 0x130),
             hook.readMem(u32, model + 0x134),
@@ -441,22 +444,22 @@ fn loadModelAsyncDetour(model: u32, file_handle: u32, should_use_callback: u32) 
         });
 
         // Call processLoadedModelData directly - __fastcall(ECX=model)
-        con.fmt("[file]   calling processLoadedModelData(0x{x})...\n", .{model});
+        log.fmt("  calling processLoadedModelData(0x{x})...\n", .{model});
         const result = hook.call(fn (u32) callconv(hook.cc.fastcall) u32, 0x71d640, .{model});
-        con.print("[file]   processLoadedModelData returned\n");
-        con.fmt("[file]   result=0x{x}\n", .{result});
+        log.print("  processLoadedModelData returned\n");
+        log.fmt("  result=0x{x}\n", .{result});
 
         // Dump model fields after processLoadedModelData - check if texture async task was created
-        con.print("[file]   POST dump:\n");
-        con.fmt("[file]   POST model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
+        log.print("  POST dump:\n");
+        log.fmt("  POST model+0x0c=0x{x} +0x130=0x{x} +0x134=0x{x} +0x138=0x{x}\n", .{
             hook.readMem(u32, model + 0x0c),
             hook.readMem(u32, model + 0x130),
             hook.readMem(u32, model + 0x134),
             hook.readMem(u32, model + 0x138),
         });
 
-        con.fmt("[file]   sync loaded {d} bytes, returning 1\n", .{data_size});
-        con.print("[file]   === loadModelAsyncDetour EXIT ===\n");
+        log.fmt("  sync loaded {d} bytes, returning 1\n", .{data_size});
+        log.print("  === loadModelAsyncDetour EXIT ===\n");
         return 1;
     }
 
@@ -496,7 +499,7 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
-    con.print("[file] in-memory file hooks installed\n");
+    log.print("in-memory file hooks installed\n");
 }
 
 fn removeFileHooks() void {
@@ -519,7 +522,6 @@ fn loadScriptFunctionsDetour() callconv(hook.cc.stdcall) void {
     lsf_hook.callOriginal(.{});
     registerLuaFunctions();
 }
-
 
 // =============================================================================
 // Hook: GameEngine_MainInitialize (0x46a400)
@@ -552,11 +554,12 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
 var logout_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
 fn logoutDetour() callconv(hook.cc.stdcall) void {
-    con.print("[weirdutils] World_HandleLogoutCleanup -- player logout\n");
+    log.print("World_HandleLogoutCleanup -- player logout\n");
 
     // Reset per-session state - only on real logout/disconnect, not /reload.
     if (build_opts.worldmarkers) markers.onShutdown();
     if (build_opts.minimapicons) minimapicons.onShutdown();
+    if (build_opts.clickthrough) clickthrough.onShutdown();
     if (build_opts.logsessions) logsessions.onShutdown();
 
     // Clean up world objects BEFORE game teardown - modules with
@@ -605,6 +608,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.minimapicons) .{ .name = minimapicons.module_name, .install = minimapicons.installHooks, .remove = minimapicons.removeHooks, .is_active = minimapicons.isActive } else .{},
     if (build_opts.healtextfix) .{ .name = healtextfix.module_name, .install = healtextfix.installHooks, .remove = healtextfix.removeHooks, .is_active = healtextfix.isActive } else .{},
     if (build_opts.bigcursor) .{ .name = bigcursor.module_name, .install = bigcursor.installHooks, .remove = bigcursor.removeHooks, .is_active = bigcursor.isActive } else .{},
+    if (build_opts.clickthrough) .{ .name = clickthrough.module_name, .install = clickthrough.installHooks, .remove = clickthrough.removeHooks, .is_active = clickthrough.isActive } else .{},
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
@@ -613,7 +617,7 @@ const modules = [_]ModuleHooks{
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
-    con.print("[weirdutils] CGGameUI_Shutdown\n");
+    log.print("CGGameUI_Shutdown\n");
     // Per-session resets and remove_on_shutdown cleanup live in logoutDetour
     // (World_HandleLogoutCleanup) - fires on real logout/disconnect only, not /reload.
     shutdown_hook.callOriginal(.{});
@@ -624,8 +628,9 @@ fn shutdownDetour() callconv(hook.cc.stdcall) void {
 // =============================================================================
 
 fn install() void {
-    con.init();
-    con.print("[weirdutils] Installing hooks\n");
+    logging.init();
+    log = logging.Logger.open("weirdutils", .console);
+    log.print("Installing hooks\n");
     _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
     installFileHooks();
     _ = file_hook.attach(0x648620, &loadFileDetour);
@@ -658,7 +663,7 @@ fn uninstall() void {
     file_hook.detach();
     removeFileHooks();
     protection_hook.detach();
-    con.deinit();
+    logging.deinit();
 }
 
 // =============================================================================

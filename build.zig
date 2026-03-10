@@ -24,6 +24,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "customassets", .desc = "Enable loose file loading & permissive patch glob" },
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
+    .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
 };
 

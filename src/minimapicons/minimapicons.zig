@@ -3,6 +3,11 @@
 //! Adds NPC type tracking to the minimap (flight masters, innkeepers, mailboxes, etc.)
 //! by hooking the minimap's object enumeration and blip rendering pipeline.
 //!
+//! Uses the minimap's own ObjectEnumProc callback rather than the rendering pipeline's
+//! CGObjectIsDisabled/CGUnitShouldRender hooks (used by clickthrough/perfboost) because
+//! we need access to the minimap info struct for blip positioning and must be in the
+//! minimap drawing pipeline to render custom blip textures via RenderObjectBlips.
+//!
 //! Hooks:
 //!   ObjectEnumProc (0x4EAA90) — intercepts per-object minimap callback, checks NPC flags
 //!   RenderObjectBlips (0x4EBC00) — draws custom blip textures after default blips
@@ -16,9 +21,8 @@
 const std = @import("std");
 const hook = @import("zhook");
 const lua = @import("../lua.zig");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
-
 
 pub const module_name: [*:0]const u8 = "minimapicons";
 
@@ -343,6 +347,7 @@ var g_local_player_guid: u64 = 0; // cached per enumeration cycle
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
@@ -483,7 +488,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
     // Check hostility via UnitReaction
     const reaction = unitReaction(local_player, obj);
     if (reaction < 4) {
-        con.fmt("[minimapicons] unit 0x{x} rejected: hostile (reaction={d}, race={d})\n", .{ obj, reaction, getRace(obj) });
+        log.fmt("unit 0x{x} rejected: hostile (reaction={d}, race={d})\n", .{ obj, reaction, getRace(obj) });
         return false;
     }
 
@@ -499,7 +504,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
         if (summoner != 0 and isValidPtr(summoner)) {
             const our_race = getRace(local_player);
             const their_race = getRace(summoner);
-            con.fmt("[minimapicons] unit 0x{x} summoner 0x{x}: our race={d} their race={d}\n", .{ obj, summoner, our_race, their_race });
+            // log.fmt("unit 0x{x} summoner 0x{x}: our race={d} their race={d}\n", .{ obj, summoner, our_race, their_race });
             if (!isSameFaction(our_race, their_race))
                 return false;
         }
@@ -513,7 +518,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
 fn isGoInteractable(obj: u32) bool {
     const result: u8 = @truncate(hook.call(fn (u32) callconv(hook.cc.fastcall) u32, ADDR.CallSpellCastHandler, .{obj}));
     if (result == 0) {
-        con.fmt("[minimapicons] GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
+        log.fmt("GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
     }
     return result != 0;
 }
@@ -623,7 +628,7 @@ fn loadTexture(path: [*:0]const u8) u32 {
     });
 
     if (!status.ok() or texture == 0) {
-        con.print("[minimapicons] Failed to load texture\n");
+        log.print("Failed to load texture\n");
         return 0;
     }
 
@@ -853,6 +858,13 @@ fn trackObject(info: u32, guid_lo: u32, guid_hi: u32, blip: Blip) void {
         };
     }
 
+    // Skip objects more than 55y above or below the player (filters multi-level cities and large dungeons like kara40)
+    if (g_local_player != 0) {
+        if (getObjectPosition(g_local_player)) |player_pos| {
+            if (@abs(pos.z - player_pos.z) > 55.0) return;
+        }
+    }
+
     var minimap_pos: C2Vector = undefined;
     worldPosToMinimapCoords(&minimap_pos, g_minimap_info.cur, g_minimap_info.radius, pos.x, pos.y, g_minimap_info.layout_scale, g_minimap_info.unk_scale);
 
@@ -980,7 +992,7 @@ fn enumVisibleObjectsDetour(callback: u32, context: u32) callconv(hook.cc.fastca
         else
             0;
         if (g_local_player != prev) {
-            con.fmt("[minimapicons] local player: 0x{x} race={d}\n", .{
+            log.fmt("local player: 0x{x} race={d}\n", .{
                 g_local_player,
                 if (g_local_player != 0) @as(u32, getRace(g_local_player)) else @as(u32, 0),
             });
@@ -1177,36 +1189,36 @@ fn strEqlInsensitive(a: [*:0]const u8, b: []const u8) bool {
 // =============================================================================
 
 pub fn installHooks() void {
-    con.print("[minimapicons] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
+    log = logging.Logger.open(module_name, .console);
 
     if (enum_proc_hook.attach(ADDR.ObjectEnumProc, &objectEnumProcDetour) != .ok) {
-        con.print("[minimapicons] Failed to hook ObjectEnumProc\n");
+        log.print("Failed to hook ObjectEnumProc\n");
         return;
     }
     if (render_blips_hook.attach(ADDR.RenderObjectBlips, &renderObjectBlipsDetour) != .ok) {
-        con.print("[minimapicons] Failed to hook RenderObjectBlips\n");
+        log.print("Failed to hook RenderObjectBlips\n");
         enum_proc_hook.detach();
         return;
     }
     if (enum_vis_hook.attach(ADDR.EnumVisibleObjects, &enumVisibleObjectsDetour) != .ok) {
-        con.print("[minimapicons] Failed to hook EnumVisibleObjects\n");
+        log.print("Failed to hook EnumVisibleObjects\n");
         render_blips_hook.detach();
         enum_proc_hook.detach();
         return;
     }
 
-    con.print("[minimapicons] Hooks installed\n");
+    log.print("Hooks installed\n");
 }
 
 /// Called from CGGameUI_Shutdown (logout/exit) — frees heap-allocated filter strings.
 pub fn onShutdown() void {
     for (&g_flag_tracking) |*entry| entry.clear();
-    con.print("[minimapicons] filters freed (shutdown)\n");
+    log.print("filters freed (shutdown)\n");
 }
 
 pub fn removeHooks() void {
@@ -1220,6 +1232,7 @@ pub fn removeHooks() void {
         for (&g_go_id_tracking) |*entry| entry.active = false;
         g_blip_count = 0;
 
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

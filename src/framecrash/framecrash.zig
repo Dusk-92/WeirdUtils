@@ -21,7 +21,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 
@@ -39,6 +39,7 @@ pub const module_name: [*:0]const u8 = "framecrash";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
@@ -345,12 +346,12 @@ fn setAnimOrderDetour(frame: u32, point_enum: u32, relativeTo: u32, rel_point: u
             const live_uiparent = getLiveUIParent();
 
             if (live_uiparent != 0 and live_uiparent != relativeTo) {
-                con.fmt("[framecrash] FIX: SetAnimOrder dead relativeTo=0x{x:0>8} -> UIParent=0x{x:0>8}, owner=\"{s}\" point={d}\n", .{
+                log.fmt("FIX: SetAnimOrder dead relativeTo=0x{x:0>8} -> UIParent=0x{x:0>8}, owner=\"{s}\" point={d}\n", .{
                     relativeTo, live_uiparent, fmtFrameName(frame), point_enum,
                 });
                 fixed_relativeTo = live_uiparent;
             } else {
-                con.fmt("[framecrash] RACE: SetAnimOrder dead relativeTo=0x{x:0>8}, no live UIParent! owner=\"{s}\" point={d}\n", .{
+                log.fmt("RACE: SetAnimOrder dead relativeTo=0x{x:0>8}, no live UIParent! owner=\"{s}\" point={d}\n", .{
                     relativeTo, fmtFrameName(frame), point_enum,
                 });
             }
@@ -436,7 +437,7 @@ fn cleanupReverseDependencies(dying_frame: u32) void {
     }
 
     if (cleaned > 0) {
-        con.fmt("[framecrash] Nulled {d} stale relativeTo ptr(s) referencing dying frame 0x{x:0>8}\n", .{ cleaned, dying_frame });
+        log.fmt("Nulled {d} stale relativeTo ptr(s) referencing dying frame 0x{x:0>8}\n", .{ cleaned, dying_frame });
     }
 }
 
@@ -504,7 +505,7 @@ fn tryFixStaleRelativeTo(anchor: u32, stale: u32) bool {
 
     const field: *align(1) u32 = @ptrFromInt(anchor + 0x0C);
     field.* = live;
-    con.fmt("[framecrash] HEALED: anchor 0x{x:0>8} relativeTo 0x{x:0>8} -> UIParent 0x{x:0>8}\n", .{
+    log.fmt("HEALED: anchor 0x{x:0>8} relativeTo 0x{x:0>8} -> UIParent 0x{x:0>8}\n", .{
         anchor, stale, live,
     });
     return true;
@@ -636,29 +637,31 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
+    log = logging.Logger.open(module_name, .console);
+
     // Root cause fix #1: detour cleanup_linked_list_structures to clean up
     // reverse anchor references before the frame is destroyed.
     if (cleanup_hook.attach(CLEANUP_TARGET, &cleanupDetour) != .ok) {
-        con.print("[framecrash] ERROR: Failed to install frame cleanup detour\n");
+        log.print("ERROR: Failed to install frame cleanup detour\n");
     } else {
-        con.print("[framecrash] Frame cleanup detour installed\n");
+        log.print("Frame cleanup detour installed\n");
     }
 
     // Root cause fix #2: detour destroyUIElement - the second destruction path
     // used by cleanupGraphicsResources during UI teardown/reload. This path
     // frees frames without walking the dependency list.
     if (destroy_ui_hook.attach(DESTROY_UI_TARGET, &destroyUIDetour) != .ok) {
-        con.print("[framecrash] ERROR: Failed to install destroyUIElement detour\n");
+        log.print("ERROR: Failed to install destroyUIElement detour\n");
     } else {
-        con.print("[framecrash] destroyUIElement detour installed\n");
+        log.print("destroyUIElement detour installed\n");
     }
 
     // Root cause fix #3: detour ProcessUIUpdateEvent - virtual function that
     // calls CleanupUIElement + FreeMemory without layout cleanup.
     if (process_ui_hook.attach(PROCESS_UI_TARGET, &processUIDetour) != .ok) {
-        con.print("[framecrash] ERROR: Failed to install ProcessUIUpdateEvent detour\n");
+        log.print("ERROR: Failed to install ProcessUIUpdateEvent detour\n");
     } else {
-        con.print("[framecrash] ProcessUIUpdateEvent detour installed\n");
+        log.print("ProcessUIUpdateEvent detour installed\n");
     }
 
     // Defense-in-depth: patch anchor vtable[1]/[2]/[3] to validate relativeTo
@@ -666,22 +669,22 @@ pub fn installHooks() void {
     patchVtableSlot(GET_WIDTH_SLOT, @intFromPtr(&getWidthHook), &orig_get_width);
     patchVtableSlot(GET_HEIGHT_SLOT, @intFromPtr(&getHeightHook), &orig_get_height);
     patchVtableSlot(GET_RELATIVE_TO_SLOT, @intFromPtr(&getRelativeToHook), &orig_get_relative_to);
-    con.print("[framecrash] Anchor vtable hooks installed (GetWidth/GetHeight/GetRelativeTo)\n");
+    log.print("Anchor vtable hooks installed (GetWidth/GetHeight/GetRelativeTo)\n");
 
     // Diagnostic: hook PauseAnimationGroup to track dependency registrations.
     // Answers: "was a dependency ever registered for this stale address?"
     if (pause_anim_hook.attach(PAUSE_ANIM_TARGET, &pauseAnimDetour) != .ok) {
-        con.print("[framecrash] ERROR: Failed to install PauseAnimationGroup detour\n");
+        log.print("ERROR: Failed to install PauseAnimationGroup detour\n");
     } else {
-        con.print("[framecrash] PauseAnimationGroup detour installed\n");
+        log.print("PauseAnimationGroup detour installed\n");
     }
 
     // Diagnostic: hook SetAnimationOrder to detect race conditions.
     // Validates relativeTo param BEFORE anchor creation.
     if (set_anim_hook.attach(SET_ANIM_TARGET, &setAnimOrderDetour) != .ok) {
-        con.print("[framecrash] ERROR: Failed to install SetAnimationOrder detour\n");
+        log.print("ERROR: Failed to install SetAnimationOrder detour\n");
     } else {
-        con.print("[framecrash] SetAnimationOrder detour installed\n");
+        log.print("SetAnimationOrder detour installed\n");
     }
 }
 
@@ -689,28 +692,29 @@ pub fn removeHooks() void {
     if (g_is_hook_owner) {
         // Remove diagnostic hooks first (reverse install order)
         set_anim_hook.detach();
-        con.print("[framecrash] SetAnimationOrder detour removed\n");
+        log.print("SetAnimationOrder detour removed\n");
 
         pause_anim_hook.detach();
-        con.print("[framecrash] PauseAnimationGroup detour removed\n");
+        log.print("PauseAnimationGroup detour removed\n");
 
         // Restore original vtable pointers (reverse order)
         restoreVtableSlot(GET_RELATIVE_TO_SLOT, &orig_get_relative_to);
         restoreVtableSlot(GET_HEIGHT_SLOT, &orig_get_height);
         restoreVtableSlot(GET_WIDTH_SLOT, &orig_get_width);
-        con.print("[framecrash] Anchor vtable hooks removed\n");
+        log.print("Anchor vtable hooks removed\n");
 
         process_ui_hook.detach();
-        con.print("[framecrash] ProcessUIUpdateEvent detour removed\n");
+        log.print("ProcessUIUpdateEvent detour removed\n");
 
         destroy_ui_hook.detach();
-        con.print("[framecrash] destroyUIElement detour removed\n");
+        log.print("destroyUIElement detour removed\n");
 
         cleanup_hook.detach();
-        con.print("[framecrash] Frame cleanup detour removed\n");
+        log.print("Frame cleanup detour removed\n");
     }
 
     if (g_is_hook_owner) {
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

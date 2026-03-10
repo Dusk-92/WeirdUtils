@@ -276,7 +276,7 @@ fn getCursorTerrainPosition() ?Vec3 {
     const y = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Y);
     const z = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Z);
 
-    log.fmt("[worldmarkers] hitTest: type={d} pos={d:.1},{d:.1},{d:.1}\n", .{ hit_type, x, y, z });
+    log.fmt("hitTest: type={d} pos={d:.1},{d:.1},{d:.1}\n", .{ hit_type, x, y, z });
 
     if (hit_type == 2) {
         // Object hit — the intersection point is unreliable (can be at camera).
@@ -289,7 +289,7 @@ fn getCursorTerrainPosition() ?Vec3 {
             if (obj != 0) {
                 const pos = getUnitPosition(obj);
                 if (pos.x != 0 or pos.y != 0 or pos.z != 0) {
-                    log.fmt("[worldmarkers] object hit, using unit pos: {d:.1},{d:.1},{d:.1}\n", .{ pos.x, pos.y, pos.z });
+                    log.fmt("object hit, using unit pos: {d:.1},{d:.1},{d:.1}\n", .{ pos.x, pos.y, pos.z });
                     return pos;
                 }
             }
@@ -405,7 +405,7 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
     var position = [3]f32{ pos.x, pos.y, pos.z + MARKER_Z_OFFSET };
 
     const obj = createEntityInstance(MODEL_PATHS[index], &position, 0.0, 0, 1) orelse {
-        log.fmt("[worldmarkers] failed to create marker {d}\n", .{index + 1});
+        log.fmt("failed to create marker {d}\n", .{index + 1});
         return false;
     };
 
@@ -419,7 +419,7 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
     marker_created_tick[index] = GetTickCount();
     hold_queued[index] = false;
 
-    log.fmt("[worldmarkers] marker {d} spawned at {d:.1}, {d:.1}, {d:.1} @0x{x}\n", .{
+    log.fmt("marker {d} spawned at {d:.1}, {d:.1}, {d:.1} @0x{x}\n", .{
         index + 1, pos.x, pos.y, pos.z, @intFromPtr(obj),
     });
     return true;
@@ -461,7 +461,7 @@ fn clearAllMarkers() void {
         }
         marker_defs[i] = EMPTY_DEF;
     }
-    if (any) log.print("[worldmarkers] all markers cleared\n");
+    if (any) log.print("all markers cleared\n");
 }
 
 // =============================================================================
@@ -476,21 +476,21 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         return 1;
     }
     if (!canSetMarkers()) {
-        log.print("[worldmarkers] WorldMarker: no permission\n");
+        log.print("WorldMarker: no permission\n");
         return 0; // nil - addon shows permission message
     }
 
     const nargs = lua.gettop(L);
 
     if (nargs < 1 or !lua.isnumber(L, 1)) {
-        log.print("[worldmarkers] WorldMarker: expected index (1-5)\n");
+        log.print("WorldMarker: expected index (1-5)\n");
         lua.pushnumber(L, -1.0);
         return 1;
     }
 
     const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) {
-        log.print("[worldmarkers] WorldMarker: index must be 1-5\n");
+        log.print("WorldMarker: index must be 1-5\n");
         lua.pushnumber(L, -1.0);
         return 1;
     }
@@ -506,12 +506,12 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         }
     } else if (nargs >= 2 and lua.isstring(L, 2)) {
         const unit_id = lua.tostring(L, 2) orelse {
-            log.print("[worldmarkers] WorldMarker: invalid unit string\n");
+            log.print("WorldMarker: invalid unit string\n");
             lua.pushnumber(L, -1.0);
             return 1;
         };
         const pos = resolveUnitPosition(unit_id) orelse {
-            log.fmt("[worldmarkers] WorldMarker: unit '{s}' not found\n", .{std.mem.span(unit_id)});
+            log.fmt("WorldMarker: unit '{s}' not found\n", .{std.mem.span(unit_id)});
             lua.pushnumber(L, -1.0);
             return 1;
         };
@@ -521,7 +521,7 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
         }
     } else {
         const pos = getCursorTerrainPosition() orelse {
-            log.print("[worldmarkers] no terrain under cursor\n");
+            log.print("no terrain under cursor\n");
             lua.pushnumber(L, -1.0);
             return 1;
         };
@@ -538,7 +538,7 @@ pub fn luaWorldMarker(L: lua.State) callconv(.c) u32 {
 ///   Returns 1 on success, nil on permission denied.
 pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     if (!canSetMarkers()) {
-        log.print("[worldmarkers] ClearWorldMarker: no permission\n");
+        log.print("ClearWorldMarker: no permission\n");
         return 0;
     }
 
@@ -553,13 +553,13 @@ pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     }
 
     if (!lua.isnumber(L, 1)) {
-        log.print("[worldmarkers] ClearWorldMarker: expected index (1-5) or nil\n");
+        log.print("ClearWorldMarker: expected index (1-5) or nil\n");
         return 0;
     }
 
     const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
     if (raw_index < 1 or raw_index > NUM_MARKERS) {
-        log.print("[worldmarkers] ClearWorldMarker: index must be 1-5\n");
+        log.print("ClearWorldMarker: index must be 1-5\n");
         return 0;
     }
 
@@ -603,7 +603,7 @@ fn tickAnimations() void {
             const addr = @intFromPtr(entity);
             const refcount = hook.readMem(u16, addr + 0x0E);
             if (refcount <= 1) {
-                log.fmt("[worldmarkers] zombie detected [{d}] @0x{x} rc={d}, destroying\n", .{ i + 1, addr, refcount });
+                log.fmt("zombie detected [{d}] @0x{x} rc={d}, destroying\n", .{ i + 1, addr, refcount });
                 cleanupEntity(entity);
                 marker_entities[i] = null;
                 hold_queued[i] = false;
@@ -631,7 +631,7 @@ fn tickAnimations() void {
                     const dist_sq = dx * dx + dy * dy + dz * dz;
 
                     if (dist_sq < RESPAWN_DISTANCE_SQ) {
-                        log.fmt("[worldmarkers] respawning [{d}] dist={d:.0}\n", .{ i + 1, @sqrt(dist_sq) });
+                        log.fmt("respawning [{d}] dist={d:.0}\n", .{ i + 1, @sqrt(dist_sq) });
                         _ = spawnEntity(i, marker_defs[i].pos);
                     }
                 }
@@ -652,7 +652,7 @@ pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
 
     const sender = lua.tostring(L, 6) orelse return 0;
     if (!senderHasPermission(sender)) {
-        log.fmt("[worldmarkers] SetMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+        log.fmt("SetMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
         return 0;
     }
 
@@ -674,7 +674,7 @@ pub fn luaSetMarkerDef(L: lua.State) callconv(.c) u32 {
         .active = true,
     };
 
-    log.fmt("[worldmarkers] SetMarkerDef [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
+    log.fmt("SetMarkerDef [{d}] at {d:.1},{d:.1},{d:.1} area={d}\n", .{ index + 1, x, y, z, area_id });
     return 0;
 }
 
@@ -689,7 +689,7 @@ pub fn luaClearMarkerDef(L: lua.State) callconv(.c) u32 {
         // ClearMarkerDef(senderName) - clear all
         const sender = lua.tostring(L, 1) orelse return 0;
         if (!senderHasPermission(sender)) {
-            log.fmt("[worldmarkers] ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+            log.fmt("ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
             return 0;
         }
         clearAllMarkers();
@@ -700,7 +700,7 @@ pub fn luaClearMarkerDef(L: lua.State) callconv(.c) u32 {
         // ClearMarkerDef(index, senderName) - clear one
         const sender = lua.tostring(L, 2) orelse return 0;
         if (!senderHasPermission(sender)) {
-            log.fmt("[worldmarkers] ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
+            log.fmt("ClearMarkerDef: sender '{s}' denied\n", .{std.mem.span(sender)});
             return 0;
         }
         const raw_index = @as(i32, @intFromFloat(lua.tonumber(L, 1)));
@@ -773,7 +773,7 @@ fn worldUpdateDetour(frame: u32) callconv(hook.cc.fastcall) void {
 /// processCinematicExit, DestroyPathObjectIfPresent). This unlinks them from
 /// the WDOODADDEF hash table so the atexit handler never touches freed memory.
 fn worldCleanupDetour() callconv(hook.cc.stdcall) void {
-    log.print("[worldmarkers] >>> worldCleanupDetour FIRING <<<\n");
+    log.print(">>> worldCleanupDetour FIRING <<<\n");
     destroyAllEntities();
     world_cleanup_hook.callOriginal(.{});
 }
@@ -786,7 +786,7 @@ fn destroyAllEntities() void {
     for (&marker_entities, 0..) |*slot, i| {
         if (slot.*) |existing| {
             const addr = @intFromPtr(existing);
-            log.fmt("[worldmarkers] destroying marker[{d}] @0x{x}\n", .{ i, addr });
+            log.fmt("destroying marker[{d}] @0x{x}\n", .{ i, addr });
             cleanupEntity(existing);
             slot.* = null;
             count += 1;
@@ -798,7 +798,7 @@ fn destroyAllEntities() void {
     for (&despawning, 0..) |*slot, i| {
         if (slot.*) |d| {
             const addr = @intFromPtr(d.entity);
-            log.fmt("[worldmarkers] destroying despawn[{d}] @0x{x}\n", .{ i, addr });
+            log.fmt("destroying despawn[{d}] @0x{x}\n", .{ i, addr });
             cleanupEntity(d.entity);
             slot.* = null;
             count += 1;
@@ -806,7 +806,7 @@ fn destroyAllEntities() void {
     }
 
     if (count > 0) {
-        log.fmt("[worldmarkers] world cleanup: destroyed {d} entities\n", .{count});
+        log.fmt("world cleanup: destroyed {d} entities\n", .{count});
     }
 }
 
@@ -815,7 +815,6 @@ fn destroyAllEntities() void {
 // =============================================================================
 
 pub fn installHooks() void {
-    logging.print("[worldmarkers] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
@@ -825,17 +824,17 @@ pub fn installHooks() void {
 
     // Hook OnWorldUpdate for per-frame animation tick (runs every frame while world is active).
     if (world_update_hook.attach(o.FN_ON_WORLD_UPDATE, &worldUpdateDetour) != .ok) {
-        log.print("[worldmarkers] FAILED to hook OnWorldUpdate!\n");
+        log.print("FAILED to hook OnWorldUpdate!\n");
     } else {
-        log.print("[worldmarkers] hooked OnWorldUpdate OK\n");
+        log.print("hooked OnWorldUpdate OK\n");
     }
 
     // Hook CleanupWorldAndEntities to destroy our entities before world teardown.
     // This fires on map change, logout, AND exit - before heaps are destroyed.
     if (world_cleanup_hook.attach(o.FN_CLEANUP_WORLD_AND_ENTITIES, &worldCleanupDetour) != .ok) {
-        log.print("[worldmarkers] FAILED to hook CleanupWorldAndEntities!\n");
+        log.print("FAILED to hook CleanupWorldAndEntities!\n");
     } else {
-        log.print("[worldmarkers] hooked CleanupWorldAndEntities OK\n");
+        log.print("hooked CleanupWorldAndEntities OK\n");
     }
 }
 
@@ -844,7 +843,7 @@ pub fn installHooks() void {
 /// worldCleanupDetour which fires after shutdown.
 pub fn onShutdown() void {
     for (&marker_defs) |*d| d.* = EMPTY_DEF;
-    log.print("[worldmarkers] defs cleared (shutdown)\n");
+    log.print("defs cleared (shutdown)\n");
 }
 
 pub fn removeHooks() void {

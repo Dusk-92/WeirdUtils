@@ -130,7 +130,7 @@ Makes interactable Objects and NPCs clickable through players and units.
 
 - Players blocking interactable NPCs (vendors, trainers, flight masters, bankers, etc.) or Objects (mailboxes, summoning portals, soulwells) become transparent to clicks
 - Units (pets, NPCs) blocking interactable Objects become transparent to clicks
-- Non-interactable objects (other players' pets, random mobs) are not affected, this solely helps with player dogpiles
+- PvP objects and Non-interactable objects (other players' pets, random mobs) are not affected, this solely helps with player dogpiles
 
 No configuration needed, install and forget.
 

@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 
@@ -143,6 +143,7 @@ pub const module_name: [*:0]const u8 = "transmogfix";
 var g_enabled: bool = true;
 var g_initialized: bool = false;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 var g_mutex: ?*anyopaque = null;
 
 pub fn isActive() bool {
@@ -401,7 +402,7 @@ fn processTimeouts(now: u32) void {
                     // Re-resolve the GUID to a live object pointer - the cached
                     // unit_ptr may be stale if the player despawned since capture.
                     const unit = getObjectByGUID(g_other_pending[i].guid);
-                    con.fmt("[other] TIMEOUT slot={d:2} guid=0x{X:0>16} {d}ms unit=0x{X:0>8}\n", .{ g_other_pending[i].slot, g_other_pending[i].guid, elapsed, unit });
+                    log.fmt("TIMEOUT slot={d:2} guid=0x{X:0>16} {d}ms unit=0x{X:0>8}\n", .{ g_other_pending[i].slot, g_other_pending[i].guid, elapsed, unit });
                     if (unit != 0 and (unit & 1) == 0) {
                         const field_index = PLAYER_VISIBLE_ITEM_1_0 + (@as(u32, @intCast(g_other_pending[i].slot)) * VISIBLE_ITEM_STRIDE);
                         _ = callOriginalSetBlock(unit, field_index, 0);
@@ -451,14 +452,14 @@ fn processTimeouts(now: u32) void {
                     const dest: *u32 = @ptrFromInt(unit + UNIT_CACHED_MODELDATA_OFFSET);
                     dest.* = box_model_data;
 
-                    con.fmt("[other] REFRESH unit=0x{X:0>8} table=0x{X:0>8} boxModel=0x{X:0>8}\n", .{ unit, display_table, box_model_data });
+                    log.fmt("REFRESH unit=0x{X:0>8} table=0x{X:0>8} boxModel=0x{X:0>8}\n", .{ unit, display_table, box_model_data });
                     refreshEquipmentDisplay(unit);
                     continue;
                 }
             }
 
             // Fallback to RefreshVisualAppearance
-            con.fmt("[other] REFRESH fallback unit=0x{X:0>8} table=0x{X:0>8}\n", .{ unit, display_table });
+            log.fmt("REFRESH fallback unit=0x{X:0>8} table=0x{X:0>8}\n", .{ unit, display_table });
             if (refresh_hook.inner.trampoline != 0) {
                 callOriginalRefresh(unit, 0, 0, 1);
             }
@@ -503,7 +504,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                     g_local_pending[slot].timestamp = now;
                     g_local_pending[slot].active = true;
                     g_local_pending[slot].has_durability = false;
-                    con.fmt("[local] BLOCK clear  slot={d:2} item=0x{X:0>8}\n", .{ slot, g_cached_visible_item[slot] });
+                    log.fmt("BLOCK clear  slot={d:2} item=0x{X:0>8}\n", .{ slot, g_cached_visible_item[slot] });
                     return 1; // Block the clear
                 } else if (val != 0 and g_local_pending[slot].active) {
                     if (val == g_local_pending[slot].original_visible_item) {
@@ -513,10 +514,10 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                             const dur = g_local_pending[slot].captured_durability;
                             if (dur != 0) {
                                 writeItemDurabilityDirect(slot, dur);
-                                con.fmt("[local] APPLY dur    slot={d:2} dur={d}\n", .{ slot, dur });
+                                log.fmt("APPLY dur    slot={d:2} dur={d}\n", .{ slot, dur });
                             } else {
                                 // Don't block - broken items need visual update
-                                con.fmt("[local] PASS broken  slot={d:2}\n", .{slot});
+                                log.fmt("PASS broken  slot={d:2}\n", .{slot});
                                 g_local_pending[slot].active = false;
                                 g_local_pending[slot].has_durability = false;
                                 g_local_pending_count -= 1;
@@ -529,7 +530,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
 
                         updateInventoryAlertStates();
 
-                        con.fmt("[local] BLOCK restore slot={d:2} item=0x{X:0>8} -- coalesced!\n", .{ slot, val });
+                        log.fmt("BLOCK restore slot={d:2} item=0x{X:0>8} -- coalesced!\n", .{ slot, val });
                         return 1; // Block the restore
                     } else {
                         // Different item value - real gear change
@@ -564,7 +565,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                                 g_other_pending[ni].timestamp = now;
                                 g_other_pending[ni].unit_ptr = obj;
                                 g_other_pending[ni].active = true;
-                                con.fmt("[other] BLOCK clear  slot={d:2} guid=0x{X:0>16}\n", .{ slot, guid });
+                                log.fmt("BLOCK clear  slot={d:2} guid=0x{X:0>16}\n", .{ slot, guid });
                                 return 1; // Block the clear
                             }
                         }
@@ -576,7 +577,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                         if (elapsed < OTHER_PLAYER_TIMEOUT_MS and val == current_val) {
                             g_other_pending[ui].active = false;
                             g_other_pending_count -= 1;
-                            con.fmt("[other] BLOCK restore slot={d:2} guid=0x{X:0>16} {d}ms -- coalesced!\n", .{ slot, guid, elapsed });
+                            log.fmt("BLOCK restore slot={d:2} guid=0x{X:0>16} {d}ms -- coalesced!\n", .{ slot, guid, elapsed });
                             return 1; // Block the restore
                         } else {
                             g_other_pending[ui].active = false;
@@ -597,7 +598,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                 g_local_pending[s].captured_durability = val;
                 g_local_pending[s].has_durability = true;
                 g_local_pending[s].timestamp = GetTickCount();
-                con.fmt("[local] CATCH dur    slot={d:2} dur={d}\n", .{ s, val });
+                log.fmt("CATCH dur    slot={d:2} dur={d}\n", .{ s, val });
                 return 1; // Block - captured
             }
         }
@@ -626,7 +627,7 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
 
             // Low word clear with pending VISIBLE_ITEM block = REAL UNEQUIP
             if (is_low_word and val == 0 and g_local_pending[es].active) {
-                con.fmt("[local] REAL UNEQUIP slot={d:2} -- replaying blocked clear\n", .{es});
+                log.fmt("REAL UNEQUIP slot={d:2} -- replaying blocked clear\n", .{es});
                 const field_index = PLAYER_VISIBLE_ITEM_1_0 + (@as(u32, @intCast(es)) * VISIBLE_ITEM_STRIDE);
                 _ = callOriginalSetBlock(obj, field_index, 0);
 
@@ -661,7 +662,7 @@ fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, forc
 
     // LOCAL PLAYER: If we have pending SetBlock blocks, skip expensive refresh
     if (g_cache.valid and guid == g_cache.local_guid and g_local_pending_count > 0) {
-        con.fmt("[local] SKIP RefreshVisualAppearance (pending={d})\n", .{g_local_pending_count});
+        log.fmt("SKIP RefreshVisualAppearance (pending={d})\n", .{g_local_pending_count});
         refreshAppearanceAndEquipment(unit);
         const flags1: *u32 = @ptrFromInt(unit + 0xccc);
         const flags2: *u32 = @ptrFromInt(unit + 0xcd0);
@@ -731,7 +732,7 @@ fn hookRefreshVisualAppearance(unit: u32, event_data: u32, extra_data: u32, forc
     const should_skip = (restored_slots > 0) and (cleared_slots == 0) and all_restores_within_timeout;
 
     if (should_skip) {
-        con.fmt("[other] SKIP RefreshVisualAppearance restored={d} guid=0x{X:0>16}\n", .{ restored_slots, guid });
+        log.fmt("SKIP RefreshVisualAppearance restored={d} guid=0x{X:0>16}\n", .{ restored_slots, guid });
         refreshAppearanceAndEquipment(unit);
         const flags1: *u32 = @ptrFromInt(unit + 0xccc);
         const flags2: *u32 = @ptrFromInt(unit + 0xcd0);
@@ -764,7 +765,6 @@ fn hookSceneEnd(device: u32) callconv(hook.cc.thiscall) void {
 // =============================================================================
 
 pub fn installHooks() void {
-    con.print("[transmogfix] Module loaded\n");
 
     // Legacy mutex name - this DLL existed in the wild before the naming convention
     const result = mod_mutex.acquireLegacy("TransmogCoalesceHook", module_name);
@@ -774,6 +774,7 @@ pub fn installHooks() void {
         g_initialized = true;
         return;
     }
+    log = logging.Logger.open(module_name, .console);
 
     // Initialize state (already zero-initialized by Zig defaults)
     g_local_pending = [1]LocalPending{.{}} ** 19;
@@ -801,7 +802,7 @@ pub fn installHooks() void {
     }
 
     g_initialized = true;
-    con.print("[transmogfix] All 3 hooks installed\n");
+    log.print("All 3 hooks installed\n");
 }
 
 pub fn removeHooks() void {
@@ -809,6 +810,7 @@ pub fn removeHooks() void {
         scene_end_hook.detach();
         refresh_hook.detach();
         set_block_hook.detach();
+        log.close();
         mod_mutex.release(&g_mutex);
     }
 

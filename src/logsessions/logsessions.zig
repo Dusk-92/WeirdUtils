@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
 
@@ -77,6 +77,7 @@ pub const module_name: [*:0]const u8 = "logsessions";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
@@ -190,7 +191,7 @@ fn setupSessionDir(realm: []const u8, char_name: []const u8) bool {
     g_dir_path[dir_path.len] = 0;
     g_dir_path_len = dir_path.len;
 
-    con.fmt("[logsessions] dir: {s}\n", .{g_dir_path[0..g_dir_path_len]});
+    log.fmt("dir: {s}\n", .{g_dir_path[0..g_dir_path_len]});
     return true;
 }
 
@@ -260,7 +261,7 @@ fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
 fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
     // Try to reuse a recent file (modified < 60 min ago)
     if (findRecentFile(prefix, result_buf)) |len| {
-        con.fmt("[logsessions] reusing: {s}\n", .{result_buf[0..len]});
+        log.fmt("reusing: {s}\n", .{result_buf[0..len]});
         return len;
     }
 
@@ -279,7 +280,7 @@ fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
         st.wSecond,
     }) catch return 0;
     result_buf[path.len] = 0;
-    con.fmt("[logsessions] new: {s}\n", .{path});
+    log.fmt("new: {s}\n", .{path});
     return path.len;
 }
 
@@ -294,7 +295,7 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
     g_session_char_len = sanitizeName(char_span, &g_session_char);
     g_session_realm_len = sanitizeName(realm_span, &g_session_realm);
 
-    con.fmt("[logsessions] session: {s} on {s}\n", .{
+    log.fmt("session: {s} on {s}\n", .{
         g_session_char[0..g_session_char_len],
         g_session_realm[0..g_session_realm_len],
     });
@@ -304,7 +305,7 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
         g_session_realm[0..g_session_realm_len],
         g_session_char[0..g_session_char_len],
     )) {
-        con.print("[logsessions] setup: failed to create directories\n");
+        log.print("setup: failed to create directories\n");
         return;
     }
 
@@ -348,7 +349,7 @@ fn enterWorldDetour() callconv(hook.cc.stdcall) void {
         if (char_name != null and realm_name != null) {
             configureSession(std.mem.span(char_name.?), std.mem.span(realm_name.?));
         } else {
-            con.print("[logsessions] enter world: char/realm not available\n");
+            log.print("enter world: char/realm not available\n");
         }
     }
 
@@ -382,18 +383,18 @@ fn initLogDetour(file_path: u32, flags: u32, handle_out: u32) callconv(hook.cc.s
 
     // Redirect based on path suffix
     if (g_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWCombatLog.txt")) {
-        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_combat_path[0..g_combat_path_len] });
+        log.fmt("redirect: {s} -> {s}\n", .{ path_span, g_combat_path[0..g_combat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_combat_path), flags, handle_out });
     }
 
     if (g_raw_combat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWRawCombatLog.txt")) {
         g_raw_combat_handle_addr = handle_out; // capture SuperWoW's handle address
-        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
+        log.fmt("redirect: {s} -> {s}\n", .{ path_span, g_raw_combat_path[0..g_raw_combat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_raw_combat_path), flags, handle_out });
     }
 
     if (g_chat_path_len > 0 and std.mem.endsWith(u8, path_span, "WoWChatLog.txt")) {
-        con.fmt("[logsessions] redirect: {s} -> {s}\n", .{ path_span, g_chat_path[0..g_chat_path_len] });
+        log.fmt("redirect: {s} -> {s}\n", .{ path_span, g_chat_path[0..g_chat_path_len] });
         return init_log_hook.callOriginal(.{ @intFromPtr(&g_chat_path), flags, handle_out });
     }
 
@@ -454,7 +455,7 @@ fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
         @intFromPtr(&marker_ptr),
     });
 
-    con.fmt("[logsessions] marker: {s}\n", .{marker_str});
+    log.fmt("marker: {s}\n", .{marker_str});
 }
 
 // =============================================================================
@@ -465,7 +466,7 @@ fn writeSessionMarker(handle: u32, fmt_str: [*:0]const u8) void {
 /// Called from logoutDetour/shutdownDetour in main.zig.
 pub fn onShutdown() void {
     if (g_paths_configured) {
-        con.print("[logsessions] session reset\n");
+        log.print("session reset\n");
     }
     g_paths_configured = false;
     g_combat_marker_written = false;
@@ -511,31 +512,32 @@ pub fn luaGetChatLogPath(L: lua.State) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHooks() void {
-    con.print("[logsessions] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
+    log = logging.Logger.open(module_name, .console);
+
     // Hook HandleCharacterSelection - sets up paths when player clicks Enter World,
     // before the world loading sequence calls InitializeLogBuffer.
     if (enter_world_hook.attach(o.FN_HANDLE_CHAR_SELECT, &enterWorldDetour) != .ok) {
-        con.print("[logsessions] FAILED to hook HandleCharacterSelection!\n");
+        log.print("FAILED to hook HandleCharacterSelection!\n");
     } else {
-        con.print("[logsessions] hooked HandleCharacterSelection OK\n");
+        log.print("hooked HandleCharacterSelection OK\n");
     }
 
     if (init_log_hook.attach(o.FN_INIT_LOG_BUFFER, &initLogDetour) != .ok) {
-        con.print("[logsessions] FAILED to hook InitializeLogBuffer!\n");
+        log.print("FAILED to hook InitializeLogBuffer!\n");
     } else {
-        con.print("[logsessions] hooked InitializeLogBuffer OK\n");
+        log.print("hooked InitializeLogBuffer OK\n");
     }
 
     if (write_log_hook.attach(o.FN_WRITE_FMT_LOG_MSG, &writeLogDetour) != .ok) {
-        con.print("[logsessions] FAILED to hook WriteFormattedLogMessage!\n");
+        log.print("FAILED to hook WriteFormattedLogMessage!\n");
     } else {
-        con.print("[logsessions] hooked WriteFormattedLogMessage OK\n");
+        log.print("hooked WriteFormattedLogMessage OK\n");
     }
 }
 
@@ -545,6 +547,7 @@ pub fn removeHooks() void {
         init_log_hook.detach();
         enter_world_hook.detach();
         restorePathPointers();
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

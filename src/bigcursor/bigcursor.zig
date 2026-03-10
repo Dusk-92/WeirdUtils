@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -18,48 +18,9 @@ pub const module_name: [*:0]const u8 = "bigcursor";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
-// =============================================================================
-// File logging (survives crashes — console closes too fast)
-// =============================================================================
-
-extern "kernel32" fn CreateFileA(name: [*:0]const u8, access: u32, share: u32, sa: ?*anyopaque, disp: u32, flags: u32, template: ?*anyopaque) callconv(WINAPI) ?*anyopaque;
-extern "kernel32" fn WriteFile(handle: *anyopaque, buf: [*]const u8, len: u32, written: ?*u32, overlapped: ?*anyopaque) callconv(WINAPI) i32;
-extern "kernel32" fn FlushFileBuffers(handle: *anyopaque) callconv(WINAPI) i32;
 extern "kernel32" fn CloseHandle(handle: *anyopaque) callconv(WINAPI) i32;
-
-const INVALID_HANDLE: usize = 0xFFFFFFFF;
-var g_logfile: ?*anyopaque = null;
-
-fn logInit() void {
-    const h = CreateFileA("bigcursor_debug.log", 0x40000000, 1, null, 2, 0x80, null); // GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, NORMAL
-    if (h) |handle| {
-        if (@intFromPtr(handle) != INVALID_HANDLE) {
-            g_logfile = handle;
-        }
-    }
-}
-
-fn logDeinit() void {
-    if (g_logfile) |h| {
-        _ = CloseHandle(h);
-        g_logfile = null;
-    }
-}
-
-fn log(msg: []const u8) void {
-    con.print(msg);
-    if (g_logfile) |h| {
-        _ = WriteFile(h, msg.ptr, @intCast(msg.len), null, null);
-        _ = FlushFileBuffers(h);
-    }
-}
-
-fn logFmt(comptime f: []const u8, args: anytype) void {
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, f, args) catch return;
-    log(msg);
-}
 
 // =============================================================================
 // Scale2x — edge-aware pixel-art 2x upscaler (EPX/AdvMAME2x)
@@ -567,7 +528,7 @@ pub fn luaSetCursorScale(L: *anyopaque) callconv(.c) u32 {
         g_scale_f = clamped;
         cacheClear();
         g_hcursor = null;
-        logFmt("[bigcursor] scale set to {d:.2}\n", .{g_scale_f});
+        log.fmt("scale set to {d:.2}\n", .{g_scale_f});
     }
     return 0;
 }
@@ -618,17 +579,17 @@ pub fn lateInit() void {
     if (hooks_installed) return;
 
     const vt = getD3D9VTable() orelse {
-        con.print("[bigcursor] D3D9 device not available yet\n");
+        log.print("D3D9 device not available yet\n");
         return;
     };
     d3d9_vtable = vt;
 
     if (!patchVtableEntry(vt, VT_SetCursorProperties, @intFromPtr(&hkSetCursorProperties), &orig_set_cursor_props)) {
-        con.print("[bigcursor] failed to hook SetCursorProperties\n");
+        log.print("failed to hook SetCursorProperties\n");
         return;
     }
     if (!patchVtableEntry(vt, VT_ShowCursor, @intFromPtr(&hkShowCursor), &orig_show_cursor)) {
-        con.print("[bigcursor] failed to hook ShowCursor\n");
+        log.print("failed to hook ShowCursor\n");
         restoreVtableEntry(vt, VT_SetCursorProperties, orig_set_cursor_props);
         return;
     }
@@ -638,7 +599,7 @@ pub fn lateInit() void {
     // Register CVar for persistence (tenths: 15 = 1.5x, 20 = 2.0x)
     _ = registerCVar(CVAR_NAME, 0, 0, "12", 0, 1, 0, 0);
     g_scale_f = readCVarScaleInit();
-    logFmt("[bigcursor] D3D9 hooks installed (scale={d:.1}x)\n", .{g_scale_f});
+    log.fmt("D3D9 hooks installed (scale={d:.1}x)\n", .{g_scale_f});
 }
 
 // =============================================================================
@@ -650,13 +611,13 @@ pub fn isActive() bool {
 }
 
 pub fn installHooks() void {
-    logInit();
-    log("[bigcursor] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
+
+    log = logging.Logger.open(module_name, .console);
 }
 
 pub fn removeHooks() void {
@@ -672,8 +633,8 @@ pub fn removeHooks() void {
     g_hcursor = null;
 
     if (g_is_hook_owner) {
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
-    logDeinit();
 }

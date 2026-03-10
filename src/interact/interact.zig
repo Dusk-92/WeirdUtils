@@ -1,6 +1,6 @@
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
@@ -54,7 +54,6 @@ const C3Vector = struct {
 // =============================================================================
 // Calling Conventions
 // =============================================================================
-
 
 // =============================================================================
 // Game API
@@ -249,6 +248,7 @@ pub const module_name: [*:0]const u8 = "interact";
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
@@ -378,20 +378,20 @@ fn hookSceneEnd(device: u32) callconv(hook.cc.thiscall) void {
 // =============================================================================
 
 pub fn installHooks() void {
-    con.print("[interact] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
-    // SceneEnd - per-frame loot queue processing
+    log = logging.Logger.open(module_name, .console);
     _ = scene_end_hook.attach(Offsets.ADDR_SceneEnd, &hookSceneEnd);
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         scene_end_hook.detach();
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;

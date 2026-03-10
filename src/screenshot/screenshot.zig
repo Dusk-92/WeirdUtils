@@ -1,6 +1,6 @@
 const std = @import("std");
 const hook = @import("zhook");
-const con = @import("../console.zig");
+const logging = @import("../logging.zig");
 const png = @import("png.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -53,7 +53,6 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 // State
 // =============================================================================
 
-
 // CVar for compression level persistence (0–9, default 6)
 const CVAR_NAME = "screenshotQuality";
 const CVAR_LOOKUP: usize = 0x0063DEC0;
@@ -100,6 +99,7 @@ pub const module_name: [*:0]const u8 = "pngscreenshots";
 
 var g_mutex: ?HANDLE = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
 pub fn isActive() bool {
     return g_is_hook_owner;
@@ -296,12 +296,13 @@ fn writePng(path: [*:0]const u8, pixels: [*]const u8, width: u16, height: u16, l
 // =============================================================================
 
 pub fn installHook() void {
-    con.print("[screenshot] Module loaded\n");
 
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
+
+    log = logging.Logger.open(module_name, .console);
 
     // Register CVar for compression quality persistence (saved to config.wtf)
     _ = registerCVar(CVAR_NAME, 0, 0, "6", 0, 1, 0, 0);
@@ -320,6 +321,7 @@ pub fn installHook() void {
 pub fn removeHook() void {
     if (g_is_hook_owner) {
         tga_hook.detach();
+        log.close();
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
