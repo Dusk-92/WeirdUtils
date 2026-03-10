@@ -97,6 +97,30 @@ pub const WF_HIT_TERRAIN_Z: usize = 0x368;
 pub const ZONE_AREA_ID: usize = 0x00B4E314;
 
 // =============================================================================
+// Map identification
+// =============================================================================
+
+/// Object Manager pointer - dereference once to get ObjMgr struct.
+pub const OBJECT_MANAGER_PTR: usize = 0x00B41414;
+
+/// ObjMgr + this → current map ID (u32). Same as ClntObjMgrGetMapId (0x468580).
+pub const OBJMGR_MAP_ID_OFFSET: usize = 0xCC;
+
+/// Pointer to Map.dbc indexed lookup table. Dereference to get table base,
+/// then *(base + mapId * 4) → Map.dbc row pointer.
+pub const MAP_DBC_DATA: usize = 0x00C0DAA8;
+
+/// Pointer to Map.dbc max valid index. Dereference to get the max value.
+pub const MAP_DBC_MAX: usize = 0x00C0DAAC;
+
+/// Map.dbc row + this → mapType (u32). 0=world, 1=instance, 2=raid, 3=battleground.
+/// Row layout: +0x00=mapId, +0x04=internalName(string), +0x08=mapType.
+pub const MAP_DBC_MAP_TYPE_OFFSET: usize = 0x08;
+
+/// MapType value for battleground instances.
+pub const MAP_TYPE_BATTLEGROUND: u32 = 3;
+
+// =============================================================================
 // Per-frame world update
 // =============================================================================
 

@@ -126,13 +126,15 @@ local denyLastTime = 0
 local DENY_COOLDOWN = 5
 local DENY_MAX = 3
 
-local function showDenyMessage()
+local function showDenyMessage(reason)
     if denyCount >= DENY_MAX then return end
     local now = GetTime()
     if now - denyLastTime < DENY_COOLDOWN then return end
     denyLastTime = now
     denyCount = denyCount + 1
-    if GetNumRaidMembers() > 0 or GetNumPartyMembers() > 0 then
+    if reason == "bg" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffff00World Markers unavailable in battlegrounds.|r")
+    elseif GetNumRaidMembers() > 0 or GetNumPartyMembers() > 0 then
         DEFAULT_CHAT_FRAME:AddMessage("|cffffff00You must be leader or assist to use world markers.|r")
     else
         DEFAULT_CHAT_FRAME:AddMessage("|cffffff00You must be in a group to use world markers.|r")
@@ -190,6 +192,8 @@ function WorldMarkers.UI_WorldMarker(index, ...)
     local x, y, z, areaId = WorldMarker(index, unpack(arg))
     if x == nil then
         showDenyMessage()
+    elseif x == -2 and (y == nil) then
+        showDenyMessage("bg")
     elseif x < 0 and (y == nil) then
         showFailMessage()
     end
