@@ -37,12 +37,15 @@ pub const FN_DECREMENT_REFCOUNT: usize = 0x007103a0;
 
 pub const PTR_WORLD_FRAME: usize = 0x00B4B2BC;
 pub const FN_UPDATE_HIT_TEST: usize = 0x00481F00;
+pub const FN_WORLD_INTERSECTION_TEST: usize = 0x00480DF0;
 
 pub const WF_HIT_TYPE: usize = 0x350;
 pub const WF_HIT_GUID: usize = 0x358;
 pub const WF_HIT_TERRAIN_X: usize = 0x360;
 pub const WF_HIT_TERRAIN_Y: usize = 0x364;
 pub const WF_HIT_TERRAIN_Z: usize = 0x368;
+pub const WF_RAY_START: usize = 0x370;
+pub const WF_RAY_END: usize = 0x37C;
 
 // =============================================================================
 // Per-frame world update

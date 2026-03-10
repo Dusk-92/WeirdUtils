@@ -231,9 +231,10 @@ fn resolveUnitPosition(unit_id: [*:0]const u8) ?Vec3 {
 }
 
 /// Get the world position under the mouse cursor via UpdateHitTest.
-/// Accepts terrain, WMO, and object hits. For object hits (type 2), uses the
-/// object's unit position instead of the ray intersection point (which can
-/// land at the camera position due to how object raycasting works).
+/// For terrain/WMO hits (type 0), uses the intersection point directly.
+/// For object hits (type 2), re-raycasts with terrain-only flags (0) to get
+/// the terrain position behind the object, since object intersection coords
+/// are unreliable and GOs lack a movement struct for position lookup.
 fn getCursorTerrainPosition() ?Vec3 {
     const world_frame = hook.readMem(u32, o.PTR_WORLD_FRAME);
     if (world_frame == 0 or world_frame < 0x10000) return null;
@@ -247,30 +248,39 @@ fn getCursorTerrainPosition() ?Vec3 {
     hook.call(fn (u32) callconv(hook.cc.fastcall) void, o.FN_UPDATE_HIT_TEST, .{world_frame});
 
     const hit_type = hook.readMem(u32, world_frame + o.WF_HIT_TYPE);
+
+    if (hit_type == 2) {
+        // Object hit — re-raycast with flags=0 (terrain/WMO only) to get the
+        // terrain position behind the object.
+        const ray_start: u32 = world_frame + o.WF_RAY_START;
+        const ray_end: u32 = world_frame + o.WF_RAY_END;
+
+        // WorldIntersectionTest: __thiscall(ECX=worldFrame, rayStart*, rayEnd*, flags, hitResult*)
+        // HitTestResult is 0x34 bytes; hit position Vec3 at +0x08.
+        var result_buf = [_]u8{0} ** 0x34;
+        const result_ptr = @intFromPtr(&result_buf);
+
+        _ = hook.call(
+            fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32,
+            o.FN_WORLD_INTERSECTION_TEST,
+            .{ world_frame, ray_start, ray_end, @as(u32, 0), result_ptr },
+        );
+
+        const tx = @as(*align(1) const f32, @ptrFromInt(result_ptr + 0x08)).*;
+        const ty = @as(*align(1) const f32, @ptrFromInt(result_ptr + 0x0C)).*;
+        const tz = @as(*align(1) const f32, @ptrFromInt(result_ptr + 0x10)).*;
+
+        log.fmt("hitTest: object hit, terrain re-raycast pos={d:.1},{d:.1},{d:.1}\n", .{ tx, ty, tz });
+
+        if (tx == 0 and ty == 0 and tz == 0) return null;
+        return .{ .x = tx, .y = ty, .z = tz };
+    }
+
     const x = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_X);
     const y = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Y);
     const z = hook.readMem(f32, world_frame + o.WF_HIT_TERRAIN_Z);
 
     log.fmt("hitTest: type={d} pos={d:.1},{d:.1},{d:.1}\n", .{ hit_type, x, y, z });
-
-    if (hit_type == 2) {
-        // Object hit — the intersection point is unreliable (can be at camera).
-        // Look up the object's actual position via its GUID.
-        const guid_lo = hook.readMem(u32, world_frame + o.WF_HIT_GUID);
-        const guid_hi = hook.readMem(u32, world_frame + o.WF_HIT_GUID + 4);
-        const guid: u64 = @as(u64, guid_hi) << 32 | guid_lo;
-        if (guid != 0) {
-            const obj = wow.getObjectByGUID(guid);
-            if (obj != 0) {
-                const pos = getUnitPosition(obj);
-                if (pos.x != 0 or pos.y != 0 or pos.z != 0) {
-                    log.fmt("object hit, using unit pos: {d:.1},{d:.1},{d:.1}\n", .{ pos.x, pos.y, pos.z });
-                    return pos;
-                }
-            }
-        }
-        // Object hit but couldn't resolve position — fall through to raw coords
-    }
 
     if (x == 0 and y == 0 and z == 0) return null;
 
