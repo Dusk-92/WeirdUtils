@@ -127,7 +127,8 @@ const IconInfo = extern struct {
 // WoW CVar API (1.12.1 build 5875)
 // =============================================================================
 
-const CVAR_LOOKUP: usize = 0x0063DEC0;
+const offsets = @import("../offsets.zig");
+const CVAR_LOOKUP: usize = offsets.FN_CVAR_LOOKUP;
 
 // RegisterCVar: __fastcall(ECX=name, EDX=help, stack: unk1, default, callback, category, unk2, unk3)
 const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
@@ -161,8 +162,8 @@ const SVT_UnlockRect: usize = 14;
 const D3DFMT_A8R8G8B8: u32 = 21;
 
 // Game's GxDevice → IDirect3DDevice9 pointer chain
-const GX_DEVICE_PTR: usize = 0xC0ED38;
-const GX_DEVICE_D3D_OFFSET: usize = 0x38A8;
+const GX_DEVICE_PTR: usize = offsets.GX_DEVICE_PTR;
+const GX_DEVICE_D3D_OFFSET: usize = offsets.GX_DEVICE_D3D_OFFSET;
 
 // =============================================================================
 // COM helpers
@@ -611,7 +612,6 @@ pub fn isActive() bool {
 }
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;

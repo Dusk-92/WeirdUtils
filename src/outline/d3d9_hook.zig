@@ -1247,14 +1247,13 @@ fn restoreVtableEntry(vtable_ptr: [*]usize, idx: usize, old_fn: usize) void {
 // D3D9 device / vtable discovery from game's existing device
 // =============================================================================
 
-pub const GX_DEVICE_PTR: usize = 0xC0ED38;
-pub const GX_DEVICE_D3D_OFFSET: usize = 0x38A8;
+const offsets = @import("../offsets.zig");
 
 fn getD3D9VTable() ?[*]usize {
-    const gx_device = hook.readMem(u32, GX_DEVICE_PTR);
+    const gx_device = hook.readMem(u32, offsets.GX_DEVICE_PTR);
     if (gx_device == 0) return null;
 
-    const d3d_device = hook.readMem(u32, gx_device + GX_DEVICE_D3D_OFFSET);
+    const d3d_device = hook.readMem(u32, gx_device + offsets.GX_DEVICE_D3D_OFFSET);
     if (d3d_device == 0) return null;
 
     const vtable_addr = hook.readMem(u32, d3d_device);

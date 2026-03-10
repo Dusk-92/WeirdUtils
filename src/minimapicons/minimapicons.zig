@@ -23,11 +23,13 @@ const hook = @import("zhook");
 const lua = @import("../lua.zig");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
+const offsets = @import("../offsets.zig");
+const wow = @import("../wow.zig");
 
 pub const module_name: [*:0]const u8 = "minimapicons";
 
 // =============================================================================
-// WoW 1.12.1 addresses
+// WoW 1.12.1 addresses (module-specific)
 // =============================================================================
 
 const ADDR = struct {
@@ -44,47 +46,30 @@ const ADDR = struct {
     const GxPrimLockVertexPtrs: usize = 0x58A2A0;
     const GxPrimDrawElements: usize = 0x58A2E0;
     const GxPrimUnlockVertexPtrs: usize = 0x58A340;
-    const GetObjectByGUID: usize = 0x464870;
     const CGxTexFlagsInit: usize = 0x58A980;
     const CStatusDestructor: usize = 0x419E30;
 
     // Static data
-    const BlipVertices: usize = 0xBC8230; // 4x C3Vector
-    const BlipNormal: usize = 0xBC829C; // C3Vector
-    const BlipTexCoords: usize = 0xBC77F0; // TexCoord (4x C2Vector)
-    const BlipVertIndices: usize = 0x807A2C; // 4x u16
+    const BlipVertices: usize = 0xBC8230;
+    const BlipNormal: usize = 0xBC829C;
+    const BlipTexCoords: usize = 0xBC77F0;
+    const BlipVertIndices: usize = 0x807A2C;
     const CStatusVftable: usize = 0x7FFA10;
 
-    // Object struct offsets
+    // Object struct offsets (module-specific)
     const OBJ_VTABLE: usize = 0x00;
-    const OBJ_DATA: usize = 0x08; // m_data — update fields descriptor (starts at field 0)
-    const OBJ_TYPE: usize = 0x14; // m_objectType
-    const OBJ_CREATURE_CACHE: usize = 0xB30; // ptr to creature cache entry
+    const OBJ_CREATURE_CACHE: usize = 0xB30;
 
-    // Creature cache entry offsets (name[0..3] at +0x00..+0x0C, subname at +0x10)
-    const CACHE_SUBNAME: usize = 0x10; // char* subname/title (e.g. "Druid Trainer")
-
-    // Descriptor field byte offsets (absolute_field_index * 4 from m_data)
-    const DESC_ENTRY: usize = 0x03 * 4; // OBJECT_FIELD_ENTRY
-    const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END + 0x8D
-    const DESC_GO_TYPE: usize = 0x15 * 4; // GAMEOBJECT_TYPE_ID
-    const DESC_SUMMONEDBY: usize = 0x0C * 4; // UNIT_FIELD_SUMMONEDBY (GUID, 8 bytes)
-    const DESC_BYTES_0: usize = 0x24 * 4; // UNIT_FIELD_BYTES_0: race|class|gender|power
-    const DESC_GO_FLAGS: usize = 0x09 * 4; // GAMEOBJECT_FLAGS
-    const DESC_GO_DYN_FLAGS: usize = 0x13 * 4; // GAMEOBJECT_DYN_FLAGS
-
-    // Function addresses
-    const ClntObjMgrGetActivePlayer: usize = 0x468550;
-    const UnitReaction: usize = 0x6061E0;
-    const CallSpellCastHandler: usize = 0x5f8800;
+    // Creature cache entry offsets
+    const CACHE_SUBNAME: usize = 0x10;
 
     // MINIMAPINFO struct offsets
-    const MI_POS: usize = 0x0C; // C3Vector
+    const MI_POS: usize = 0x0C;
     const MI_RADIUS: usize = 0x18;
     const MI_LAYOUT_SCALE: usize = 0x1C;
     const MI_FRAME: usize = 0x20;
 
-    // CGMinimapFrame: FrameScriptPart at +0x24, its vtable[7] = GetUnkScale
+    // CGMinimapFrame
     const FRAME_SCRIPT_PART: usize = 0x24;
 
     // Vtable indices
@@ -282,7 +267,7 @@ const CITY_ZONES = [_]u32{
     1497, // Undercity
     2040, // Alah'Thalas
 };
-const ZONE_AREA_ID: usize = 0x00B4E314;
+const ZONE_AREA_ID: usize = offsets.ZONE_AREA_ID;
 var g_has_active_unit_tracking: bool = false;
 var g_has_active_go_tracking: bool = false;
 var g_has_any_filters: bool = false;
@@ -354,42 +339,19 @@ pub fn isActive() bool {
 }
 
 // =============================================================================
-// Pointer validation
+// Object helpers (delegates to shared wow module)
 // =============================================================================
 
-fn isValidPtr(addr: u32) bool {
-    return addr >= 0x10000 and addr < 0x7F000000;
-}
-
-// =============================================================================
-// Object helpers
-// =============================================================================
-
-fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
-    if (guid_lo == 0 and guid_hi == 0) return 0;
-    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR.GetObjectByGUID, .{ guid_lo, guid_hi });
-}
-
-fn getObjectType(obj: u32) u32 {
-    if (!isValidPtr(obj)) return 0;
-    return hook.readMem(u32, obj + ADDR.OBJ_TYPE);
-}
-
-fn getDescriptor(obj: u32) u32 {
-    if (!isValidPtr(obj)) return 0;
-    return hook.readMem(u32, obj + ADDR.OBJ_DATA);
-}
-
-fn getNpcFlags(obj: u32) u32 {
-    const desc = getDescriptor(obj);
-    if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_NPC_FLAGS);
-}
+const isValidPtr = wow.isValidPtr;
+const getObjectByGUID = wow.getObjectByGUIDSplit;
+const getObjectType = wow.getObjectTypeRaw;
+const getDescriptor = wow.getDescriptor;
+const getNpcFlags = wow.getNpcFlags;
 
 fn getGoType(obj: u32) u32 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_GO_TYPE);
+    return hook.readMem(u32, desc + offsets.DESC_GO_TYPE);
 }
 
 fn getCreatureSubName(obj: u32) ?[*:0]const u8 {
@@ -402,11 +364,7 @@ fn getCreatureSubName(obj: u32) ?[*:0]const u8 {
     return subname;
 }
 
-fn getObjectEntry(obj: u32) u32 {
-    const desc = getDescriptor(obj);
-    if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_ENTRY);
-}
+const getObjectEntry = wow.getObjectEntry;
 
 // Creature entry IDs that should be treated as reagent vendors despite having no subname.
 const REAGENT_VENDOR_ENTRIES = [_]u32{
@@ -423,19 +381,19 @@ fn isReagentVendorEntry(entry_id: u32) bool {
 fn getGoFlags(obj: u32) u32 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_GO_FLAGS);
+    return hook.readMem(u32, desc + offsets.DESC_GO_FLAGS);
 }
 
 fn getGoDynFlags(obj: u32) u32 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    return hook.readMem(u32, desc + ADDR.DESC_GO_DYN_FLAGS);
+    return hook.readMem(u32, desc + offsets.DESC_GO_DYN_FLAGS);
 }
 
 fn getRace(obj: u32) u8 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    return @truncate(hook.readMem(u32, desc + ADDR.DESC_BYTES_0));
+    return @truncate(hook.readMem(u32, desc + offsets.DESC_BYTES_0));
 }
 
 // Alliance: Human(1), Dwarf(3), Night Elf(4), Gnome(7), High Elf(10)
@@ -457,25 +415,24 @@ fn isSameFaction(race_a: u8, race_b: u8) bool {
 fn getSummonedByGUID(obj: u32) u64 {
     const desc = getDescriptor(obj);
     if (!isValidPtr(desc)) return 0;
-    const lo = hook.readMem(u32, desc + ADDR.DESC_SUMMONEDBY);
-    const hi = hook.readMem(u32, desc + ADDR.DESC_SUMMONEDBY + 4);
+    const lo = hook.readMem(u32, desc + offsets.DESC_SUMMONEDBY);
+    const hi = hook.readMem(u32, desc + offsets.DESC_SUMMONEDBY + 4);
     return (@as(u64, hi) << 32) | lo;
 }
 
 fn getActivePlayerGUID() u64 {
-    return hook.call(fn () callconv(hook.cc.fastcall) u64, ADDR.ClntObjMgrGetActivePlayer, .{});
+    return wow.getPlayerGUID();
 }
 
 fn getActivePlayerObject() u32 {
     const guid = getActivePlayerGUID();
     if (guid == 0) return 0;
-    return getObjectByGUID(@truncate(guid), @truncate(guid >> 32));
+    return wow.getObjectByGUID(guid);
 }
 
-/// UnitReaction: __thiscall(localPlayer_ECX, unit_stack) -> int (>=4 = friendly).
 fn unitReaction(local_player: u32, unit: u32) i32 {
     if (local_player == 0 or unit == 0) return 0;
-    return hook.call(fn (u32, u32) callconv(hook.cc.thiscall) i32, ADDR.UnitReaction, .{ local_player, unit });
+    return hook.call(fn (u32, u32) callconv(hook.cc.thiscall) i32, offsets.FN_UNIT_REACTION, .{ local_player, unit });
 }
 
 /// Check if a unit passes faction/friendliness filters.
@@ -516,7 +473,7 @@ fn isUnitAllowed(obj: u32, local_player: u32) bool {
 /// CallSpellCastHandler: __fastcall(obj_ECX) -> char (bool via virtual dispatch).
 /// This is what IsValidInteractionTarget uses for type 0x21 (GO).
 fn isGoInteractable(obj: u32) bool {
-    const result: u8 = @truncate(hook.call(fn (u32) callconv(hook.cc.fastcall) u32, ADDR.CallSpellCastHandler, .{obj}));
+    const result: u8 = @truncate(hook.call(fn (u32) callconv(hook.cc.fastcall) u32, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}));
     if (result == 0) {
         log.fmt("GO 0x{x} rejected: not interactable (entry={d})\n", .{ obj, getObjectEntry(obj) });
     }
@@ -1189,7 +1146,6 @@ fn strEqlInsensitive(a: [*:0]const u8, b: []const u8) bool {
 // =============================================================================
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;

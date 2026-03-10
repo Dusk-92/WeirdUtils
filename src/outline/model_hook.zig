@@ -19,7 +19,7 @@ const o = @import("offsets.zig");
 const types = @import("types.zig");
 const tracker = @import("tracker.zig");
 const d3d9_hook = @import("d3d9_hook.zig");
-const wow = @import("wow.zig");
+const wow = @import("../wow.zig");
 
 // =============================================================================
 // Calling convention constants

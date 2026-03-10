@@ -1,24 +1,17 @@
 const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
+const offsets = @import("../offsets.zig");
+const wow = @import("../wow.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
-extern "kernel32" fn CreateMutexA(lpMutexAttributes: ?*anyopaque, bInitialOwner: i32, lpName: [*:0]const u8) callconv(WINAPI) ?*anyopaque;
-extern "kernel32" fn ReleaseMutex(hMutex: *anyopaque) callconv(WINAPI) i32;
-extern "kernel32" fn CloseHandle(hObject: *anyopaque) callconv(WINAPI) i32;
-extern "kernel32" fn GetLastError() callconv(WINAPI) u32;
-extern "kernel32" fn GetCurrentProcessId() callconv(WINAPI) u32;
-const ERROR_ALREADY_EXISTS: u32 = 183;
 
 // =============================================================================
-// Offsets
+// Module-specific addresses
 // =============================================================================
 
 const Offsets = struct {
-    const ADDR_SceneEnd: usize = 0x5A17A0;
-    const FUN_GET_OBJECT_POINTER: usize = 0x464870;
-    const FUN_IS_IN_WORLD: usize = 0xB4B424;
     const FUN_RIGHT_CLICK_UNIT: usize = 0x60BEA0;
     const FUN_RIGHT_CLICK_OBJECT: usize = 0x5F8660;
     const FUN_SET_TARGET: usize = 0x493540;
@@ -27,7 +20,6 @@ const Offsets = struct {
     const LUA_ERROR: usize = 0x6F4940;
     const LUA_ISNUMBER: usize = 0x6F34D0;
     const LUA_TONUMBER: usize = 0x6F3620;
-    const VISIBLE_OBJECTS: usize = 0xB41414;
 };
 
 // =============================================================================
@@ -60,13 +52,11 @@ const C3Vector = struct {
 // =============================================================================
 
 fn getObjectPointer(guid: u64) u32 {
-    const lo: u32 = @truncate(guid);
-    const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, Offsets.FUN_GET_OBJECT_POINTER, .{ lo, hi });
+    return wow.getObjectByGUID(guid);
 }
 
 fn isInWorld() bool {
-    return hook.readMem(u8, Offsets.FUN_IS_IN_WORLD) != 0;
+    return wow.isInGame();
 }
 
 fn getUnitPosition(unit: u32) C3Vector {
@@ -158,7 +148,7 @@ pub fn interactNearest(L: *anyopaque) callconv(.c) u32 {
         return 0;
     }
 
-    const objects = hook.readMem(u32, Offsets.VISIBLE_OBJECTS);
+    const objects = hook.readMem(u32, offsets.OBJECT_MANAGER_PTR);
     var current_object = hook.readMem(u32, objects + 0xAC);
 
     const player_guid = hook.readMem(u64, objects + 0xC0);
@@ -318,7 +308,7 @@ pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
     loot_queue_index = 0;
     loot_active = false;
 
-    const objects = hook.readMem(u32, Offsets.VISIBLE_OBJECTS);
+    const objects = hook.readMem(u32, offsets.OBJECT_MANAGER_PTR);
     var current_object = hook.readMem(u32, objects + 0xAC);
 
     const player_guid = hook.readMem(u64, objects + 0xC0);
@@ -378,14 +368,13 @@ fn hookSceneEnd(device: u32) callconv(hook.cc.thiscall) void {
 // =============================================================================
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
     log = logging.Logger.open(module_name, .console);
-    _ = scene_end_hook.attach(Offsets.ADDR_SceneEnd, &hookSceneEnd);
+    _ = scene_end_hook.attach(offsets.FN_SCENE_END, &hookSceneEnd);
 }
 
 pub fn removeHooks() void {

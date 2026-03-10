@@ -22,7 +22,8 @@ const std = @import("std");
 const hook = @import("zhook");
 const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
-const wow = @import("../outline/wow.zig");
+const offsets = @import("../offsets.zig");
+const wow = @import("../wow.zig");
 const logging = @import("../logging.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
@@ -71,11 +72,7 @@ const MODEL_PATHS = [NUM_MARKERS][*:0]const u8{
 // Types
 // =============================================================================
 
-pub const Vec3 = struct {
-    x: f32,
-    y: f32,
-    z: f32,
-};
+pub const Vec3 = wow.Vec3;
 
 // =============================================================================
 // State
@@ -126,28 +123,15 @@ var despawning: [MAX_DESPAWNING]?DespawningEntity = .{null} ** MAX_DESPAWNING;
 /// Check if the current map is a battleground by reading Map.dbc mapType.
 /// Uses: ObjMgr+0xCC → mapId, then Map.dbc[mapId] → row, row+0x04 → mapType.
 fn isInBattleground() bool {
-    const obj_mgr = hook.readMem(u32, o.OBJECT_MANAGER_PTR);
-    if (obj_mgr == 0) return false;
-    const map_id = hook.readMem(u32, obj_mgr + o.OBJMGR_MAP_ID_OFFSET);
-    // Map.dbc indexed pointer table: dereference base ptr, then index by mapId.
-    const dbc_max = hook.readMem(u32, o.MAP_DBC_MAX);
-    if (map_id > dbc_max) return false;
-    const table_base = hook.readMem(u32, o.MAP_DBC_DATA);
-    if (table_base == 0) return false;
-    const row = hook.readMem(u32, table_base + map_id * 4);
-    if (row == 0) return false;
-    const map_type = hook.readMem(u32, row + o.MAP_DBC_MAP_TYPE_OFFSET);
-    return map_type == o.MAP_TYPE_BATTLEGROUND;
+    return wow.isInBattleground();
 }
 
 // =============================================================================
 // Permission check - leader or raid officer required
 // =============================================================================
 
-/// Get local player GUID via GetPlayerGUID (0x468550).
-/// __fastcall(), no params, returns u64 via EDX:EAX.
 fn getPlayerGUID() u64 {
-    return hook.call(fn () callconv(hook.cc.fastcall) u64, o.FN_GET_PLAYER_GUID, .{});
+    return wow.getPlayerGUID();
 }
 
 /// Look up a player name from the name cache by GUID.
@@ -232,16 +216,7 @@ fn senderHasPermission(sender: [*:0]const u8) bool {
 // =============================================================================
 
 pub fn getUnitPosition(unit: u32) Vec3 {
-    if (unit == 0) return .{ .x = 0, .y = 0, .z = 0 };
-
-    const movement = hook.readMem(u32, unit + o.UNIT_MOVEMENT_OFFSET);
-    if (movement == 0 or movement < 0x10000) return .{ .x = 0, .y = 0, .z = 0 };
-
-    return .{
-        .x = hook.readMem(f32, movement + o.MOVEMENT_POS_X),
-        .y = hook.readMem(f32, movement + o.MOVEMENT_POS_Y),
-        .z = hook.readMem(f32, movement + o.MOVEMENT_POS_Z),
-    };
+    return wow.getUnitPosition(unit);
 }
 
 /// Resolve a unit ID string ("player", "target", etc.) to a world position.
@@ -392,7 +367,7 @@ fn placeMarker(index: usize, pos: Vec3) bool {
     // Store persistent definition
     marker_defs[index] = .{
         .pos = pos,
-        .area_id = hook.readMem(u32, o.ZONE_AREA_ID),
+        .area_id = hook.readMem(u32, offsets.ZONE_AREA_ID),
         .active = true,
     };
 
@@ -619,7 +594,7 @@ fn tickAnimations() void {
         if (player != 0) {
             const player_pos = getUnitPosition(player);
             if (player_pos.x != 0 or player_pos.y != 0 or player_pos.z != 0) {
-                const current_area = hook.readMem(u32, o.ZONE_AREA_ID);
+                const current_area = hook.readMem(u32, offsets.ZONE_AREA_ID);
                 for (0..NUM_MARKERS) |i| {
                     if (!marker_defs[i].active) continue;
                     if (marker_entities[i] != null) continue; // entity alive, skip
@@ -815,7 +790,6 @@ fn destroyAllEntities() void {
 // =============================================================================
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;

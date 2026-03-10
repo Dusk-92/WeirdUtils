@@ -55,7 +55,8 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 
 // CVar for compression level persistence (0–9, default 6)
 const CVAR_NAME = "screenshotQuality";
-const CVAR_LOOKUP: usize = 0x0063DEC0;
+const offsets = @import("../offsets.zig");
+const CVAR_LOOKUP: usize = offsets.FN_CVAR_LOOKUP;
 const RegisterCVarFn = *const fn ([*:0]const u8, u32, u32, [*:0]const u8, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
 const registerCVar: RegisterCVarFn = @ptrFromInt(0x0063DB90);
 
@@ -296,7 +297,6 @@ fn writePng(path: [*:0]const u8, pixels: [*]const u8, width: u16, height: u16, l
 // =============================================================================
 
 pub fn installHook() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;

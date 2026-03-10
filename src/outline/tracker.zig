@@ -13,7 +13,7 @@
 const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
-const wow = @import("wow.zig");
+const wow = @import("../wow.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");
 

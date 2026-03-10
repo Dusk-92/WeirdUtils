@@ -12,23 +12,16 @@ const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
+const offsets = @import("../offsets.zig");
+const wow = @import("../wow.zig");
 
 pub const module_name: [*:0]const u8 = "clickthrough";
 
 // =============================================================================
-// WoW addresses
+// WoW addresses (module-specific)
 // =============================================================================
 
 const ADDR_WorldIntersectionTest: usize = 0x480DF0;
-const ADDR_GetObjectByGUID: usize = 0x464870;
-
-// Map identification (Map.dbc lookup)
-const OBJECT_MANAGER_PTR: usize = 0x00B41414;
-const OBJMGR_MAP_ID_OFFSET: usize = 0xCC;
-const MAP_DBC_DATA: usize = 0x00C0DAA8;
-const MAP_DBC_MAX: usize = 0x00C0DAAC;
-const MAP_DBC_MAP_TYPE_OFFSET: usize = 0x08;
-const MAP_TYPE_BATTLEGROUND: u32 = 3;
 
 // =============================================================================
 // HitTestResult layout
@@ -39,10 +32,7 @@ const HIT_GUID_HI: usize = 0x04;
 const HIT_RESULT_SIZE: usize = 0x34;
 
 // Object struct offsets
-const OBJ_DESCRIPTOR: usize = 0x08;
 const OBJ_TYPE_MASK_OFFSET: usize = 0x08; // at *(*(obj+8)+8)
-
-// Object type + descriptor field offsets
 
 // Type masks
 const TYPE_UNIT: u32 = 0x09;
@@ -51,60 +41,20 @@ const TYPE_PLAYER: u32 = 0x19;
 // Raycast flags
 const FLAG_GO: u32 = 0x04;
 
-// =============================================================================
-// Object filtering
-// =============================================================================
-
-const OBJ_TYPE: usize = 0x14;
-const OBJ_TYPE_UNIT: u32 = 3;
-const OBJ_TYPE_GO: u32 = 5;
-const DESC_NPC_FLAGS: usize = 0x93 * 4; // UNIT_NPC_FLAGS = OBJECT_END(0x06) + 0x8D = 0x93
-const DESC_ENTRY: usize = 0x03 * 4; // OBJECT_FIELD_ENTRY
-const ADDR_CallSpellCastHandler: usize = 0x5F8800;
-
-// =============================================================================
-// Battleground detection
-// =============================================================================
-
-/// Check if the current map is a battleground by reading Map.dbc mapType.
-fn isInBattleground() bool {
-    const obj_mgr = hook.readMem(u32, OBJECT_MANAGER_PTR);
-    if (obj_mgr == 0) return false;
-    const map_id = hook.readMem(u32, obj_mgr + OBJMGR_MAP_ID_OFFSET);
-    const dbc_max = hook.readMem(u32, MAP_DBC_MAX);
-    if (map_id > dbc_max) return false;
-    const table_base = hook.readMem(u32, MAP_DBC_DATA);
-    if (table_base == 0) return false;
-    const row = hook.readMem(u32, table_base + map_id * 4);
-    if (row == 0) return false;
-    const map_type = hook.readMem(u32, row + MAP_DBC_MAP_TYPE_OFFSET);
-    return map_type == MAP_TYPE_BATTLEGROUND;
-}
-
-fn getObjectByGUID(guid_lo: u32, guid_hi: u32) u32 {
-    if (guid_lo == 0 and guid_hi == 0) return 0;
-    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR_GetObjectByGUID, .{ guid_lo, guid_hi });
-}
-
 /// Check if the GUID refers to an interactable GO.
 fn isInteractableGO(guid_lo: u32, guid_hi: u32) bool {
-    const obj = getObjectByGUID(guid_lo, guid_hi);
+    const obj = wow.getObjectByGUIDSplit(guid_lo, guid_hi);
     if (obj == 0) return false;
-    const obj_type = hook.readMem(u32, obj + OBJ_TYPE);
-    if (obj_type != OBJ_TYPE_GO) return false;
-    // CallSpellCastHandler: __fastcall(obj_ECX) -> bool
-    return hook.call(fn (u32) callconv(hook.cc.fastcall) u8, ADDR_CallSpellCastHandler, .{obj}) != 0;
+    if (wow.getObjectTypeRaw(obj) != @intFromEnum(wow.ObjectType.game_object)) return false;
+    return hook.call(fn (u32) callconv(hook.cc.fastcall) u8, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}) != 0;
 }
 
 /// Check if the GUID refers to an NPC with interaction flags (vendor, quest giver, etc.)
 fn isInteractableNPC(guid_lo: u32, guid_hi: u32) bool {
-    const obj = getObjectByGUID(guid_lo, guid_hi);
+    const obj = wow.getObjectByGUIDSplit(guid_lo, guid_hi);
     if (obj == 0) return false;
-    const obj_type = hook.readMem(u32, obj + OBJ_TYPE);
-    if (obj_type != OBJ_TYPE_UNIT) return false;
-    const desc = hook.readMem(u32, obj + OBJ_DESCRIPTOR);
-    if (desc < 0x10000 or desc >= 0x7F000000) return false;
-    return hook.readMem(u32, desc + DESC_NPC_FLAGS) != 0;
+    if (wow.getObjectTypeRaw(obj) != @intFromEnum(wow.ObjectType.unit)) return false;
+    return wow.getNpcFlags(obj) != 0;
 }
 
 /// Check if the second raycast result is something we should click through to.
@@ -140,7 +90,7 @@ fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u
     const hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, flags, hit_result });
 
     // No click-through in battlegrounds
-    if (!g_is_hook_owner or hit_result == 0 or hit_type != 2 or isInBattleground()) return hit_type;
+    if (!g_is_hook_owner or hit_result == 0 or hit_type != 2 or wow.isInBattleground()) return hit_type;
 
     // hitType 2 = object hit. Check if it's a unit/player.
     const buf_lo = hook.readMem(u32, hit_result + HIT_GUID_LO);
@@ -148,11 +98,11 @@ fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u
 
     if (buf_lo == 0 and buf_hi == 0) return hit_type;
 
-    const obj = getObjectByGUID(buf_lo, buf_hi);
+    const obj = wow.getObjectByGUIDSplit(buf_lo, buf_hi);
     if (obj == 0) return hit_type;
 
-    const desc_ptr = hook.readMem(u32, obj + OBJ_DESCRIPTOR);
-    if (desc_ptr < 0x10000 or desc_ptr >= 0x7F000000) return hit_type;
+    const desc_ptr = wow.getDescriptor(obj);
+    if (!wow.isValidPtr(desc_ptr)) return hit_type;
 
     const type_mask = hook.readMem(u32, desc_ptr + OBJ_TYPE_MASK_OFFSET);
 
@@ -192,7 +142,6 @@ pub fn isActive() bool {
 }
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;

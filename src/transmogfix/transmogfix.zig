@@ -17,6 +17,8 @@
 const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
+const offsets = @import("../offsets.zig");
+const wow = @import("../wow.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 
@@ -32,14 +34,11 @@ const ERROR_ALREADY_EXISTS: u32 = 183;
 // Game addresses
 // =============================================================================
 
-const ADDR_UnitGUID: usize = 0x515970;
-const ADDR_GetObjectByGUID: usize = 0x464870;
 const ADDR_UpdateInvAlerts: usize = 0x4c7ee0;
 const ADDR_RefreshAppearance: usize = 0x60afb0;
 const ADDR_RefreshEquipmentDisplay: usize = 0x60ABE0;
 const ADDR_SetBlock: usize = 0x6142E0;
 const ADDR_RefreshVisualAppearance: usize = 0x5fb880;
-const ADDR_SceneEnd: usize = 0x5a17a0;
 
 // =============================================================================
 // Constants (1.12.1 client)
@@ -61,13 +60,11 @@ const DISPLAY_INFO_TABLE_PTR: usize = 0x00c0de90;
 // =============================================================================
 
 fn unitGUID(unit_id: [*:0]const u8) u64 {
-    return hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u64, ADDR_UnitGUID, .{unit_id});
+    return wow.unitGUID(unit_id);
 }
 
 fn getObjectByGUID(guid: u64) u32 {
-    const lo: u32 = @truncate(guid);
-    const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, ADDR_GetObjectByGUID, .{ lo, hi });
+    return wow.getObjectByGUID(guid);
 }
 
 fn updateInventoryAlertStates() void {
@@ -795,7 +792,7 @@ pub fn installHooks() void {
     }
 
     // Hook 3: SceneEnd
-    if (scene_end_hook.attach(ADDR_SceneEnd, &hookSceneEnd) != .ok) {
+    if (scene_end_hook.attach(offsets.FN_SCENE_END, &hookSceneEnd) != .ok) {
         refresh_hook.detach();
         set_block_hook.detach();
         return;
