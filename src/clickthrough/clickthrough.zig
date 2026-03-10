@@ -81,16 +81,7 @@ fn isInteractableNPC(guid_lo: u32, guid_hi: u32) bool {
 fn isClickthroughTarget(guid_lo: u32, guid_hi: u32, allow_npcs: bool) bool {
     if (guid_lo == 0 and guid_hi == 0) return false;
     if (isInteractableGO(guid_lo, guid_hi)) return true;
-    if (allow_npcs) {
-        const obj = getObjectByGUID(guid_lo, guid_hi);
-        if (obj != 0) {
-            const obj_type = hook.readMem(u32, obj + OBJ_TYPE);
-            const desc = hook.readMem(u32, obj + OBJ_DESCRIPTOR);
-            const npc_flags: u32 = if (desc >= 0x10000 and desc < 0x7F000000) hook.readMem(u32, desc + DESC_NPC_FLAGS) else 0;
-            log.fmt("[ct] NPC check: obj=0x{x} type={d} desc=0x{x} npc_flags=0x{x}\n", .{ obj, obj_type, desc, npc_flags });
-        }
-        if (isInteractableNPC(guid_lo, guid_hi)) return true;
-    }
+    if (allow_npcs and isInteractableNPC(guid_lo, guid_hi)) return true;
     return false;
 }
 
@@ -107,7 +98,6 @@ const WorldIntersectFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall)
 var wit_hook: hook.Detour(WorldIntersectFn) = .{};
 
 var log: logging.Logger = .{};
-var g_log_counter: u32 = 0;
 
 // =============================================================================
 // Hook: WorldIntersectionTest (0x480DF0)
@@ -148,21 +138,12 @@ fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u
     var recast_result = [_]u8{0} ** HIT_RESULT_SIZE;
     const recast_hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, recast_flags, @intFromPtr(&recast_result) });
 
-    g_log_counter +%= 1;
-    if (g_log_counter % 60 == 0) {
-        const r_lo = std.mem.readInt(u32, recast_result[HIT_GUID_LO..][0..4], .little);
-        const r_hi = std.mem.readInt(u32, recast_result[HIT_GUID_HI..][0..4], .little);
-        log.fmt("[ct] mask=0x{x} recast(flags=0x{x}): type={d} guid=0x{x}:{x}\n", .{ type_mask, recast_flags, recast_hit_type, r_hi, r_lo });
-    }
-
     if (recast_hit_type < 2) return hit_type;
 
     const r_guid_lo = std.mem.readInt(u32, recast_result[HIT_GUID_LO..][0..4], .little);
     const r_guid_hi = std.mem.readInt(u32, recast_result[HIT_GUID_HI..][0..4], .little);
 
     if (!isClickthroughTarget(r_guid_lo, r_guid_hi, allow_npcs)) return hit_type;
-
-    log.fmt("[ct] click-through: 0x{x}:{x} replaces 0x{x}:{x}\n", .{ r_guid_hi, r_guid_lo, buf_hi, buf_lo });
 
     // Replace the caller's hitResult with the recast result
     const dst: [*]u8 = @ptrFromInt(hit_result);

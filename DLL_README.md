@@ -124,6 +124,20 @@ Supported game objects: Mailbox, Brainwasher
 
 ---
 
+### Clickthrough
+
+Makes interactable Objects and NPCs clickable through players and units.
+
+- Players blocking interactable NPCs (vendors, trainers, flight masters, bankers, etc.) or Objects (mailboxes, summoning portals, soulwells) become transparent to clicks
+- Units (pets, NPCs) blocking interactable Objects become transparent to clicks
+- Non-interactable objects (other players' pets, random mobs) are not affected, this solely helps with player dogpiles
+
+No configuration needed, install and forget.
+
+**DLL:** `clickthrough.dll`
+
+---
+
 ### Log Sessions
 
 Organizes the combat, raw combat, and chat logs into per-character directories with timestamped filenames:
@@ -199,7 +213,7 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 
 Module names are case-insensitive and match the released dll names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`
 
 There is no re-enable API.
 
