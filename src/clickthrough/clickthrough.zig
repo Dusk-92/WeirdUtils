@@ -147,7 +147,7 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
-    log = logging.Logger.open(module_name, .both);
+    log = logging.Logger.open(module_name, .console);
     _ = wit_hook.attach(ADDR_WorldIntersectionTest, &worldIntersectDetour);
 
     log.fmt("WorldIntersectionTest hooked at 0x{x}\n", .{ADDR_WorldIntersectionTest});
