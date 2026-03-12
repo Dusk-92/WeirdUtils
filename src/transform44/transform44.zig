@@ -29,41 +29,41 @@ pub fn isActive() bool {
 // Profiling state — unified dump every DUMP_FRAMES render passes
 // =============================================================================
 
-const DUMP_FRAMES: u32 = 600;
+const DUMP_FRAMES: u64 = 600;
 
 var prof = ProfState{};
-var t44_depth: u32 = 0; // recursion depth — survives resets
+var t44_depth: u64 = 0; // recursion depth — survives resets
 var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 
 const ProfState = struct {
     // Frame counter (incremented by executeSceneRenderPass)
-    frames: u32 = 0,
+    frames: u64 = 0,
     // Total frame-to-frame wall cycles (sum of inter-frame deltas)
     wall_cycles: u64 = 0,
 
     // transformMatrix4x4 (0x714260)
-    t44_calls: u32 = 0,
-    t44_early: u32 = 0,
+    t44_calls: u64 = 0,
+    t44_early: u64 = 0,
     t44_cycles: u64 = 0,
     t44_bones: u64 = 0,
-    t44_max_bones: u32 = 0,
-    t44_max_depth: u32 = 0,
+    t44_max_bones: u64 = 0,
+    t44_max_depth: u64 = 0,
 
     // renderFrame (0x707680)
-    rf_calls: u32 = 0,
+    rf_calls: u64 = 0,
     rf_cycles: u64 = 0,
 
     // executeSceneRenderPass (0x708900)
-    erp_calls: u32 = 0,
+    erp_calls: u64 = 0,
     erp_cycles: u64 = 0,
 
     // RenderTextureQuads (0x76FB00)
-    rtq_calls: u32 = 0,
+    rtq_calls: u64 = 0,
     rtq_cycles: u64 = 0,
     rtq_items: u64 = 0,
 
     // CMovement::ProcessUnitMovementUpdate (0x616620)
-    mov_calls: u32 = 0,
+    mov_calls: u64 = 0,
     mov_cycles: u64 = 0,
 };
 
@@ -111,16 +111,16 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
         }
     }
 
-    t44_depth += 1;
+    t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
     transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
 
-    t44_depth -= 1;
+    t44_depth -|= 1;
     const elapsed = rdtsc() - start;
     prof.t44_cycles +|= elapsed;
-    prof.t44_calls += 1;
-    if (is_early) prof.t44_early += 1;
+    prof.t44_calls +|= 1;
+    if (is_early) prof.t44_early +|= 1;
     prof.t44_bones +|= bone_count;
     if (bone_count > prof.t44_max_bones) prof.t44_max_bones = bone_count;
 }
@@ -141,7 +141,7 @@ fn renderFrameDetour(this: u32, edx: u32, camera_pos: u32) callconv(hook.cc.fast
     const start = rdtsc();
     const ret = render_frame_hook.callOriginal(.{ this, edx, camera_pos });
     prof.rf_cycles +|= rdtsc() - start;
-    prof.rf_calls += 1;
+    prof.rf_calls +|= 1;
     return ret;
 }
 
@@ -167,10 +167,10 @@ fn execRenderPassDetour(this: u32, edx: u32, pass_index: u32) callconv(hook.cc.f
 
     const ret = exec_render_pass_hook.callOriginal(.{ this, edx, pass_index });
     prof.erp_cycles +|= rdtsc() - now;
-    prof.erp_calls += 1;
+    prof.erp_calls +|= 1;
 
     // Use render pass as frame boundary for dump trigger
-    prof.frames += 1;
+    prof.frames +|= 1;
     if (prof.frames >= DUMP_FRAMES) {
         dumpStats();
     }
@@ -194,7 +194,7 @@ fn renderQuadsDetour(batch: u32, edx: u32) callconv(hook.cc.fastcall) void {
     const start = rdtsc();
     render_quads_hook.callOriginal(.{ batch, edx });
     prof.rtq_cycles +|= rdtsc() - start;
-    prof.rtq_calls += 1;
+    prof.rtq_calls +|= 1;
     prof.rtq_items +|= items;
 }
 
@@ -214,26 +214,26 @@ fn movementDetour(this: u32, edx: u32, time_now: u32, last_update: u32) callconv
     const start = rdtsc();
     movement_hook.callOriginal(.{ this, edx, time_now, last_update });
     prof.mov_cycles +|= rdtsc() - start;
-    prof.mov_calls += 1;
+    prof.mov_calls +|= 1;
 }
 
 // =============================================================================
 // Unified stats dump
 // =============================================================================
 
-fn pct(part: u64, total: u64) u32 {
+fn pct(part: u64, total: u64) u64 {
     if (total == 0) return 0;
-    return @truncate(part * 1000 / total); // tenths of a percent
+    return part *| 1000 / total; // tenths of a percent
 }
 
 fn dumpStats() void {
-    const f: u64 = prof.frames;
+    const f = prof.frames;
     if (f == 0) return;
 
     const wall = prof.wall_cycles;
 
     // transformMatrix4x4
-    const t44_real = prof.t44_calls - prof.t44_early;
+    const t44_real = prof.t44_calls -| prof.t44_early;
     const t44_avg = if (t44_real > 0) prof.t44_cycles / t44_real else 0;
     const t44_avg_bones = if (t44_real > 0) prof.t44_bones / t44_real else 0;
 
@@ -254,22 +254,22 @@ fn dumpStats() void {
         \\  t44: {d}cyc/work bones={d}/{d} depth={d} | rtq_items/f={d}
         \\
     , .{
-        @as(u32, @truncate(f)), @as(u32, @truncate(wall_per_f)),
-        @as(u32, @truncate(wall_per_f / 3)), @as(u32, @truncate(wall_per_f % 3000 / 300)),
+        f,                wall_per_f,
+        wall_per_f / 3,   wall_per_f % 3000 / 300,
         erp_pct / 10, erp_pct % 10,
         rf_pct / 10,  rf_pct % 10,
         t44_pct / 10, t44_pct % 10,
         rtq_pct / 10, rtq_pct % 10,
         mov_pct / 10, mov_pct % 10,
-        @as(u32, @truncate(prof.erp_calls / f)),
-        @as(u32, @truncate(prof.rf_calls / f)),
-        @as(u32, @truncate(prof.t44_calls / f)),
-        @as(u32, @truncate(prof.t44_early / f)),
-        @as(u32, @truncate(prof.rtq_calls / f)),
-        @as(u32, @truncate(prof.mov_calls / f)),
-        @as(u32, @truncate(t44_avg)),
-        @as(u32, @truncate(t44_avg_bones)), prof.t44_max_bones, prof.t44_max_depth,
-        @as(u32, @truncate(prof.rtq_items / f)),
+        prof.erp_calls / f,
+        prof.rf_calls / f,
+        prof.t44_calls / f,
+        prof.t44_early / f,
+        prof.rtq_calls / f,
+        prof.mov_calls / f,
+        t44_avg,
+        t44_avg_bones, prof.t44_max_bones, prof.t44_max_depth,
+        prof.rtq_items / f,
     });
 
     prof = ProfState{};
