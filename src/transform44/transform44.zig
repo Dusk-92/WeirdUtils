@@ -33,10 +33,13 @@ const DUMP_FRAMES: u32 = 180;
 
 var prof = ProfState{};
 var t44_depth: u32 = 0; // recursion depth — survives resets
+var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 
 const ProfState = struct {
     // Frame counter (incremented by executeSceneRenderPass)
     frames: u32 = 0,
+    // Total frame-to-frame wall cycles (sum of inter-frame deltas)
+    wall_cycles: u64 = 0,
 
     // transformMatrix4x4 (0x714260)
     t44_calls: u32 = 0,
@@ -155,9 +158,15 @@ var exec_render_pass_hook: hook.Detour(ExecRenderPassFn) = .{};
 fn execRenderPassDetour(this: u32, edx: u32, pass_index: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    const start = rdtsc();
+    // Track frame-to-frame wall time
+    const now = rdtsc();
+    if (last_frame_tsc != 0) {
+        prof.wall_cycles +|= now - last_frame_tsc;
+    }
+    last_frame_tsc = now;
+
     const ret = exec_render_pass_hook.callOriginal(.{ this, edx, pass_index });
-    prof.erp_cycles +|= rdtsc() - start;
+    prof.erp_cycles +|= rdtsc() - now;
     prof.erp_calls += 1;
 
     // Use render pass as frame boundary for dump trigger
@@ -212,40 +221,55 @@ fn movementDetour(this: u32, edx: u32, time_now: u32, last_update: u32) callconv
 // Unified stats dump
 // =============================================================================
 
+fn pct(part: u64, total: u64) u32 {
+    if (total == 0) return 0;
+    return @truncate(part * 1000 / total); // tenths of a percent
+}
+
 fn dumpStats() void {
-    const f = prof.frames;
+    const f: u64 = prof.frames;
     if (f == 0) return;
+
+    const wall = prof.wall_cycles;
 
     // transformMatrix4x4
     const t44_real = prof.t44_calls - prof.t44_early;
     const t44_avg = if (t44_real > 0) prof.t44_cycles / t44_real else 0;
     const t44_avg_bones = if (t44_real > 0) prof.t44_bones / t44_real else 0;
 
-    // Per-frame averages
-    const rf_per_f = prof.rf_calls / f;
-    const t44_per_f = prof.t44_calls / f;
-    const rtq_per_f = prof.rtq_calls / f;
-    const mov_per_f = prof.mov_calls / f;
-    const erp_per_f = prof.erp_calls / f;
+    // Percentages of total frame time (×10 for one decimal place)
+    const erp_pct = pct(prof.erp_cycles, wall);
+    const rf_pct = pct(prof.rf_cycles, wall);
+    const t44_pct = pct(prof.t44_cycles, wall);
+    const rtq_pct = pct(prof.rtq_cycles, wall);
+    const mov_pct = pct(prof.mov_cycles, wall);
 
-    // Cycle totals per frame
-    const rf_cyc_f = prof.rf_cycles / f;
-    const t44_cyc_f = prof.t44_cycles / f;
-    const rtq_cyc_f = prof.rtq_cycles / f;
-    const mov_cyc_f = prof.mov_cycles / f;
-    const erp_cyc_f = prof.erp_cycles / f;
+    // wall/frame in Kcycles → rough ms estimate at ~3GHz: Kcyc / 3000 ≈ ms
+    const wall_per_f = wall / f / 1000;
 
     log.fmt(
-        \\[prof] {d} frames | per-frame: erp={d} rf={d} t44={d}({d}skip) rtq={d} mov={d}
-        \\  cycles/frame: erp={d}K rf={d}K t44={d}K rtq={d}K mov={d}K
-        \\  t44: {d}cyc/work bones_avg={d} max={d} depth={d} | rtq_items/frame={d}
+        \\[prof] {d} frames, {d}Kcyc/frame (~{d}.{d}ms @3GHz)
+        \\  %frame: erp={d}.{d}% rf={d}.{d}% t44={d}.{d}% rtq={d}.{d}% mov={d}.{d}%
+        \\  calls/f: erp={d} rf={d} t44={d}({d}skip) rtq={d} mov={d}
+        \\  t44: {d}cyc/work bones={d}/{d} depth={d} | rtq_items/f={d}
         \\
     , .{
-        f,
-        erp_per_f,   rf_per_f,    t44_per_f,  prof.t44_early / f,  rtq_per_f,  mov_per_f,
-        erp_cyc_f / 1000, rf_cyc_f / 1000, t44_cyc_f / 1000, rtq_cyc_f / 1000, mov_cyc_f / 1000,
-        t44_avg,     t44_avg_bones, prof.t44_max_bones, prof.t44_max_depth,
-        prof.rtq_items / f,
+        @as(u32, @truncate(f)), @as(u32, @truncate(wall_per_f)),
+        @as(u32, @truncate(wall_per_f / 3)), @as(u32, @truncate(wall_per_f % 3000 / 300)),
+        erp_pct / 10, erp_pct % 10,
+        rf_pct / 10,  rf_pct % 10,
+        t44_pct / 10, t44_pct % 10,
+        rtq_pct / 10, rtq_pct % 10,
+        mov_pct / 10, mov_pct % 10,
+        @as(u32, @truncate(prof.erp_calls / f)),
+        @as(u32, @truncate(prof.rf_calls / f)),
+        @as(u32, @truncate(prof.t44_calls / f)),
+        @as(u32, @truncate(prof.t44_early / f)),
+        @as(u32, @truncate(prof.rtq_calls / f)),
+        @as(u32, @truncate(prof.mov_calls / f)),
+        @as(u32, @truncate(t44_avg)),
+        @as(u32, @truncate(t44_avg_bones)), prof.t44_max_bones, prof.t44_max_depth,
+        @as(u32, @truncate(prof.rtq_items / f)),
     });
 
     prof = ProfState{};
