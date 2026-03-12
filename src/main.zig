@@ -18,6 +18,7 @@ const build_opts = struct {
     const bigcursor = @import("build_options").enable_bigcursor;
     const clickthrough = @import("build_options").enable_clickthrough;
     const dpslog = @import("build_options").enable_dpslog;
+    const transform44 = @import("build_options").enable_transform44;
 };
 
 // Conditional module imports
@@ -34,6 +35,7 @@ const healtextfix = if (build_opts.healtextfix) @import("healtextfix/healtextfix
 const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") else struct {};
 const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthrough.zig") else struct {};
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
+const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 
@@ -610,6 +612,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.bigcursor) .{ .name = bigcursor.module_name, .install = bigcursor.installHooks, .remove = bigcursor.removeHooks, .is_active = bigcursor.isActive } else .{},
     if (build_opts.clickthrough) .{ .name = clickthrough.module_name, .install = clickthrough.installHooks, .remove = clickthrough.removeHooks, .is_active = clickthrough.isActive } else .{},
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
+    if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
