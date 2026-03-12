@@ -1,0 +1,6 @@
+## Interface: 11200
+## Title: [WeirdUtils] DPS Log
+## Notes: WotLK-style COMBAT_LOG_EVENT for vanilla 1.12.1
+## Version: 1.0
+
+DPSLog.lua
