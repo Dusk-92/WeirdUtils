@@ -5,9 +5,13 @@
 // Comptime-built table of embedded addon/asset files, plus hooks for addon
 // registration (SetupAddonProcessing) and loading (LoadAddonsRecursively).
 //
-// Modules declare their addon files via embed_modules. The is_active callback
-// gates addon loading on mutex ownership — if another DLL instance owns the
-// module, we don't load its addon.
+// All addon configuration is driven by build.zig (single source of truth).
+// Build options per module: {name}_addon_name, {name}_addon_hidden,
+// {name}_addon_files, {name}_asset_files. This file derives everything from
+// those options — no hardcoded module list.
+//
+// The is_active callback is wired by convention: each module that exports
+// pub fn isActive() bool gets called at runtime to gate addon loading.
 //
 // =============================================================================
 
@@ -17,21 +21,36 @@ const logging = @import("logging.zig");
 var log: logging.Logger = .{};
 const build_options = @import("build_options");
 
-// Build option convenience aliases
-const build_opts = struct {
-    const interact = build_options.enable_interact;
-    const outline = build_options.enable_outline;
-    const worldmarkers = build_options.enable_worldmarkers;
-    const logsessions = build_options.enable_logsessions;
-    const minimapicons = build_options.enable_minimapicons;
+// =============================================================================
+// Module list — must match build.zig module_list names.
+// This is the only place module names appear; everything else is derived.
+// =============================================================================
+
+const module_names = [_][]const u8{
+    "interact",
+    "outline",
+    "worldmarkers",
+    "logsessions",
+    "minimapicons",
+    "dpslog",
 };
 
-// Conditional module imports (only for is_active callbacks)
-const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
-const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
-const markers = if (build_opts.worldmarkers) @import("markers/markers.zig") else struct {};
-const logsessions = if (build_opts.logsessions) @import("logsessions/logsessions.zig") else struct {};
-const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
+// =============================================================================
+// is_active wiring — convention-based imports
+// =============================================================================
+
+fn moduleIsActive(comptime name: []const u8) ?*const fn () bool {
+    if (!@field(build_options, "enable_" ++ name)) return null;
+    const mod = if (eqlSlice(name, "interact")) @import("interact/interact.zig")
+    else if (eqlSlice(name, "outline")) @import("outline/api.zig")
+    else if (eqlSlice(name, "worldmarkers")) @import("markers/markers.zig")
+    else if (eqlSlice(name, "logsessions")) @import("logsessions/logsessions.zig")
+    else if (eqlSlice(name, "minimapicons")) @import("minimapicons/minimapicons.zig")
+    else if (eqlSlice(name, "dpslog")) @import("dpslog/dpslog.zig")
+    else struct {};
+    if (@hasDecl(mod, "isActive")) return &mod.isActive;
+    return null;
+}
 
 // =============================================================================
 // Embedded file types
@@ -47,29 +66,8 @@ const AddonPrefix = struct {
     files: []const FileEntry,
 };
 
-/// Module descriptor for compile-time embed generation.
-const EmbedModule = struct {
-    option: []const u8,
-    addon_name: ?[]const u8 = null,
-    addon_files_opt: ?[]const u8 = null,
-    asset_files_opt: ?[]const u8 = null,
-    /// If true, addon is hidden from addon list, always loaded.
-    hidden: bool = false,
-    /// Runtime check — addon is only loaded if this returns true.
-    /// Null means always load (when compiled in).
-    is_active: ?*const fn () bool = null,
-};
-
-const embed_modules = [_]EmbedModule{
-    .{ .option = "interact", .addon_name = "WeirdUtils_Interact", .addon_files_opt = "interact_addon_files", .is_active = if (build_opts.interact) &interact.isActive else null },
-    .{ .option = "outline", .addon_name = "WeirdUtils_Outline", .addon_files_opt = "outline_addon_files", .is_active = if (build_opts.outline) &outline.isActive else null },
-    .{ .option = "worldmarkers", .addon_name = "WeirdUtils_WorldMarkers", .addon_files_opt = "worldmarkers_addon_files", .asset_files_opt = "worldmarkers_asset_files", .hidden = true, .is_active = if (build_opts.worldmarkers) &markers.isActive else null },
-    .{ .option = "logsessions", .addon_name = "WeirdUtils_LogSessions", .addon_files_opt = "logsessions_addon_files", .is_active = if (build_opts.logsessions) &logsessions.isActive else null },
-    .{ .option = "minimapicons", .addon_name = "WeirdUtils_MinimapIcons", .addon_files_opt = "minimapicons_addon_files", .asset_files_opt = "minimapicons_asset_files", .is_active = if (build_opts.minimapicons) &minimapicons.isActive else null },
-};
-
 // =============================================================================
-// Comptime path helpers
+// Comptime helpers
 // =============================================================================
 
 fn comptimeBasename(comptime path: []const u8) []const u8 {
@@ -81,8 +79,6 @@ fn comptimeBasename(comptime path: []const u8) []const u8 {
     return path;
 }
 
-/// Extract WoW-style parent directory: "markers/assets/Spells/foo.m2" with
-/// assets_prefix="markers/assets/" → "Spells\\"
 fn comptimeWowDir(comptime path: []const u8, comptime assets_prefix: []const u8) []const u8 {
     const rel = path[assets_prefix.len..];
     var last_slash: usize = 0;
@@ -128,7 +124,6 @@ fn embedFiles(comptime paths: []const []const u8) [paths.len]FileEntry {
     }
 }
 
-/// Derive the assets/ path prefix from the option name pattern.
 fn assetsPrefixFromOpt(comptime opt: []const u8) []const u8 {
     const paths = @field(build_options, opt);
     const first = paths[0];
@@ -203,45 +198,70 @@ fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []cons
     }
 }
 
+/// Check if a module has an addon (addon_name build option exists and is non-empty).
+fn hasAddon(comptime name: []const u8) bool {
+    if (!@hasField(build_options, name ++ "_addon_name")) return false;
+    return @field(build_options, name ++ "_addon_name").len > 0;
+}
+
+/// Get addon file paths for a module (empty if no addon or no files).
+fn getAddonFiles(comptime name: []const u8) []const []const u8 {
+    if (!@hasField(build_options, name ++ "_addon_files")) return &.{};
+    return @field(build_options, name ++ "_addon_files");
+}
+
+/// Get asset file paths for a module (empty if no assets).
+fn getAssetFiles(comptime name: []const u8) []const []const u8 {
+    if (!@hasField(build_options, name ++ "_asset_files")) return &.{};
+    return @field(build_options, name ++ "_asset_files");
+}
+
+/// Get hidden flag for a module.
+fn isHidden(comptime name: []const u8) bool {
+    if (!@hasField(build_options, name ++ "_addon_hidden")) return false;
+    return @field(build_options, name ++ "_addon_hidden");
+}
+
+// =============================================================================
+// Build the addon prefix table from build options
+// =============================================================================
+
 fn buildAllPrefixes() []const AddonPrefix {
     @setEvalBranchQuota(50000);
     comptime {
+        // Count entries
         var count: usize = 0;
-        for (embed_modules) |mod| {
-            if (!@field(build_options, "enable_" ++ mod.option)) continue;
-            if (mod.addon_files_opt) |opt| {
-                if (@field(build_options, opt).len > 0) count += 1;
-            }
-            if (mod.asset_files_opt) |opt| {
-                const asset_paths = @field(build_options, opt);
-                if (asset_paths.len > 0) {
-                    const pfx = assetsPrefixFromOpt(opt);
-                    count += countUniqueAssetDirs(asset_paths, pfx);
-                }
+        for (module_names) |name| {
+            if (!@field(build_options, "enable_" ++ name)) continue;
+            if (!hasAddon(name)) continue;
+            const addon_files = getAddonFiles(name);
+            if (addon_files.len > 0) count += 1;
+            const asset_files = getAssetFiles(name);
+            if (asset_files.len > 0) {
+                const pfx = assetsPrefixFromOpt(name ++ "_asset_files");
+                count += countUniqueAssetDirs(asset_files, pfx);
             }
         }
 
         var result: [count]AddonPrefix = undefined;
         var idx: usize = 0;
-        for (embed_modules) |mod| {
-            if (!@field(build_options, "enable_" ++ mod.option)) continue;
-            if (mod.addon_files_opt) |opt| {
-                const paths = @field(build_options, opt);
-                if (paths.len > 0) {
-                    const files = embedFiles(paths);
-                    result[idx] = .{
-                        .prefix = "Interface\\AddOns\\" ++ mod.addon_name.? ++ "\\",
-                        .files = &files,
-                    };
-                    idx += 1;
-                }
+        for (module_names) |name| {
+            if (!@field(build_options, "enable_" ++ name)) continue;
+            if (!hasAddon(name)) continue;
+            const addon_name = @field(build_options, name ++ "_addon_name");
+            const addon_files = getAddonFiles(name);
+            if (addon_files.len > 0) {
+                const files = embedFiles(addon_files);
+                result[idx] = .{
+                    .prefix = "Interface\\AddOns\\" ++ addon_name ++ "\\",
+                    .files = &files,
+                };
+                idx += 1;
             }
-            if (mod.asset_files_opt) |opt| {
-                const asset_paths = @field(build_options, opt);
-                if (asset_paths.len > 0) {
-                    const pfx = assetsPrefixFromOpt(opt);
-                    idx = appendAssetPrefixes(&result, idx, asset_paths, pfx);
-                }
+            const asset_files = getAssetFiles(name);
+            if (asset_files.len > 0) {
+                const pfx = assetsPrefixFromOpt(name ++ "_asset_files");
+                idx = appendAssetPrefixes(&result, idx, asset_files, pfx);
             }
         }
         const final = result;
@@ -303,18 +323,20 @@ var setup_addons_hook: hook.Detour(fn (u32) callconv(hook.cc.fastcall) void) = .
 fn setupAddonsDetour(mgr_ptr: u32) callconv(hook.cc.fastcall) void {
     setup_addons_hook.callOriginal(.{mgr_ptr});
 
-    inline for (embed_modules) |mod| {
-        if (comptime mod.addon_name == null) continue;
-        if (!@field(build_options, "enable_" ++ mod.option)) continue;
+    inline for (module_names) |name| {
+        if (!@field(build_options, "enable_" ++ name)) continue;
+        if (comptime !hasAddon(name)) continue;
+        if (comptime getAddonFiles(name).len == 0) continue;
 
-        const active = if (mod.is_active) |f| f() else true;
+        const active = if (comptime moduleIsActive(name)) |f| f() else true;
         if (active) {
-            const name: [*:0]const u8 = comptime (mod.addon_name.? ++ "\x00").ptr;
-            log.fmt("registering embedded addon: {s}\n", .{name});
-            callLoadAddonTOC(name);
+            const addon_name = comptime @field(build_options, name ++ "_addon_name");
+            const name_z: [*:0]const u8 = comptime (addon_name ++ "\x00").ptr;
+            log.fmt("registering embedded addon: {s}\n", .{name_z});
+            callLoadAddonTOC(name_z);
 
-            if (mod.hidden) {
-                hideAddonFromList(name);
+            if (comptime isHidden(name)) {
+                hideAddonFromList(name_z);
             }
         }
     }
@@ -323,9 +345,6 @@ fn setupAddonsDetour(mgr_ptr: u32) callconv(hook.cc.fastcall) void {
 /// Find an addon struct in the linked list by name and set +0x29 to 1,
 /// which excludes it from the flat display array built by DeserializeAddonData.
 fn hideAddonFromList(name: [*:0]const u8) void {
-    // Walk the addon linked list (PTR_00be1b6c). Each node has:
-    //   +0x14: name pointer
-    //   next: *(PTR_00be1b64 + 4 + node)
     const list_base = hook.readMem(u32, 0x00be1b64);
     var node = hook.readMem(u32, 0x00be1b6c);
     while (node != 0 and (node & 1) == 0) {
@@ -348,10 +367,10 @@ fn callLoadAddonTOC(addon_name: [*:0]const u8) void {
 // Install / Remove
 // =============================================================================
 
-/// True if any embed_modules entry has addon files compiled in.
+/// True if any module has embedded addon files compiled in.
 const has_addons = blk: {
-    for (embed_modules) |mod| {
-        if (mod.addon_name != null and @field(build_options, "enable_" ++ mod.option))
+    for (module_names) |name| {
+        if (@field(build_options, "enable_" ++ name) and hasAddon(name) and getAddonFiles(name).len > 0)
             break :blk true;
     }
     break :blk false;

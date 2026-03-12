@@ -8,6 +8,8 @@ const ModuleDesc = struct {
     src_dir: ?[]const u8 = null,
     /// WoW addon folder name. Non-null means this module has an addon/ dir.
     addon_name: ?[]const u8 = null,
+    /// If true, addon is hidden from the in-game addon list (always loaded).
+    addon_hidden: bool = false,
 };
 
 /// Single source of truth for all modules. Adding a module here is enough
@@ -16,7 +18,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "pngscreenshots", .desc = "Enable screenshot module", .src_dir = "screenshot" },
     .{ .name = "interact", .desc = "Enable interact module", .addon_name = "Interact" },
     .{ .name = "outline", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
-    .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers" },
+    .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers", .addon_hidden = true },
     .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
     .{ .name = "logsessions", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
     .{ .name = "minimapicons", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
@@ -25,7 +27,8 @@ const module_list = [_]ModuleDesc{
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
-    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
+    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = true },
+    .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
@@ -111,8 +114,11 @@ fn addFileListOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
     for (module_list) |mod| {
         const src_dir = mod.src_dir orelse mod.name;
 
-        // Addon files: <module>_addon_files = ["screenshot/addon/Screenshot.lua", ...]
-        if (mod.addon_name != null) {
+        // Addon: <module>_addon_name, <module>_addon_hidden, <module>_addon_files
+        if (mod.addon_name) |aname| {
+            const full_name = std.fmt.allocPrint(a, "WeirdUtils_{s}", .{aname}) catch unreachable;
+            opts.addOption([]const u8, std.fmt.allocPrint(a, "{s}_addon_name", .{mod.name}) catch unreachable, full_name);
+            opts.addOption(bool, std.fmt.allocPrint(a, "{s}_addon_hidden", .{mod.name}) catch unreachable, mod.addon_hidden);
             const addon_rel = std.fmt.allocPrint(a, "src/{s}/addon", .{src_dir}) catch unreachable;
             const files = listDir(a, io, root, addon_rel);
             var paths: std.ArrayList([]const u8) = .empty;
