@@ -144,3 +144,89 @@ From `this->unknown_0x80` array. Contains:
 3. **Recursive for attachments**: Child objects (weapons, shoulders, etc.) recurse through this same function
 4. **Two animation blend sources**: Primary animation + blend target with crossfade weight at puVar20[0x43]
 5. **Billboard support**: Flags-based billboard types for UI/particle-facing bones
+
+## Inner Function Analysis (decompiled 2026-03-12)
+
+### findInterpolationIndices (0x713d50) — 334 bytes, 58 calls
+**Signature**: `__thiscall(ECX=SceneObject*, stack: searchValue, trackIndex, AnimationData*, outputIndices*)`
+**RET 0x10**
+
+Three-tier search strategy with temporal coherence:
+1. **Forward linear scan** (hot path): If `searchValue - lastTimestamp < 500`, scan forward from cached position. This is the common case during sequential animation playback — typically 0-4 iterations.
+2. **Backward linear scan**: If delta is negative (unsigned wrap > 0xFFFFFF0C), scan backward.
+3. **Binary search** (fallback): Standard bisection on timestamp array.
+
+Output: `outputIndices[0]` = lower keyframe index, `[1]` = upper keyframe index, `[2]` = interpolation factor (float stored as uint bits).
+
+The cached index at `outputIndices[0]` is reused across calls — exploits the fact that animation time advances monotonically between frames.
+
+**Optimization potential**: Limited — the linear scan hot path is already tight (1-4 iterations for most bones). SSE4-wide timestamp comparison might help for binary search fallback, but that path is rarely hit during normal playback.
+
+### interpolateAnimationKeyframes (0x713ea0) — 337 bytes, 2 calls
+**Signature**: `__fastcall(ECX=animObj, EDX=animState, stack: keyframeData*, outputBuffer*)`
+**RET 0x8**
+
+Calls findInterpolationIndices, then does 4-component lerp (vec4/quaternion). If crossfade is active (blend weight != 0 and timeIndex == -1), does a secondary findInterpolationIndices + lerp + blend.
+
+Keyframes are 16 bytes (4 floats). Interpolation: `result[i] = a[i] + (b[i] - a[i]) * t`.
+
+**Optimization**: The 4-component lerp is a textbook SSE target — one load, one sub, one mul, one add replaces 4 scalar x87 operations.
+
+### getInterpolatedFloat (0x71af20) — 199 bytes, 4 calls
+**Signature**: `__fastcall(ECX=animObj, EDX=animState, stack: keyframeData*, outputBuffer*)`
+**RET 0x8**
+
+Same pattern as interpolateAnimationKeyframes but for scalar (single float) tracks. Also supports crossfade blending.
+
+### getIndexOffset (0x71aff0) — 16 bytes, 12 calls
+Trivial: `return *(this+4) + param_1 * 2`. Returns pointer to short value in timestamp index array.
+
+### setShortValue (0x71b010) — 18 bytes, 12 calls
+Trivial: `*(short*)this = *(short*)param_1`. Copies a 16-bit value.
+
+### scaleMatrix3x3ByVector (0x7bdca0) — 82 bytes, 2 calls
+**Signature**: `__thiscall(ECX=matrix, stack: scaleVec3*)`
+Scales each row of the 3x3 rotation portion of a 4x4 matrix by the corresponding scale component:
+```
+row0 *= scale.x  (3 muls)
+row1 *= scale.y  (3 muls)
+row2 *= scale.z  (3 muls)
+```
+Uses x87 FPU. **SSE candidate**: 3 shuffled multiplies instead of 9 scalar.
+
+### ApplyTranslationMatrix (0x7bdc40) — 90 bytes, 5 calls
+**Signature**: `__thiscall(ECX=matrix, stack: translationVec3*)`
+Applies translation through the rotation matrix:
+```
+mat[3][0] += dot(mat[0], translation)
+mat[3][1] += dot(mat[1], translation)
+mat[3][2] += dot(mat[2], translation)
+```
+Uses x87 FPU. **SSE candidate**: 3 dot products → SSE dp_ps or manual mul+hadd.
+
+### rotateMatrixByQuaternion (0x7bddb0) — 333 bytes, 1 call
+**Signature**: `__thiscall(ECX=matrix, stack: quaternion*)`
+Converts quaternion to 3x3 rotation matrix, then calls `multiplyMatrix4x4_SSE_Optimized` (game already has SSE matrix multiply!). The quaternion→matrix conversion uses x87 but the final multiply is SSE.
+
+### calculateScaledInverseMatrix (0x7bd820) — 347 bytes, 1 call
+Used for billboarding. Transposes the 3x3 rotation, scales by 1/scale², applies inverse translation.
+
+## Optimization Strategy
+
+### What we know
+- The game already uses SSE for matrix multiplication (multiplyMatrix4x4_SSE_Optimized)
+- All other math (scale, translate, interpolate) uses x87 FPU
+- findInterpolationIndices has good temporal coherence — hot path is already fast
+- The 58 findInterpolationIndices calls are spread across translation, rotation, scale tracks for each bone
+
+### Priority targets (by impact)
+1. **Profile first** — need real data on call frequency, early-exit ratio, cycles per call, bone counts
+2. **LOD-based culling** — skip entire transformMatrix4x4 for distant/tiny models (biggest potential win)
+3. **SSE interpolateAnimationKeyframes** — replace 4-component lerp with SSE (called per bone for rotation)
+4. **SSE scaleMatrix3x3ByVector / ApplyTranslationMatrix** — replace x87 with SSE
+5. **Batch findInterpolationIndices** — process multiple tracks per bone in one call to amortize function overhead
+
+### Implementation plan
+- Phase 1: Profiling hook on transformMatrix4x4 (DONE — in transform44.zig)
+- Phase 2: Analyze profiling data, identify hottest path
+- Phase 3: Implement targeted SSE replacements or LOD culling
