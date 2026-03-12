@@ -118,14 +118,23 @@ Marks transform as up to date.
 | Offset | Field | Type | Notes |
 |--------|-------|------|-------|
 | +0x10 | model_data_ptr | void* | NULL check for early bail |
-| +0x2C | ptr_at_2c | void* | -> model header? |
+| +0x2C | ptr_at_2c | void* | -> context struct (NOT M2 header directly!) |
 | +0x30 | animation_context_ptr | void* | +0x0C=timestamp, +0x10=sync_value |
 | +0x40 | transform_sync_value | int | Compared with anim_ctx+0x10 |
 | +0x80 | unknown_0x80 | uint | Bone runtime state array base |
-| +0x1CC | field_0x1cc | int* | Emitter/particle data? |
+| +0x1CC | field_0x1cc | int* | Emitter/particle context |
+
+### Context Struct (at *(this+0x2C))
+| Offset | Field | Notes |
+|--------|-------|-------|
+| +0x14 | global sequence count | Loop bound for GS processing |
+| +0x18 | global sequence durations array | |
+| +0x130 | M2 model header pointer | **This is the actual model** |
+
+**Pointer chain to bone count**: `*(*(*(this+0x2C) + 0x130) + 0x34)`
 
 ### Bone Definition (0x6c = 108 bytes per bone in model)
-From `model+0x38` array. Contains:
+From `model+0x38` array (where model = `*(*(this+0x2C) + 0x130)`). Contains:
 - Flags, parent bone index, billboard type
 - Keyframe data pointers for translation, rotation, scale
 - Pivot point (Vec3)
