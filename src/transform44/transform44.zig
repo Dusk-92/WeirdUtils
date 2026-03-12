@@ -93,22 +93,25 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     const start = rdtsc();
 
     // Check sync gate — predict early exit
+    // Assembly truth (NOT Ghidra decompiler labels):
+    //   +0x2C = animation_context_ptr  (sync check at +0x10, timestamp at +0x0C)
+    //   +0x30 = model_container_ptr    (+0x130 = M2 model header)
     const model_data = hook.readMem(u32, this + 0x10);
     var is_early = false;
     var bone_count: u32 = 0;
     if (model_data == 0) {
         is_early = true;
     } else {
-        const anim_ctx = hook.readMem(u32, this + 0x30);
+        const anim_ctx = hook.readMem(u32, this + 0x2C);
         if (anim_ctx != 0) {
             const sync_val = hook.readMem(u32, this + 0x40);
             const anim_sync = hook.readMem(u32, anim_ctx + 0x10);
             if (sync_val == anim_sync) is_early = true;
         }
-        // Model header is at *(*(this+0x2C) + 0x130), bone count at +0x34
-        const ptr_2c = hook.readMem(u32, this + 0x2C);
-        if (ptr_2c != 0) {
-            const model_hdr = hook.readMem(u32, ptr_2c + 0x130);
+        // Model header: *(*(this+0x30) + 0x130), bone count at +0x34
+        const model_ctr = hook.readMem(u32, this + 0x30);
+        if (model_ctr != 0) {
+            const model_hdr = hook.readMem(u32, model_ctr + 0x130);
             if (model_hdr != 0) {
                 bone_count = hook.readMem(u32, model_hdr + 0x34);
             }

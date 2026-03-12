@@ -115,23 +115,36 @@ Marks transform as up to date.
 ## Key Data Structures
 
 ### SceneObject (this pointer)
+
+**WARNING**: Ghidra decompiler swaps +0x2C and +0x30 labels. Assembly is authoritative.
+
 | Offset | Field | Type | Notes |
 |--------|-------|------|-------|
 | +0x10 | model_data_ptr | void* | NULL check for early bail |
-| +0x2C | ptr_at_2c | void* | -> context struct (NOT M2 header directly!) |
-| +0x30 | animation_context_ptr | void* | +0x0C=timestamp, +0x10=sync_value |
-| +0x40 | transform_sync_value | int | Compared with anim_ctx+0x10 |
+| +0x2C | animation_context_ptr | void* | +0x0C=timestamp, +0x10=sync_value |
+| +0x30 | model_container_ptr | void* | +0x130 = M2 model header |
+| +0x40 | transform_sync_value | int | Compared with *(anim_ctx+0x10) |
 | +0x80 | unknown_0x80 | uint | Bone runtime state array base |
 | +0x1CC | field_0x1cc | int* | Emitter/particle context |
 
-### Context Struct (at *(this+0x2C))
+Assembly proof (0x714277-0x714293):
+```asm
+MOV EAX, [EBX + 0x2c]     ; EAX = animation_context_ptr
+MOV ECX, [EBX + 0x40]     ; ECX = sync_value
+CMP ECX, [EAX + 0x10]     ; sync check: this+0x40 vs *(this+0x2C)+0x10
+...
+MOV EDX, [EBX + 0x30]     ; EDX = model_container_ptr
+MOV EDI, [EDX + 0x130]    ; EDI = M2 model header
+```
+
+### Model Container (at *(this+0x30))
 | Offset | Field | Notes |
 |--------|-------|-------|
 | +0x14 | global sequence count | Loop bound for GS processing |
 | +0x18 | global sequence durations array | |
 | +0x130 | M2 model header pointer | **This is the actual model** |
 
-**Pointer chain to bone count**: `*(*(*(this+0x2C) + 0x130) + 0x34)`
+**Pointer chain to bone count**: `*(*(*(this+0x30) + 0x130) + 0x34)`
 
 ### Bone Definition (0x6c = 108 bytes per bone in model)
 From `model+0x38` array (where model = `*(*(this+0x2C) + 0x130)`). Contains:
