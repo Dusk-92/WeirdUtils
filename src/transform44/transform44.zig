@@ -29,7 +29,7 @@ pub fn isActive() bool {
 // Profiling state — unified dump every DUMP_FRAMES render passes
 // =============================================================================
 
-const DUMP_FRAMES: u32 = 180;
+const DUMP_FRAMES: u32 = 600;
 
 var prof = ProfState{};
 var t44_depth: u32 = 0; // recursion depth — survives resets
