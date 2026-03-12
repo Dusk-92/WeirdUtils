@@ -365,15 +365,16 @@ const DupString = fn ([*:0]const u8, [*:0]const u8, u32) callconv(hook.cc.stdcal
 const DUP_STRING: u32 = 0x64a620;
 const DUP_STRING_SRC: [*:0]const u8 = "dpslog";
 
-const OUR_EVENT_SLOT: u32 = 650;
-const MIN_EVENT_CAPACITY: u32 = 700;
+const PREFERRED_EVENT_SLOT: u32 = 650;
+const MAX_EVENT_SLOT: u32 = 800;
+const MIN_EVENT_CAPACITY: u32 = MAX_EVENT_SLOT + 1;
 const INTERNAL_ARRAY_PTR: u32 = 0x00ceef68;
 const INTERNAL_CAPACITY_PTR: u32 = 0x00ceef64;
 
 // =============================================================================
 // Hook: resize_lua_event_array (0x7053B0)
 // __thiscall(ECX=&struct_ceef60, stack=new_count)
-// Mirrors SuperWoW's check: if count > 200 (not GlueXML), expand to at least 700.
+// If count > 200 (not GlueXML), expand to at least MIN_EVENT_CAPACITY.
 // =============================================================================
 
 const EVENT_STRUCT: u32 = 0x00ceef60;
@@ -396,8 +397,20 @@ fn createEventsDetour(param1: u32, max_event_id: u32) callconv(hook.cc.fastcall)
         const capacity = hook.readMem(u32, INTERNAL_CAPACITY_PTR);
         const internal_array = hook.readMem(u32, INTERNAL_ARRAY_PTR);
 
-        if (internal_array == 0 or capacity <= OUR_EVENT_SLOT) {
-            log.fmt("createEventsDetour: capacity {d} too small for slot {d}\n", .{ capacity, OUR_EVENT_SLOT });
+        if (internal_array == 0 or capacity <= PREFERRED_EVENT_SLOT) {
+            log.fmt("createEventsDetour: capacity {d} too small\n", .{capacity});
+            return;
+        }
+
+        // Find an empty slot (name_ptr == 0), starting at preferred slot.
+        const limit = @min(capacity, MAX_EVENT_SLOT + 1);
+        var slot: u32 = PREFERRED_EVENT_SLOT;
+        while (slot < limit) : (slot += 1) {
+            const name_at_slot = hook.readMem(u32, internal_array + slot * 16);
+            if (name_at_slot == 0) break;
+        }
+        if (slot >= limit) {
+            log.fmt("createEventsDetour: no empty slot in {d}-{d}\n", .{ PREFERRED_EVENT_SLOT, limit - 1 });
             return;
         }
 
@@ -405,10 +418,10 @@ fn createEventsDetour(param1: u32, max_event_id: u32) callconv(hook.cc.fastcall)
         const name_ptr = @call(.auto, @as(*const DupString, @ptrFromInt(DUP_STRING)), .{ event_name, DUP_STRING_SRC, 0x51c });
 
         // Write into internal table entry: each entry is 16 bytes, name at +0.
-        hook.writeMem(internal_array + OUR_EVENT_SLOT * 16, std.mem.asBytes(&name_ptr));
-        g_event_combat_log = OUR_EVENT_SLOT;
+        hook.writeMem(internal_array + slot * 16, std.mem.asBytes(&name_ptr));
+        g_event_combat_log = slot;
 
-        log.fmt("createEventsDetour: COMBAT_LOG_EVENT at slot {d}, capacity={d}\n", .{ OUR_EVENT_SLOT, capacity });
+        log.fmt("createEventsDetour: COMBAT_LOG_EVENT at slot {d}, capacity={d}\n", .{ slot, capacity });
     }
 }
 
@@ -684,7 +697,7 @@ const EnvDmgFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
 
 var env_dmg_hook: hook.Detour(EnvDmgFn) = .{};
 
-fn envDamageDetour(victim_guid_ptr: u32, damage_type: u32, damage_source: u32, base_damage: u32, absorb: u32) callconv(hook.cc.fastcall) void {
+fn envDamageDetour(victim_guid_ptr: u32, damage_type: u32, damage: u32, absorb: u32, resist: u32) callconv(hook.cc.fastcall) void {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     if (victim_guid_ptr != 0) {
@@ -701,13 +714,13 @@ fn envDamageDetour(victim_guid_ptr: u32, damage_type: u32, damage_source: u32, b
                 3, 5 => 4, // lava, fire → fire
                 else => 1, // exhausted, falling → physical
             };
-            log.fmt("ENVIRONMENTAL_DAMAGE: type={s} dmg={d} absorb={d}\n", .{ std.mem.span(env_str), base_damage, absorb });
-            fireEnvDamage(dst_str, env_str, base_damage, school, absorb);
+            log.fmt("ENVIRONMENTAL_DAMAGE: type={s} dmg={d} absorb={d}\n", .{ std.mem.span(env_str), damage, absorb });
+            fireEnvDamage(dst_str, env_str, damage, school, absorb);
             recordDamage(victim_guid, 0, 0);
         }
     }
 
-    env_dmg_hook.callOriginal(.{ victim_guid_ptr, damage_type, damage_source, base_damage, absorb });
+    env_dmg_hook.callOriginal(.{ victim_guid_ptr, damage_type, damage, absorb, resist });
 }
 
 // =============================================================================

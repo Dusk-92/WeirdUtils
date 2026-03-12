@@ -484,17 +484,16 @@ eventFrame:SetScript("OnEvent", function()
     local subevent = arg1
     if not subevent then return end
 
-    -- Chat output
-    local chatHandler = chatHandlers[subevent]
-    if chatHandler then
-        chatHandler(arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
-    else
-        DEFAULT_CHAT_FRAME:AddMessage(format("|cffccccccUNHANDLED|r %s", subevent))
-    end
-
     -- Tracker update (first encounter only)
     local idx = subeventIndex[subevent]
     if idx and not seen[idx] then
+        -- Chat output (first occurrence only)
+        local chatHandler = chatHandlers[subevent]
+        if chatHandler then
+            chatHandler(arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+        else
+            DEFAULT_CHAT_FRAME:AddMessage(format("|cffccccccUNHANDLED|r %s", subevent))
+        end
         seen[idx] = true
         seenCount = seenCount + 1
         local formatter = argFormatters[subevent]
