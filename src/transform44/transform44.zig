@@ -105,9 +105,13 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
             const anim_sync = hook.readMem(u32, anim_ctx + 0x10);
             if (sync_val == anim_sync) is_early = true;
         }
-        const model_hdr = hook.readMem(u32, this + 0x2C);
-        if (model_hdr != 0) {
-            bone_count = hook.readMem(u32, model_hdr + 0x34);
+        // Model header is at *(*(this+0x2C) + 0x130), bone count at +0x34
+        const ptr_2c = hook.readMem(u32, this + 0x2C);
+        if (ptr_2c != 0) {
+            const model_hdr = hook.readMem(u32, ptr_2c + 0x130);
+            if (model_hdr != 0) {
+                bone_count = hook.readMem(u32, model_hdr + 0x34);
+            }
         }
     }
 
