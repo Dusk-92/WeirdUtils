@@ -18,7 +18,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "pngscreenshots", .desc = "Enable screenshot module", .src_dir = "screenshot" },
     .{ .name = "interact", .desc = "Enable interact module", .addon_name = "Interact" },
     .{ .name = "outline", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
-    .{ .name = "worldmarkers", .desc = "Enable world markers module", .src_dir = "markers", .addon_name = "WorldMarkers", .addon_hidden = true },
+    .{ .name = "worldmarkers", .desc = "Enable world markers module", .addon_name = "WorldMarkers", .addon_hidden = true },
     .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
     .{ .name = "logsessions", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
     .{ .name = "minimapicons", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
@@ -30,6 +30,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
+    .{ .name = "file_perf", .desc = "Enable file access profiling", .default = false, .addon_name = "FilePerf", .addon_hidden = true },
 };
 
 pub fn build(b: *std.Build) void {
@@ -86,6 +87,14 @@ pub fn build(b: *std.Build) void {
             opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
         }
         addFileListOptions(b, opts);
+        // Variant builds also need the module name list for addons.zig
+        const names: []const []const u8 = comptime blk: {
+            var n: [module_list.len][]const u8 = undefined;
+            for (module_list, 0..) |m2, mi| n[mi] = m2.name;
+            const final = n;
+            break :blk &final;
+        };
+        opts.addOption([]const []const u8, "all_module_names", names);
 
         const variant_lib = b.addLibrary(.{
             .name = variant_mod.name,
@@ -116,6 +125,14 @@ fn addModuleOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
     inline for (module_list) |mod| {
         opts.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
     }
+    // Pass full module name list so addons.zig doesn't need a hardcoded copy
+    const names: []const []const u8 = comptime blk: {
+        var n: [module_list.len][]const u8 = undefined;
+        for (module_list, 0..) |mod, i| n[i] = mod.name;
+        const final = n;
+        break :blk &final;
+    };
+    opts.addOption([]const []const u8, "all_module_names", names);
     addFileListOptions(b, opts);
 }
 

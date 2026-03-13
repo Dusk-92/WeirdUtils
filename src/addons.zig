@@ -22,35 +22,18 @@ var log: logging.Logger = .{};
 const build_options = @import("build_options");
 
 // =============================================================================
-// Module list — must match build.zig module_list names.
-// This is the only place module names appear; everything else is derived.
+// Module list — derived from build.zig via all_module_names build option.
+// Convention: each module's main source is at {name}/{name}.zig.
 // =============================================================================
 
-const module_names = [_][]const u8{
-    "interact",
-    "outline",
-    "worldmarkers",
-    "logsessions",
-    "minimapicons",
-    "dpslog",
-};
+const module_names = build_options.all_module_names;
 
 // =============================================================================
-// is_active wiring — convention-based imports
+// is_active wiring — runtime registry populated by main.zig during install().
+// No per-module imports needed here; adding addon_name in build.zig is enough.
 // =============================================================================
 
-fn moduleIsActive(comptime name: []const u8) ?*const fn () bool {
-    if (!@field(build_options, "enable_" ++ name)) return null;
-    const mod = if (eqlSlice(name, "interact")) @import("interact/interact.zig")
-    else if (eqlSlice(name, "outline")) @import("outline/api.zig")
-    else if (eqlSlice(name, "worldmarkers")) @import("markers/markers.zig")
-    else if (eqlSlice(name, "logsessions")) @import("logsessions/logsessions.zig")
-    else if (eqlSlice(name, "minimapicons")) @import("minimapicons/minimapicons.zig")
-    else if (eqlSlice(name, "dpslog")) @import("dpslog/dpslog.zig")
-    else struct {};
-    if (@hasDecl(mod, "isActive")) return &mod.isActive;
-    return null;
-}
+const module_active = @import("module_active.zig");
 
 // =============================================================================
 // Embedded file types
@@ -64,6 +47,8 @@ pub const FileEntry = struct {
 const AddonPrefix = struct {
     prefix: []const u8,
     files: []const FileEntry,
+    /// Module name for runtime isActive gating. Null = always serve.
+    module_name: ?[*:0]const u8 = null,
 };
 
 // =============================================================================
@@ -156,7 +141,7 @@ fn countUniqueAssetDirs(comptime paths: []const []const u8, comptime assets_pref
     return n;
 }
 
-fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []const []const u8, comptime assets_prefix: []const u8) usize {
+fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []const []const u8, comptime assets_prefix: []const u8, comptime mod_name: ?[*:0]const u8) usize {
     comptime {
         var dirs: [paths.len][]const u8 = undefined;
         var n_dirs: usize = 0;
@@ -191,7 +176,7 @@ fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []cons
                 }
             }
             const final_files = files;
-            result[idx] = .{ .prefix = dir, .files = &final_files };
+            result[idx] = .{ .prefix = dir, .files = &final_files, .module_name = mod_name };
             idx += 1;
         }
         return idx;
@@ -250,18 +235,20 @@ fn buildAllPrefixes() []const AddonPrefix {
             if (!hasAddon(name)) continue;
             const addon_name = @field(build_options, name ++ "_addon_name");
             const addon_files = getAddonFiles(name);
+            const name_z: [*:0]const u8 = (name ++ "\x00").ptr;
             if (addon_files.len > 0) {
                 const files = embedFiles(addon_files);
                 result[idx] = .{
                     .prefix = "Interface\\AddOns\\" ++ addon_name ++ "\\",
                     .files = &files,
+                    .module_name = name_z,
                 };
                 idx += 1;
             }
             const asset_files = getAssetFiles(name);
             if (asset_files.len > 0) {
                 const pfx = assetsPrefixFromOpt(name ++ "_asset_files");
-                idx = appendAssetPrefixes(&result, idx, asset_files, pfx);
+                idx = appendAssetPrefixes(&result, idx, asset_files, pfx, name_z);
             }
         }
         const final = result;
@@ -269,16 +256,37 @@ fn buildAllPrefixes() []const AddonPrefix {
     }
 }
 
-const addon_prefixes = buildAllPrefixes();
+const all_prefixes = buildAllPrefixes();
 
 // =============================================================================
-// Embedded file lookup
+// Runtime-pruned prefix table — only includes prefixes for modules that own
+// their mutex. Built once in install() after all modules have claimed mutexes.
+// findEmbeddedFile searches only this table, no per-lookup isActive checks.
+// =============================================================================
+
+var active_prefixes: [all_prefixes.len]*const AddonPrefix = undefined;
+var active_count: usize = 0;
+
+fn pruneInactivePrefixes() void {
+    active_count = 0;
+    for (all_prefixes) |*prefix| {
+        const active = if (prefix.module_name) |mod_name| module_active.isActive(mod_name) else true;
+        if (active) {
+            active_prefixes[active_count] = prefix;
+            active_count += 1;
+        }
+    }
+    log.fmt("addon prefixes: {d}/{d} active\n", .{ active_count, all_prefixes.len });
+}
+
+// =============================================================================
+// Embedded file lookup — searches only active (mutex-owning) prefixes.
 // =============================================================================
 
 pub fn findEmbeddedFile(path: [*:0]const u8) ?*const FileEntry {
     const path_span = std.mem.span(path);
 
-    for (addon_prefixes) |*addon| {
+    for (active_prefixes[0..active_count]) |addon| {
         if (path_span.len <= addon.prefix.len) continue;
 
         // Case-insensitive prefix check
@@ -323,13 +331,24 @@ var setup_addons_hook: hook.Detour(fn (u32) callconv(hook.cc.fastcall) void) = .
 fn setupAddonsDetour(mgr_ptr: u32) callconv(hook.cc.fastcall) void {
     setup_addons_hook.callOriginal(.{mgr_ptr});
 
+    // Register addons only for active (mutex-owning) modules.
+    // Use the pruned prefix table — each addon prefix with files corresponds
+    // to an Interface\AddOns\ entry. We match by module_name to find which
+    // addon_name to register.
     inline for (module_names) |name| {
         if (!@field(build_options, "enable_" ++ name)) continue;
         if (comptime !hasAddon(name)) continue;
         if (comptime getAddonFiles(name).len == 0) continue;
 
-        const active = if (comptime moduleIsActive(name)) |f| f() else true;
-        if (active) {
+        const module_name_z: [*:0]const u8 = comptime (name ++ "\x00").ptr;
+        // Check if this module survived pruning (i.e., owns its mutex)
+        const is_active = for (active_prefixes[0..active_count]) |p| {
+            if (p.module_name) |mn| {
+                if (std.mem.orderZ(u8, mn, module_name_z) == .eq) break true;
+            }
+        } else false;
+
+        if (is_active) {
             const addon_name = comptime @field(build_options, name ++ "_addon_name");
             const name_z: [*:0]const u8 = comptime (addon_name ++ "\x00").ptr;
             log.fmt("registering embedded addon: {s}\n", .{name_z});
@@ -379,6 +398,7 @@ const has_addons = blk: {
 pub fn install() void {
     if (!has_addons) return;
     log = logging.Logger.open("addons", .console);
+    pruneInactivePrefixes();
     _ = setup_addons_hook.attach(0x51C740, &setupAddonsDetour);
 }
 

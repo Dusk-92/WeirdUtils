@@ -20,13 +20,14 @@ const build_opts = struct {
     const dpslog = @import("build_options").enable_dpslog;
     const transform44 = @import("build_options").enable_transform44;
     const addonperf = @import("build_options").enable_addonperf;
+    const file_perf = @import("build_options").enable_file_perf;
 };
 
 // Conditional module imports
 const screenshot = if (build_opts.screenshot) @import("screenshot/screenshot.zig") else struct {};
 const interact = if (build_opts.interact) @import("interact/interact.zig") else struct {};
-const outline = if (build_opts.outline) @import("outline/api.zig") else struct {};
-const markers = if (build_opts.worldmarkers) @import("markers/markers.zig") else struct {};
+const outline = if (build_opts.outline) @import("outline/outline.zig") else struct {};
+const markers = if (build_opts.worldmarkers) @import("worldmarkers/worldmarkers.zig") else struct {};
 const framecrash = if (build_opts.framecrash) @import("framecrash/framecrash.zig") else struct {};
 const logsessions = if (build_opts.logsessions) @import("logsessions/logsessions.zig") else struct {};
 const minimapicons = if (build_opts.minimapicons) @import("minimapicons/minimapicons.zig") else struct {};
@@ -38,19 +39,11 @@ const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthr
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
+const file_perf = if (build_opts.file_perf) @import("file_perf/file_perf.zig") else struct {};
+
+const module_active = @import("module_active.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
-
-const SYSTEMTIME = extern struct {
-    wYear: u16,
-    wMonth: u16,
-    wDayOfWeek: u16,
-    wDay: u16,
-    wHour: u16,
-    wMinute: u16,
-    wSecond: u16,
-    wMilliseconds: u16,
-};
 
 // =============================================================================
 // Lua Protection Bypass
@@ -119,6 +112,9 @@ fn registerLuaFunctions() void {
         registerFunction("UpdateAddOnCPUUsage", @intFromPtr(&addonperf.luaUpdateAddOnCPUUsage));
         registerFunction("ResetAddOnCPUUsage", @intFromPtr(&addonperf.luaResetAddOnCPUUsage));
         registerFunction("GetScriptCPUUsage", @intFromPtr(&addonperf.luaGetScriptCPUUsage));
+    }
+    if (build_opts.file_perf and file_perf.isActive()) {
+        registerFunction("ResetFilePerfCounters", @intFromPtr(&file_perf.luaResetCounters));
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
@@ -211,7 +207,6 @@ const LoadModelFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var model_load_hook: hook.Detour(LoadModelFn) = .{};
 
 // Windows API imports for async handling
-extern "kernel32" fn GetLocalTime(lpSystemTime: *SYSTEMTIME) callconv(WINAPI) void;
 extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
 extern "kernel32" fn SetEvent(hEvent: *anyopaque) callconv(WINAPI) i32;
@@ -249,11 +244,6 @@ fn openFileDetour(
     flags: u32,
     handle_out: *u32,
 ) callconv(hook.cc.stdcall) u32 {
-    var st: SYSTEMTIME = undefined;
-    GetLocalTime(&st);
-    log.to(.file).fmt("{d}/{d} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3} {s}\n", .{
-        st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, std.mem.span(path),
-    });
     if (findEmbeddedFile(path)) |entry| {
         // Allocate and zero-fill 0x60-byte file context
         const ctx = allocateGameBuffer(0x60) orelse {
@@ -283,7 +273,10 @@ fn openFileDetour(
         return 2; // success (non-zero type code)
     }
 
-    return open_file_hook.callOriginal(.{ archive_ptr, path, flags, handle_out });
+    const tsc_start = if (build_opts.file_perf) file_perf.beginOpen() else 0;
+    const ret = open_file_hook.callOriginal(.{ archive_ptr, path, flags, handle_out });
+    if (build_opts.file_perf) file_perf.endOpen(path, tsc_start);
+    return ret;
 }
 
 // --- Hook 2: GetFileSizeFromHandle (0x6487f0) ---
@@ -299,7 +292,17 @@ fn getFileSizeDetour(
         return size;
     }
 
-    return get_file_size_hook.callOriginal(.{ file_ctx, high_size_out });
+    const size = get_file_size_hook.callOriginal(.{ file_ctx, high_size_out });
+
+    // Track file sizes for cache budget estimation
+    if (build_opts.file_perf and file_perf.isActive()) {
+        const path_ptr = hook.readMem(u32, file_ctx + 0x0C);
+        if (path_ptr != 0) {
+            file_perf.recordFileSize(@as([*:0]const u8, @ptrFromInt(path_ptr)), size);
+        }
+    }
+
+    return size;
 }
 
 // --- Hook 3: ReadFileFromMultipleSources (0x648460) ---
@@ -335,7 +338,19 @@ fn readFileDetour(
         return 1; // success
     }
 
-    return read_file_hook.callOriginal(.{ ctx, buffer, size, bytes_read_out, async_ptr, param6 });
+    const ret = read_file_hook.callOriginal(.{ ctx, buffer, size, bytes_read_out, async_ptr, param6 });
+
+    // Track reads for profiling — caller return address tells us who calls ReadFile
+    if (build_opts.file_perf and file_perf.isActive() and ret != 0) {
+        const path_ptr = hook.readMem(u32, ctx + 0x0C);
+        if (path_ptr != 0) {
+            const actual_read = if (bytes_read_out) |out| out.* else size;
+            const caller_addr: u32 = @truncate(@returnAddress());
+            file_perf.recordRead(@as([*:0]const u8, @ptrFromInt(path_ptr)), actual_read, caller_addr);
+        }
+    }
+
+    return ret;
 }
 
 // --- Hook 4: processAsyncFileOperation (0x647350) ---
@@ -647,6 +662,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
+    if (build_opts.file_perf) .{ .name = file_perf.module_name, .install = file_perf.installHooks, .remove = file_perf.removeHooks, .is_active = file_perf.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
@@ -675,6 +691,10 @@ fn install() void {
 
     inline for (modules) |m| {
         if (m.install) |inst| inst();
+        // Register isActive for addons.zig runtime lookup
+        if (m.name) |name| {
+            if (m.is_active) |f| module_active.register(name, f);
+        }
     }
 
     addons.install();

@@ -14,7 +14,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const api = @import("api.zig");
+const api = @import("outline.zig");
 const o = @import("offsets.zig");
 const types = @import("types.zig");
 const tracker = @import("tracker.zig");
