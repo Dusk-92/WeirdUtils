@@ -91,6 +91,8 @@ const ProfState = struct {
     clip_cycles: u64 = 0,
     glyph_calls: u64 = 0, // GetOrCreateCharacterGlyph (0x5ca2d0) 3.65%
     glyph_cycles: u64 = 0,
+    glyph_hits: u64 = 0, // shadow cache hits (custom mode only)
+    glyph_misses: u64 = 0, // shadow cache misses (custom mode only)
     particle_calls: u64 = 0, // RenderParticleSprites (0x7b2a50) 1.73%
     particle_cycles: u64 = 0,
     collision_calls: u64 = 0, // processLinkedListCollision (0x6abc40) 1.57%
@@ -154,6 +156,24 @@ const ProfState = struct {
     textline_calls: u64 = 0, // renderTextLine (0x5ce0c0)
     textline_cycles: u64 = 0,
 };
+
+// =============================================================================
+// Glyph shadow cache — direct-mapped, bypasses game's 4-bucket hash table.
+// Key: (font_ptr, char_code, param2). O(1) lookup, no pointer chasing.
+// =============================================================================
+
+const GLYPH_CACHE_SHIFT = 12;
+const GLYPH_CACHE_SIZE = 1 << GLYPH_CACHE_SHIFT; // 4096 entries
+const GLYPH_CACHE_MASK = GLYPH_CACHE_SIZE - 1;
+
+const GlyphCacheEntry = struct {
+    font_ptr: u32 = 0,
+    char_code: u32 = 0,
+    param2: u32 = 0,
+    width_bits: u32 = 0, // f32 stored as u32 bits
+};
+
+var glyph_cache: [GLYPH_CACHE_SIZE]GlyphCacheEntry = [_]GlyphCacheEntry{.{}} ** GLYPH_CACHE_SIZE;
 
 inline fn rdtsc() u64 {
     var lo: u32 = undefined;
@@ -749,7 +769,48 @@ fn clipDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     return ret;
 }
 fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
     const s = rdtsc();
+
+    if (ab_use_custom) {
+        // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
+        const hash = std.hash.Murmur2_32.hashUint32WithSeed(c, a ^ d) & GLYPH_CACHE_MASK;
+        const entry = &glyph_cache[hash];
+
+        if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
+            // Cache hit — load cached width into ST(0) for caller
+            asm volatile ("flds (%[p])"
+                :: [p] "r" (&entry.width_bits)
+            );
+            prof.glyph_hits +|= 1;
+            prof.glyph_cycles +|= rdtsc() - s;
+            prof.glyph_calls +|= 1;
+            return null; // EAX unused by callers, they read ST(0)
+        }
+
+        // Cache miss — call original (sets ST(0)), then capture the result
+        const ret = glyph_hook.callOriginal(.{ a, b, c, d });
+
+        // Read ST(0) without popping — original's float return is still on FPU stack
+        var width_bits: u32 = undefined;
+        asm volatile ("fsts (%[p])"
+            :: [p] "r" (&width_bits)
+        );
+
+        entry.* = .{
+            .font_ptr = a,
+            .char_code = c,
+            .param2 = d,
+            .width_bits = width_bits,
+        };
+
+        prof.glyph_misses +|= 1;
+        prof.glyph_cycles +|= rdtsc() - s;
+        prof.glyph_calls +|= 1;
+        return ret;
+    }
+
     const ret = glyph_hook.callOriginal(.{ a, b, c, d });
     prof.glyph_cycles +|= rdtsc() - s;
     prof.glyph_calls +|= 1;
@@ -1188,6 +1249,17 @@ fn dumpStats() void {
                 h.calls / f,
             });
         }
+    }
+
+    // Glyph cache stats (custom mode only)
+    const glyph_total = prof.glyph_hits +| prof.glyph_misses;
+    if (glyph_total > 0) {
+        const hit_pct = pct(prof.glyph_hits, glyph_total);
+        log.fmt("  glyph_cache: {d}.{d}% hit ({d}hit/{d}miss)\n", .{
+            hit_pct / 10, hit_pct % 10,
+            prof.glyph_hits,
+            prof.glyph_misses,
+        });
     }
 
     // Flip A/B mode for next period
