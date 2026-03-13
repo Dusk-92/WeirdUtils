@@ -200,25 +200,25 @@ fn appendAssetPrefixes(result: anytype, start_idx: usize, comptime paths: []cons
 
 /// Check if a module has an addon (addon_name build option exists and is non-empty).
 fn hasAddon(comptime name: []const u8) bool {
-    if (!@hasField(build_options, name ++ "_addon_name")) return false;
+    if (!@hasDecl(build_options, name ++ "_addon_name")) return false;
     return @field(build_options, name ++ "_addon_name").len > 0;
 }
 
 /// Get addon file paths for a module (empty if no addon or no files).
 fn getAddonFiles(comptime name: []const u8) []const []const u8 {
-    if (!@hasField(build_options, name ++ "_addon_files")) return &.{};
+    if (!@hasDecl(build_options, name ++ "_addon_files")) return &.{};
     return @field(build_options, name ++ "_addon_files");
 }
 
 /// Get asset file paths for a module (empty if no assets).
 fn getAssetFiles(comptime name: []const u8) []const []const u8 {
-    if (!@hasField(build_options, name ++ "_asset_files")) return &.{};
+    if (!@hasDecl(build_options, name ++ "_asset_files")) return &.{};
     return @field(build_options, name ++ "_asset_files");
 }
 
 /// Get hidden flag for a module.
 fn isHidden(comptime name: []const u8) bool {
-    if (!@hasField(build_options, name ++ "_addon_hidden")) return false;
+    if (!@hasDecl(build_options, name ++ "_addon_hidden")) return false;
     return @field(build_options, name ++ "_addon_hidden");
 }
 
