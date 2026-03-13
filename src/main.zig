@@ -19,6 +19,7 @@ const build_opts = struct {
     const clickthrough = @import("build_options").enable_clickthrough;
     const dpslog = @import("build_options").enable_dpslog;
     const transform44 = @import("build_options").enable_transform44;
+    const addonperf = @import("build_options").enable_addonperf;
 };
 
 // Conditional module imports
@@ -36,8 +37,20 @@ const bigcursor = if (build_opts.bigcursor) @import("bigcursor/bigcursor.zig") e
 const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthrough.zig") else struct {};
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
+const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
 
 const WINAPI = std.builtin.CallingConvention.winapi;
+
+const SYSTEMTIME = extern struct {
+    wYear: u16,
+    wMonth: u16,
+    wDayOfWeek: u16,
+    wDay: u16,
+    wHour: u16,
+    wMinute: u16,
+    wSecond: u16,
+    wMilliseconds: u16,
+};
 
 // =============================================================================
 // Lua Protection Bypass
@@ -98,6 +111,14 @@ fn registerLuaFunctions() void {
     }
     if (build_opts.transform44) {
         registerFunction("SetWeatherOverride", @intFromPtr(&transform44.luaSetWeatherOverride));
+    }
+    if (build_opts.addonperf) {
+        registerFunction("GetAddOnMemoryUsage", @intFromPtr(&addonperf.luaGetAddOnMemoryUsage));
+        registerFunction("UpdateAddOnMemoryUsage", @intFromPtr(&addonperf.luaUpdateAddOnMemoryUsage));
+        registerFunction("GetAddOnCPUUsage", @intFromPtr(&addonperf.luaGetAddOnCPUUsage));
+        registerFunction("UpdateAddOnCPUUsage", @intFromPtr(&addonperf.luaUpdateAddOnCPUUsage));
+        registerFunction("ResetAddOnCPUUsage", @intFromPtr(&addonperf.luaResetAddOnCPUUsage));
+        registerFunction("GetScriptCPUUsage", @intFromPtr(&addonperf.luaGetScriptCPUUsage));
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
@@ -190,6 +211,7 @@ const LoadModelFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var model_load_hook: hook.Detour(LoadModelFn) = .{};
 
 // Windows API imports for async handling
+extern "kernel32" fn GetLocalTime(lpSystemTime: *SYSTEMTIME) callconv(WINAPI) void;
 extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
 extern "kernel32" fn SetEvent(hEvent: *anyopaque) callconv(WINAPI) i32;
@@ -227,6 +249,11 @@ fn openFileDetour(
     flags: u32,
     handle_out: *u32,
 ) callconv(hook.cc.stdcall) u32 {
+    var st: SYSTEMTIME = undefined;
+    GetLocalTime(&st);
+    log.to(.file).fmt("{d}/{d} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3} {s}\n", .{
+        st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, std.mem.span(path),
+    });
     if (findEmbeddedFile(path)) |entry| {
         // Allocate and zero-fill 0x60-byte file context
         const ctx = allocateGameBuffer(0x60) orelse {
@@ -619,6 +646,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.clickthrough) .{ .name = clickthrough.module_name, .install = clickthrough.installHooks, .remove = clickthrough.removeHooks, .is_active = clickthrough.isActive } else .{},
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
+    if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},

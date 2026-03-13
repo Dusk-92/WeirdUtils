@@ -29,6 +29,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
+    .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
 };
 
 pub fn build(b: *std.Build) void {
