@@ -27,7 +27,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
-    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = true },
+    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
 };
 
@@ -36,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86,
         .os_tag = .windows,
         .abi = .msvc,
+        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
     const optimize = b.standardOptimizeOption(.{});
 
@@ -48,6 +49,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const zhook_mod = zhook_dep.module("zhook");
+
+    // Hot math — separate compilation unit, always ReleaseFast
+    const clip_sse_obj = b.addObject(.{
+        .name = "clip_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/clip_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
 
     const lib = b.addLibrary(.{
         .name = "weirdutils",
@@ -62,6 +73,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    lib.root_module.addObject(clip_sse_obj);
     b.installArtifact(lib);
 
     // Convenience step to build all single-module variants

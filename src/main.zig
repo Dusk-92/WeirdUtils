@@ -96,6 +96,9 @@ fn registerLuaFunctions() void {
         };
         lua.openlib(lua.getContext(), "WeirdUtils", &lib, 0);
     }
+    if (build_opts.transform44) {
+        registerFunction("SetWeatherOverride", @intFromPtr(&transform44.luaSetWeatherOverride));
+    }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
         registerFunction("WorldMarker", @intFromPtr(&markers.luaWorldMarker));
@@ -545,6 +548,9 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     }
     if (build_opts.bigcursor) {
         bigcursor.lateInit();
+    }
+    if (build_opts.transform44) {
+        transform44.lateInit();
     }
 }
 

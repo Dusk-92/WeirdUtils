@@ -252,3 +252,148 @@ Used for billboarding. Transposes the 3x3 rotation, scales by 1/scale², applies
 - Phase 1: Profiling hook on transformMatrix4x4 (DONE — in transform44.zig)
 - Phase 2: Analyze profiling data, identify hottest path
 - Phase 3: Implement targeted SSE replacements or LOD culling
+
+---
+
+## SetWeatherType (0x67baf0) — Weather Control
+
+- **Convention**: `__thiscall(ECX=weatherObj, stack: type(int), intensity(float), smoothFade(bool))`
+- **RET 0x0C** (3 stack params) — assembly-verified
+- **Global weather object**: `*(u32*)0x00C6326C` — all 5 callers load ECX from this address
+- **Valid types**: 0=clear, 1=rain, 2=snow, 3=sandstorm (clamped: rejects <0 or >=4)
+- **Intensity**: float 0.0-1.0, stored at weatherObj+0x?? (controls particle density)
+- **smoothFade**: bool at stack+0x10, stored at weatherObj+0x25
+  - `1` = gradual fade transition (slow)
+  - `0` = abrupt/immediate change
+  - Packet handler uses `SETZ AL` — sends 1 when a condition is zero (smooth by default from server)
+  - Debug commands (SetModeA/B/C/D) all pass `1` (smooth)
+  - Our Lua func uses `0` (abrupt) for instant testing
+- **Lua API**: `SetWeatherOverride(type, intensity)` — registered when transform44 is enabled
+- **blit_hub (0x5a4f60)**: also profiled in this module — 83-byte pixel transfer dispatcher, `__fastcall`, RET 0x18
+
+---
+
+## GxDevice Wrapper Functions — Calling Conventions (assembly-verified)
+
+All route through the GxDevice global at `0xC0ED38`. Used for RTQ batching optimization.
+
+### BeginRender (0x589f40, 11 bytes)
+```asm
+MOV ECX, [0xC0ED38]    ; load GxDevice
+JMP 0x593950            ; tail-call to vtable method
+```
+Thiscall thunk, no caller params. Call as `fn() callconv(.c) void`.
+
+### EndRender (0x589f50, 11 bytes)
+```asm
+MOV ECX, [0xC0ED38]
+JMP 0x593a50
+```
+Same pattern as BeginRender.
+
+### SetRenderState (0x589e60, 27 bytes)
+```asm
+CMP ECX, 0x46          ; bounds check: stateId < 0x46
+JL valid
+PUSH 0x57              ; error code
+CALL 0x64e850          ; error handler
+RET
+valid:
+PUSH EDX               ; value
+PUSH ECX               ; stateId
+MOV ECX, [0xC0ED38]    ; GxDevice
+CALL 0x593710
+RET
+```
+**Convention**: `__fastcall(ECX=stateId, EDX=value)`, plain `RET`.
+
+### SetTexture (0x589e80, 14 bytes)
+```asm
+PUSH EDX               ; texturePtr
+PUSH ECX               ; stage
+MOV ECX, [0xC0ED38]
+CALL 0x593840
+RET
+```
+**Convention**: `__fastcall(ECX=stage, EDX=texturePtr)`, plain `RET`.
+
+### InitializeRenderingPipeline (0x58a2a0, 54 bytes)
+```asm
+PUSH EBP
+MOV EBP, ESP
+; Re-pushes 9 of 11 stack params (skips EBP+0x1C and EBP+0x20)
+MOV EAX, [EBP+0x30]   ; push params in reverse
+PUSH EAX               ; ... (9 pushes total)
+...
+MOV EAX, [EBP+0x08]
+PUSH EAX
+MOV [0xC0ED2C], ECX    ; store vertexCount to global
+CALL 0x58a3d0          ; inner function (9 stack params)
+POP EBP
+RET 0x2c               ; clean 44 bytes = 11 stack params
+```
+**Convention**: `__fastcall(ECX=vertexCount, EDX=verticesPtr, 11 stack params)`, `RET 0x2c`.
+
+**Critical**: Stores ECX (vertexCount) to global `[0xC0ED2C]` — RenderVertexBuffer reads this and bails if zero.
+
+**Full param mapping** (from decompiled RTQ call site):
+| # | Location | Original value | Meaning |
+|---|----------|----------------|---------|
+| 1 | ECX | 4 | vertex count |
+| 2 | EDX | vertices | xyz data ptr (stride 0x0C) |
+| 3 | [EBP+08] | 0x0C | vertex stride |
+| 4 | [EBP+0C] | &g_defaultTexCoord | constant at 0xCF4CF4 |
+| 5 | [EBP+10] | 0 | |
+| 6 | [EBP+14] | additionalData | secondary vertex data |
+| 7 | [EBP+18] | dataStride | secondary stride |
+| 8 | [EBP+1C] | 0 | (skipped in forwarding) |
+| 9 | [EBP+20] | 0 | (skipped in forwarding) |
+| 10 | [EBP+24] | textureCoords | UV data ptr |
+| 11 | [EBP+28] | 8 | UV stride |
+| 12 | [EBP+2C] | 0 | |
+| 13 | [EBP+30] | 0 | |
+
+### RenderVertexBuffer (0x58a2e0, 82 bytes)
+```asm
+PUSH EBP
+MOV EBP, ESP
+SUB ESP, 0x10
+MOV EAX, [0xC0ED2C]   ; read vertex count global (from InitRenderPipeline)
+TEST EAX, EAX
+PUSH ESI
+PUSH EDI
+MOV ESI, EDX           ; save vertCount
+MOV EDI, ECX           ; save primType
+JZ skip                ; bail if global == 0
+MOV EDX, [EBP+0x08]   ; indicesPtr from stack
+MOV ECX, ESI           ; ECX = vertCount
+CALL 0x58a750          ; submit geometry
+; ... builds local struct, calls 0x58a830 ...
+skip:
+POP EDI
+POP ESI
+MOV ESP, EBP
+POP EBP
+RET 0x4                ; clean 4 bytes = 1 stack param
+```
+**Convention**: `__fastcall(ECX=primType, EDX=vertCount, stack: indicesPtr)`, `RET 0x4`.
+
+**Note**: vertCount stored as `u16` internally (MOV WORD PTR), so max 65535 vertices per call. For 256 batched quads = 1024 verts, well within limit.
+
+### EmptyRenderFunction (0x58a340, 1 byte)
+Literal `RET`. No-op.
+
+### Key Globals
+| Address | Name | Notes |
+|---------|------|-------|
+| 0xC0ED38 | GxDevice ptr | All wrappers load ECX from here |
+| 0xC0ED2C | Vertex count | Set by InitRenderPipeline, read by RenderVertexBuffer |
+| 0xCF4CF4 | g_defaultTexCoord | Constant UV default |
+| 0x878CDC | g_quadVertexIndices | {0,1,2,0,2,3} for single quad |
+
+### RTQ Batching Strategy
+- Sort items by (texture, renderState, secondaryTexture)
+- Groups with no additionalData: concatenate xyz/uv into contiguous buffers, single InitRenderPipeline + RenderVertexBuffer call
+- Groups with additionalData: per-item draw calls through wrappers
+- Reduces draw calls from N to num_texture_groups (typically 5-20x reduction)
+- Sort-only (Approach A) provided 0% improvement — confirms bottleneck is draw call count, not texture switching
