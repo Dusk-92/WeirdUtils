@@ -15,7 +15,6 @@ const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
-pub const file_cache = @import("file_cache.zig");
 const timer_fix = @import("timer_fix.zig");
 extern fn clipPolygonToSinglePlane(u32, u32, u32) void;
 extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
@@ -38,7 +37,7 @@ pub fn isActive() bool {
 // Profiling state — unified dump every DUMP_FRAMES render passes
 // =============================================================================
 
-const DUMP_FRAMES: u64 = 1800; // ~30s at 60fps
+const DUMP_FRAMES: u64 = 900; // ~15s at 60fps
 
 var prof = ProfState{};
 var t44_depth: u64 = 0; // recursion depth — survives resets
@@ -237,9 +236,11 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
-    // bone_sse disabled — investigating crash in post-bone-loop sections
-    _ = transformMatrix4x4_SSE;
-    transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
+    if (ab_use_custom) {
+        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+    } else {
+        transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
+    }
 
     t44_depth -|= 1;
     const elapsed = rdtsc() - start;
@@ -1306,18 +1307,7 @@ fn dumpStats() void {
         });
     }
 
-    // File cache stats
-    const fc = file_cache.getCacheStats();
-    if (fc.total > 0) {
-        const fc_hit_pct = pct(fc.hits + fc.neg_hits, fc.total);
-        log.fmt("  file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries\n", .{
-            fc_hit_pct / 10, fc_hit_pct % 10,
-            fc.hits, fc.neg_hits, fc.misses, fc.entries,
-        });
-    }
-
-    // Reset per-period cache stats, flip A/B mode
-    file_cache.resetStats();
+    // Flip A/B mode
     ab_use_custom = !ab_use_custom;
     prof = ProfState{};
 }

@@ -20,6 +20,7 @@ const build_opts = struct {
     const dpslog = @import("build_options").enable_dpslog;
     const transform44 = @import("build_options").enable_transform44;
     const addonperf = @import("build_options").enable_addonperf;
+    const filecache = @import("build_options").enable_filecache;
 };
 
 // Conditional module imports
@@ -38,7 +39,7 @@ const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthr
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
-const file_cache = if (build_opts.transform44) @import("transform44/file_cache.zig") else struct {};
+const file_cache = if (build_opts.filecache) @import("filecache/filecache.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -534,91 +535,92 @@ fn fileFindDetour(
     out_block_entry: u32, // ptr to ptr: block table entry data
     out_disk_path: u32, // ptr to buf: disk path output
 ) callconv(hook.cc.fastcall) u32 {
-    if (!build_opts.transform44 or filename_ptr == 0)
+    if (!build_opts.filecache or filename_ptr == 0)
         return file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
 
-    // --- Time the original (baseline) path first ---
-    const baseline_start = transform44.rdtscPub();
-    const orig_ret = file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
-    const baseline_elapsed = transform44.rdtscPub() - baseline_start;
-
-    // --- Now time the cached path (overwrites output ptrs with same or cached values) ---
-    const cache_start = transform44.rdtscPub();
-
+    const tsc_start = file_cache.rdtsc();
     const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
     const h = file_cache.hashPath(path);
 
-    if (file_cache.archiveCacheLookup(h, path)) |cached| {
+    cache_check: {
+        const cached = file_cache.archiveCacheLookup(h, path) orelse break :cache_check;
+
         if (cached.is_negative and archive_or_group == 0) {
             file_cache.recordNegativeHit();
-            const cache_elapsed = transform44.rdtscPub() - cache_start;
-            transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
-            return orig_ret;
+            if (out_outer_archive != 0) @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
+            if (out_inner_archive != 0) @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
+            if (out_block_entry != 0) @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = 0;
+            hook.call(fn (u32) callconv(hook.cc.stdcall) void, 0x64e850, .{2});
+            file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
+            return 0;
         }
 
         if (!cached.is_negative) {
             // Path 1: search-all
             if (archive_or_group == 0 and out_outer_archive != 0) {
-                @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = cached.outer_archive;
-                if (cached.outer_archive != 0) {
-                    @as(*align(1) i32, @ptrFromInt(cached.outer_archive + 0x38)).* += 1;
-                }
-                if (out_inner_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = cached.inner_archive;
-                    if (cached.inner_archive != 0) {
-                        @as(*align(1) i32, @ptrFromInt(cached.inner_archive + 0x38)).* += 1;
-                    }
+                const valid_outer = if (cached.outer_archive != 0)
+                    hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 })
+                else
+                    0;
+                if (valid_outer == 0 and cached.outer_archive != 0) break :cache_check;
+                @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid_outer;
+                if (out_inner_archive != 0 and cached.inner_archive != 0) {
+                    const valid_inner = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid_inner;
+                } else if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
                 }
                 if (out_block_entry != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = cached.block_entry;
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = file_cache.computeBlockEntry(cached.inner_archive, cached.block_index);
                 }
                 file_cache.recordCacheHit();
-                const cache_elapsed = transform44.rdtscPub() - cache_start;
-                transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
-                return orig_ret;
+                file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
+                return 1;
             }
 
             // Path 2: specific archive
             if (archive_or_group != 0 and (archive_or_group == cached.outer_archive or archive_or_group == cached.inner_archive)) {
-                if (out_outer_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = cached.outer_archive;
-                    if (cached.outer_archive != 0) {
-                        @as(*align(1) i32, @ptrFromInt(cached.outer_archive + 0x38)).* += 1;
-                    }
+                if (out_outer_archive != 0 and cached.outer_archive != 0) {
+                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 });
+                    if (valid == 0) break :cache_check;
+                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid;
+                } else if (out_outer_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
                 }
-                if (out_inner_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = cached.inner_archive;
-                    if (cached.inner_archive != 0) {
-                        @as(*align(1) i32, @ptrFromInt(cached.inner_archive + 0x38)).* += 1;
-                    }
+                if (out_inner_archive != 0 and cached.inner_archive != 0) {
+                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
+                    if (valid == 0) break :cache_check;
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid;
+                } else if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
                 }
                 if (out_block_entry != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = cached.block_entry;
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = file_cache.computeBlockEntry(cached.inner_archive, cached.block_index);
                 }
                 file_cache.recordCacheHit();
-                const cache_elapsed = transform44.rdtscPub() - cache_start;
-                transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
-                return orig_ret;
+                file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
+                return 1;
             }
         }
     }
 
-    // Cache miss — populate cache from the original's results
+    // Cache miss — call original and populate cache
     file_cache.recordCacheMiss();
+    const ret = file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
+    file_cache.addMissCycles(file_cache.rdtsc() - tsc_start);
+
     if (archive_or_group != 0 and out_inner_archive != 0 and out_block_entry != 0) {
-        if (orig_ret == 1) {
+        if (ret == 1) {
             const inner = hook.readMem(u32, out_inner_archive);
             const block = hook.readMem(u32, out_block_entry);
             file_cache.archiveCacheInsert(h, path, archive_or_group, inner, block, false);
         }
     }
-    if (archive_or_group == 0 and orig_ret == 0) {
+    if (archive_or_group == 0 and ret == 0) {
         file_cache.archiveCacheInsert(h, path, 0, 0, 0, true);
     }
 
-    const cache_elapsed = transform44.rdtscPub() - cache_start;
-    transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
-    return orig_ret;
+    return ret;
 }
 
 // --- Install/remove in-memory file hooks ---
@@ -630,7 +632,7 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
-    if (build_opts.transform44) {
+    if (build_opts.filecache) {
         _ = file_find_hook.attach(0x6549a0, &fileFindDetour);
         log.print("archive cache hook installed\n");
     }
@@ -751,6 +753,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
+    if (build_opts.filecache) .{ .name = file_cache.module_name, .install = file_cache.installHooks, .remove = file_cache.removeHooks, .is_active = file_cache.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},

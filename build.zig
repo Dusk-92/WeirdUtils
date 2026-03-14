@@ -30,6 +30,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
+    .{ .name = "filecache", .desc = "Enable MPQ archive file cache", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
@@ -68,6 +69,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    const math_sse_obj = b.addObject(.{
+        .name = "math_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/math_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
 
     const lib = b.addLibrary(.{
         .name = "weirdutils",
@@ -84,6 +93,7 @@ pub fn build(b: *std.Build) void {
     });
     lib.root_module.addObject(clip_sse_obj);
     lib.root_module.addObject(bone_sse_obj);
+    lib.root_module.addObject(math_sse_obj);
     b.installArtifact(lib);
 
     // Convenience step to build all single-module variants
