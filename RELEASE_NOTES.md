@@ -58,8 +58,25 @@ Track notable changes here between releases. Clear this file when cutting a new 
   for ClipPolygonToSinglePlane (4x), BuildTrianglePlanes (10x), rotateMatrixByAxisAngle
   (4.3x), RayTriangleIntersection (1.3x), multiplyMatrix4x4 (4.3x).
 
+- **VanillaFixes Math Polyfill** (WIP) - incorporating x87 FPU replacements from UnitXP
+  and libSiliconPatch into our SSE pipeline. Replaces ~20 game math functions (matrix
+  multiply, vector ops, collision geometry, animation interpolation) with SSE or modern
+  scalar equivalents. Compiled ReleaseFast as a separate compilation unit (math_sse.zig).
+  Not yet wired into hooks -- will be its own module with independent mutex.
+
 - **Glyph Shadow Cache** - direct-mapped O(1) bypass for the game's 4-bucket hash table
   in GetOrCreateCharacterGlyph. Reduces glyph lookup from ~3.65% frame time.
+
+- **MPQ File Cache (filecache)** - 2-way set-associative cache for File_FindInArchive
+  (0x6549a0). Skips the MPQ chain walk and per-archive hash table probe on repeat file
+  opens. Cache hits cost ~1000 cycles vs ~30000 cycles for full search. 60-90% hit rate
+  during gameplay, saving 6-160ms per 15s reporting period depending on scene load.
+  Validated via game's own FindAndIncrementResourceReference to handle archive lifecycle.
+
+- **Timer Fix (VanillaFixes port)** - TSC calibration, OS timer resolution (0.5ms via
+  NtSetTimerResolution), and Windows 11 power throttling disable. Ported from
+  hannesmann/vanillafixes. Primarily benefits native Windows; no measurable impact on
+  Wine/Linux but applied unconditionally.
 
 - **MPQ File Cache** - hooks File_FindInArchive (0x6549a0) to cache archive lookup
   results. First open does full MPQ chain walk (~60K cycles), subsequent opens hit

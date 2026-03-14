@@ -188,6 +188,32 @@ Lua API for addon developers:
 
 ---
 
+### MPQ File Cache
+
+Caches the results of MPQ archive file lookups so repeat file opens skip the expensive archive chain walk and hash table probe. The game re-opens the same model and texture files hundreds of times per second during gameplay -- each lookup normally searches through every loaded MPQ archive. The cache remembers which archive contains each file and returns the answer directly.
+
+Cache hits cost roughly 1/30th of a full search. During heavy gameplay (cities, raids, zone transitions), this saves 50-160ms every 15 seconds. In quiet scenes with few new models loading, there is little to save because the game does fewer lookups.
+
+The cache validates that archives are still alive before returning cached results, so if the game closes or reloads an archive, the cache falls through to the original search.
+
+No configuration needed. Enabled by default when using `weirdutils.dll`.
+
+**DLL:** `filecache.dll`
+
+---
+
+### Timer Calibration
+
+Improves the game's internal timer precision by recalibrating the TSC (Time Stamp Counter) frequency using the OS performance counter as a reference. The vanilla client's built-in calibration is inaccurate, which can cause animation stutter and timing jitter on some systems.
+
+Also requests higher OS timer resolution (0.5ms instead of the default 15.6ms) and disables Windows 11 power throttling for the game process.
+
+Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes). Primarily benefits native Windows. On Wine/Linux the game typically uses GetTickCount instead of TSC, so this module enables TSC mode with a proper calibration.
+
+No configuration needed. Included in `weirdutils.dll`.
+
+---
+
 ## Why No Source Code?
 
 This project is distributed as pre-built DLLs only. The source code is not and will not be made publicly available.
