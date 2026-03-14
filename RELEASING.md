@@ -200,6 +200,7 @@ print(r[0]['id']) if r else print('not found')
 
 ## Checklist
 
+- [ ] Check `RELEASE_NOTES.md` for unreleased changes — move into release notes
 - [ ] Built with `ReleaseSmall` (both default and `all-variants`)
 - [ ] Remote README updated — no unreleased module sections or names
 - [ ] `weirdutils_api.h` trimmed to released DLL names only and uploaded

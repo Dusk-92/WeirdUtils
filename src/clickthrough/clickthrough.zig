@@ -49,12 +49,14 @@ fn isInteractableGO(guid_lo: u32, guid_hi: u32) bool {
     return hook.call(fn (u32) callconv(hook.cc.fastcall) u8, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}) != 0;
 }
 
-/// Check if the GUID refers to an NPC with interaction flags (vendor, quest giver, etc.)
+/// Check if the GUID refers to an interactable unit: NPC with interaction flags,
+/// or a lootable corpse (dead unit with UNIT_DYNFLAG_LOOTABLE).
 fn isInteractableNPC(guid_lo: u32, guid_hi: u32) bool {
     const obj = wow.getObjectByGUIDSplit(guid_lo, guid_hi);
     if (obj == 0) return false;
     if (wow.getObjectTypeRaw(obj) != @intFromEnum(wow.ObjectType.unit)) return false;
-    return wow.getNpcFlags(obj) != 0;
+    if (wow.getNpcFlags(obj) != 0) return true;
+    return wow.isLootable(obj);
 }
 
 /// Check if the second raycast result is something we should click through to.
@@ -107,7 +109,7 @@ fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u
     const type_mask = hook.readMem(u32, desc_ptr + OBJ_TYPE_MASK_OFFSET);
 
     // Determine re-raycast flags and whether NPCs are valid targets:
-    //   Player hit → remove player flag, allow NPCs + GOs
+    //   Player hit → remove player flag, allow NPCs + GOs (including lootable corpses)
     //   Unit hit   → GO-only flags, only allow GOs
     const recast_flags: u32 = switch (type_mask) {
         TYPE_PLAYER => flags & ~@as(u32, 0x10), // everything except players
