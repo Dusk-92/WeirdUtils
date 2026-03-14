@@ -1,4 +1,5 @@
-//! Debug logging - compiles out entirely in non-Debug builds.
+//! Logging - available in Debug, ReleaseSafe, and ReleaseFast builds.
+//! Compiles out entirely in ReleaseSmall.
 //!
 //! Per-module Logger with optional file output and per-call destination routing.
 //! Log files are created lazily on first write -- modules that never log to
@@ -28,7 +29,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const debug = builtin.mode == .Debug;
+const debug = builtin.mode != .ReleaseSmall;
 
 const WINAPI = std.builtin.CallingConvention.winapi;
 

@@ -20,7 +20,6 @@ const build_opts = struct {
     const dpslog = @import("build_options").enable_dpslog;
     const transform44 = @import("build_options").enable_transform44;
     const addonperf = @import("build_options").enable_addonperf;
-    const file_perf = @import("build_options").enable_file_perf;
 };
 
 // Conditional module imports
@@ -39,7 +38,7 @@ const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthr
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
-const file_perf = if (build_opts.file_perf) @import("file_perf/file_perf.zig") else struct {};
+const file_cache = if (build_opts.transform44) @import("transform44/file_cache.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -112,9 +111,6 @@ fn registerLuaFunctions() void {
         registerFunction("UpdateAddOnCPUUsage", @intFromPtr(&addonperf.luaUpdateAddOnCPUUsage));
         registerFunction("ResetAddOnCPUUsage", @intFromPtr(&addonperf.luaResetAddOnCPUUsage));
         registerFunction("GetScriptCPUUsage", @intFromPtr(&addonperf.luaGetScriptCPUUsage));
-    }
-    if (build_opts.file_perf and file_perf.isActive()) {
-        registerFunction("ResetFilePerfCounters", @intFromPtr(&file_perf.luaResetCounters));
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
@@ -206,6 +202,13 @@ var process_async_hook: hook.Detour(ProcessAsyncFn) = .{};
 const LoadModelFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var model_load_hook: hook.Detour(LoadModelFn) = .{};
 
+// File_FindInArchive (0x6549a0) — Storm internal MPQ file lookup
+// __fastcall(ECX=archive_or_group, EDX=filename, stack: flags, out_inner_archive,
+//            out_outer_archive, out_block_entry, out_disk_path) → int
+// Returns: 0=not found, 1=found in MPQ, 2=found on disk, 3=deleted
+const FileFindFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
+var file_find_hook: hook.Detour(FileFindFn) = .{};
+
 // Windows API imports for async handling
 extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
 extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
@@ -273,10 +276,7 @@ fn openFileDetour(
         return 2; // success (non-zero type code)
     }
 
-    const tsc_start = if (build_opts.file_perf) file_perf.beginOpen() else 0;
-    const ret = open_file_hook.callOriginal(.{ archive_ptr, path, flags, handle_out });
-    if (build_opts.file_perf) file_perf.endOpen(path, tsc_start);
-    return ret;
+    return open_file_hook.callOriginal(.{ archive_ptr, path, flags, handle_out });
 }
 
 // --- Hook 2: GetFileSizeFromHandle (0x6487f0) ---
@@ -292,17 +292,7 @@ fn getFileSizeDetour(
         return size;
     }
 
-    const size = get_file_size_hook.callOriginal(.{ file_ctx, high_size_out });
-
-    // Track file sizes for cache budget estimation
-    if (build_opts.file_perf and file_perf.isActive()) {
-        const path_ptr = hook.readMem(u32, file_ctx + 0x0C);
-        if (path_ptr != 0) {
-            file_perf.recordFileSize(@as([*:0]const u8, @ptrFromInt(path_ptr)), size);
-        }
-    }
-
-    return size;
+    return get_file_size_hook.callOriginal(.{ file_ctx, high_size_out });
 }
 
 // --- Hook 3: ReadFileFromMultipleSources (0x648460) ---
@@ -338,19 +328,7 @@ fn readFileDetour(
         return 1; // success
     }
 
-    const ret = read_file_hook.callOriginal(.{ ctx, buffer, size, bytes_read_out, async_ptr, param6 });
-
-    // Track reads for profiling — caller return address tells us who calls ReadFile
-    if (build_opts.file_perf and file_perf.isActive() and ret != 0) {
-        const path_ptr = hook.readMem(u32, ctx + 0x0C);
-        if (path_ptr != 0) {
-            const actual_read = if (bytes_read_out) |out| out.* else size;
-            const caller_addr: u32 = @truncate(@returnAddress());
-            file_perf.recordRead(@as([*:0]const u8, @ptrFromInt(path_ptr)), actual_read, caller_addr);
-        }
-    }
-
-    return ret;
+    return read_file_hook.callOriginal(.{ ctx, buffer, size, bytes_read_out, async_ptr, param6 });
 }
 
 // --- Hook 4: processAsyncFileOperation (0x647350) ---
@@ -537,6 +515,112 @@ fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u3
     return cfe_hook.callOriginal(.{ filename_ptr, flags, output_buffer_ptr });
 }
 
+// --- Hook 7: File_FindInArchive (0x6549a0) — archive cache short-circuit ---
+// Intercepts the core MPQ file lookup to skip both chain walk and hash lookup
+// on repeat opens. Caches {outer_archive, inner_archive, block_entry} per file.
+//
+// Called from two paths during each open:
+// 1. FindFileInArchive wrapper (param_1=0): walks all archives, uses param_5 for output
+// 2. File_FindInStorage (param_1=specific): single archive, uses param_4 + param_6
+//
+// We cache on path 2 (has all data), serve both paths from cache on subsequent opens.
+
+fn fileFindDetour(
+    archive_or_group: u32, // ECX: 0 = search all, else specific archive/group
+    filename_ptr: u32, // EDX: filename string
+    flags: u32,
+    out_inner_archive: u32, // ptr to ptr: inner archive (File_FindInStorage uses this)
+    out_outer_archive: u32, // ptr to ptr: outer archive (FindFileInArchive wrapper uses this)
+    out_block_entry: u32, // ptr to ptr: block table entry data
+    out_disk_path: u32, // ptr to buf: disk path output
+) callconv(hook.cc.fastcall) u32 {
+    if (!build_opts.transform44 or filename_ptr == 0)
+        return file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
+
+    // --- Time the original (baseline) path first ---
+    const baseline_start = transform44.rdtscPub();
+    const orig_ret = file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
+    const baseline_elapsed = transform44.rdtscPub() - baseline_start;
+
+    // --- Now time the cached path (overwrites output ptrs with same or cached values) ---
+    const cache_start = transform44.rdtscPub();
+
+    const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
+    const h = file_cache.hashPath(path);
+
+    if (file_cache.archiveCacheLookup(h, path)) |cached| {
+        if (cached.is_negative and archive_or_group == 0) {
+            file_cache.recordNegativeHit();
+            const cache_elapsed = transform44.rdtscPub() - cache_start;
+            transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
+            return orig_ret;
+        }
+
+        if (!cached.is_negative) {
+            // Path 1: search-all
+            if (archive_or_group == 0 and out_outer_archive != 0) {
+                @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = cached.outer_archive;
+                if (cached.outer_archive != 0) {
+                    @as(*align(1) i32, @ptrFromInt(cached.outer_archive + 0x38)).* += 1;
+                }
+                if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = cached.inner_archive;
+                    if (cached.inner_archive != 0) {
+                        @as(*align(1) i32, @ptrFromInt(cached.inner_archive + 0x38)).* += 1;
+                    }
+                }
+                if (out_block_entry != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = cached.block_entry;
+                }
+                file_cache.recordCacheHit();
+                const cache_elapsed = transform44.rdtscPub() - cache_start;
+                transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
+                return orig_ret;
+            }
+
+            // Path 2: specific archive
+            if (archive_or_group != 0 and (archive_or_group == cached.outer_archive or archive_or_group == cached.inner_archive)) {
+                if (out_outer_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = cached.outer_archive;
+                    if (cached.outer_archive != 0) {
+                        @as(*align(1) i32, @ptrFromInt(cached.outer_archive + 0x38)).* += 1;
+                    }
+                }
+                if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = cached.inner_archive;
+                    if (cached.inner_archive != 0) {
+                        @as(*align(1) i32, @ptrFromInt(cached.inner_archive + 0x38)).* += 1;
+                    }
+                }
+                if (out_block_entry != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = cached.block_entry;
+                }
+                file_cache.recordCacheHit();
+                const cache_elapsed = transform44.rdtscPub() - cache_start;
+                transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
+                return orig_ret;
+            }
+        }
+    }
+
+    // Cache miss — populate cache from the original's results
+    file_cache.recordCacheMiss();
+    if (archive_or_group != 0 and out_inner_archive != 0 and out_block_entry != 0) {
+        if (orig_ret == 1) {
+            const inner = hook.readMem(u32, out_inner_archive);
+            const block = hook.readMem(u32, out_block_entry);
+            file_cache.archiveCacheInsert(h, path, archive_or_group, inner, block, false);
+        }
+    }
+    if (archive_or_group == 0 and orig_ret == 0) {
+        file_cache.archiveCacheInsert(h, path, 0, 0, 0, true);
+    }
+
+    const cache_elapsed = transform44.rdtscPub() - cache_start;
+    transform44.addFilefindCycles(cache_elapsed, baseline_elapsed);
+    return orig_ret;
+}
+
 // --- Install/remove in-memory file hooks ---
 
 fn installFileHooks() void {
@@ -546,10 +630,15 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
+    if (build_opts.transform44) {
+        _ = file_find_hook.attach(0x6549a0, &fileFindDetour);
+        log.print("archive cache hook installed\n");
+    }
     log.print("in-memory file hooks installed\n");
 }
 
 fn removeFileHooks() void {
+    file_find_hook.detach();
     cfe_hook.detach();
     model_load_hook.detach();
     process_async_hook.detach();
@@ -662,7 +751,6 @@ const modules = [_]ModuleHooks{
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
-    if (build_opts.file_perf) .{ .name = file_perf.module_name, .install = file_perf.installHooks, .remove = file_perf.removeHooks, .is_active = file_perf.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
@@ -763,6 +851,7 @@ fn disableModule(name: [*:0]const u8) callconv(.c) i32 {
             if (asciiEqlIgnoreCase(name, mod_name)) {
                 if (m.remove) |rm| {
                     rm();
+                    addons.pruneInactivePrefixes();
                     return 1;
                 }
                 return 0;
@@ -786,6 +875,7 @@ fn disableAll() callconv(.c) i32 {
             count += 1;
         }
     }
+    addons.pruneInactivePrefixes();
 
     // Detach core hooks
     shutdown_hook.detach();

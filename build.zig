@@ -30,7 +30,6 @@ const module_list = [_]ModuleDesc{
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
-    .{ .name = "file_perf", .desc = "Enable file access profiling", .default = false, .addon_name = "FilePerf", .addon_hidden = true },
 };
 
 pub fn build(b: *std.Build) void {
@@ -40,7 +39,7 @@ pub fn build(b: *std.Build) void {
         .abi = .msvc,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
 
     const build_options = b.addOptions();
     addModuleOptions(b, build_options);
@@ -52,11 +51,19 @@ pub fn build(b: *std.Build) void {
     });
     const zhook_mod = zhook_dep.module("zhook");
 
-    // Hot math — separate compilation unit, always ReleaseFast
+    // Hot math — separate compilation units, always ReleaseFast
     const clip_sse_obj = b.addObject(.{
         .name = "clip_sse",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/transform44/clip_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const bone_sse_obj = b.addObject(.{
+        .name = "bone_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/bone_sse.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         }),
@@ -76,6 +83,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     lib.root_module.addObject(clip_sse_obj);
+    lib.root_module.addObject(bone_sse_obj);
     b.installArtifact(lib);
 
     // Convenience step to build all single-module variants

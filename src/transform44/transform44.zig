@@ -15,11 +15,13 @@ const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
+pub const file_cache = @import("file_cache.zig");
 extern fn clipPolygonToSinglePlane(u32, u32, u32) void;
 extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
 extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
 extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
+extern fn transformMatrix4x4_SSE(u32, u32, u32, u32, u32) void;
 
 pub const module_name: [*:0]const u8 = "transform44";
 
@@ -155,6 +157,9 @@ const ProfState = struct {
     matmul_cycles: u64 = 0,
     textline_calls: u64 = 0, // renderTextLine (0x5ce0c0)
     textline_cycles: u64 = 0,
+    filefind_calls: u64 = 0, // File_FindInArchive cache (0x6549a0)
+    filefind_cycles: u64 = 0, // cached path
+    filefind_baseline_cycles: u64 = 0, // original path (same calls)
 };
 
 // =============================================================================
@@ -184,6 +189,17 @@ inline fn rdtsc() u64 {
     );
     return @as(u64, hi) << 32 | lo;
 }
+
+/// Called from main.zig fileFindDetour to accumulate per-call timing.
+/// cached_cycles = time for cache path, baseline_cycles = time for original path.
+pub fn addFilefindCycles(cached_cycles: u64, baseline_cycles: u64) void {
+    prof.filefind_cycles +|= cached_cycles;
+    prof.filefind_baseline_cycles +|= baseline_cycles;
+    prof.filefind_calls +|= 1;
+}
+
+/// Expose rdtsc for use by main.zig's fileFindDetour.
+pub const rdtscPub = rdtsc;
 
 // =============================================================================
 // Hook: transformMatrix4x4 (0x714260)
@@ -229,6 +245,8 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
+    // bone_sse disabled — investigating crash in post-bone-loop sections
+    _ = transformMatrix4x4_SSE;
     transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
 
     t44_depth -|= 1;
@@ -1238,16 +1256,29 @@ fn dumpStats() void {
         .{ .name = "partsetup",  .cycles = prof.partsetup_cycles, .calls = prof.partsetup_calls },
         .{ .name = "matmul",     .cycles = prof.matmul_cycles,    .calls = prof.matmul_calls },
         .{ .name = "textline",   .cycles = prof.textline_cycles,  .calls = prof.textline_calls },
+        .{ .name = "ff_cache",   .cycles = prof.filefind_cycles,           .calls = prof.filefind_calls },
+        .{ .name = "ff_orig",    .cycles = prof.filefind_baseline_cycles,  .calls = prof.filefind_calls },
     };
     for (hotspots) |h| {
         if (h.calls > 0) {
             const hp = pct(h.cycles, wall);
-            log.fmt("  {s}: {d}.{d}% {d}ms {d}c/f\n", .{
-                h.name,
-                hp / 10, hp % 10,
-                h.cycles / MS_DIVISOR,
-                h.calls / f,
-            });
+            const name = std.mem.span(h.name);
+            const is_micro = std.mem.eql(u8, name, "ff_cache") or std.mem.eql(u8, name, "ff_orig") or std.mem.eql(u8, name, "glyph");
+            if (is_micro) {
+                log.fmt("  {s}: {d}.{d}% {d}us {d}c/f\n", .{
+                    h.name,
+                    hp / 10, hp % 10,
+                    h.cycles / 3_000,
+                    h.calls / f,
+                });
+            } else {
+                log.fmt("  {s}: {d}.{d}% {d}ms {d}c/f\n", .{
+                    h.name,
+                    hp / 10, hp % 10,
+                    h.cycles / MS_DIVISOR,
+                    h.calls / f,
+                });
+            }
         }
     }
 
@@ -1262,7 +1293,18 @@ fn dumpStats() void {
         });
     }
 
-    // Flip A/B mode for next period
+    // File cache stats
+    const fc = file_cache.getCacheStats();
+    if (fc.total > 0) {
+        const fc_hit_pct = pct(fc.hits + fc.neg_hits, fc.total);
+        log.fmt("  file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries\n", .{
+            fc_hit_pct / 10, fc_hit_pct % 10,
+            fc.hits, fc.neg_hits, fc.misses, fc.entries,
+        });
+    }
+
+    // Reset per-period cache stats, flip A/B mode
+    file_cache.resetStats();
     ab_use_custom = !ab_use_custom;
     prof = ProfState{};
 }

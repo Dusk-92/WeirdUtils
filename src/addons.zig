@@ -267,7 +267,7 @@ const all_prefixes = buildAllPrefixes();
 var active_prefixes: [all_prefixes.len]*const AddonPrefix = undefined;
 var active_count: usize = 0;
 
-fn pruneInactivePrefixes() void {
+pub fn pruneInactivePrefixes() void {
     active_count = 0;
     for (all_prefixes) |*prefix| {
         const active = if (prefix.module_name) |mod_name| module_active.isActive(mod_name) else true;
