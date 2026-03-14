@@ -16,6 +16,7 @@ const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
 pub const file_cache = @import("file_cache.zig");
+const timer_fix = @import("timer_fix.zig");
 extern fn clipPolygonToSinglePlane(u32, u32, u32) void;
 extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
 extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
@@ -47,6 +48,7 @@ var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 // Flips every DUMP_FRAMES so each dump period is purely one mode.
 pub var ab_use_custom: bool = false;
 
+
 // Persistent blit totals per A/B mode — NOT reset each dump period.
 // Accumulates across all dump periods so rare blits still show up.
 var blit_total_baseline: BlitAccum = .{};
@@ -58,6 +60,9 @@ const BlitAccum = struct {
 };
 
 const ProfState = struct {
+    // Frame timing jitter tracking
+    frame_min_cycles: u64 = std.math.maxInt(u64),
+    frame_max_cycles: u64 = 0,
     // Frame counter (incremented by executeSceneRenderPass)
     frames: u64 = 0,
     // Total frame-to-frame wall cycles (sum of inter-frame deltas)
@@ -157,9 +162,6 @@ const ProfState = struct {
     matmul_cycles: u64 = 0,
     textline_calls: u64 = 0, // renderTextLine (0x5ce0c0)
     textline_cycles: u64 = 0,
-    filefind_calls: u64 = 0, // File_FindInArchive cache (0x6549a0)
-    filefind_cycles: u64 = 0, // cached path
-    filefind_baseline_cycles: u64 = 0, // original path (same calls)
 };
 
 // =============================================================================
@@ -190,16 +192,6 @@ inline fn rdtsc() u64 {
     return @as(u64, hi) << 32 | lo;
 }
 
-/// Called from main.zig fileFindDetour to accumulate per-call timing.
-/// cached_cycles = time for cache path, baseline_cycles = time for original path.
-pub fn addFilefindCycles(cached_cycles: u64, baseline_cycles: u64) void {
-    prof.filefind_cycles +|= cached_cycles;
-    prof.filefind_baseline_cycles +|= baseline_cycles;
-    prof.filefind_calls +|= 1;
-}
-
-/// Expose rdtsc for use by main.zig's fileFindDetour.
-pub const rdtscPub = rdtsc;
 
 // =============================================================================
 // Hook: transformMatrix4x4 (0x714260)
@@ -291,23 +283,40 @@ var exec_render_pass_hook: hook.Detour(ExecRenderPassFn) = .{};
 fn execRenderPassDetour(this: u32, edx: u32, pass_index: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    // Track frame-to-frame wall time
     const now = rdtsc();
-    if (last_frame_tsc != 0) {
-        prof.wall_cycles +|= now - last_frame_tsc;
-    }
-    last_frame_tsc = now;
-
     const ret = exec_render_pass_hook.callOriginal(.{ this, edx, pass_index });
     prof.erp_cycles +|= rdtsc() - now;
     prof.erp_calls +|= 1;
 
-    // Use render pass as frame boundary for dump trigger
+    return ret;
+}
+
+// =============================================================================
+// Hook: OnWorldUpdate (0x482EA0)
+// __fastcall(ECX=frame_count) — fires exactly once per game frame.
+// Used as the true frame counter for profiling dumps and A/B testing,
+// instead of executeSceneRenderPass which fires multiple times per frame.
+// =============================================================================
+
+const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
+var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
+
+fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
+    const now = rdtsc();
+    if (last_frame_tsc != 0) {
+        const delta = now - last_frame_tsc;
+        prof.wall_cycles +|= delta;
+        if (delta < prof.frame_min_cycles) prof.frame_min_cycles = delta;
+        if (delta > prof.frame_max_cycles) prof.frame_max_cycles = delta;
+    }
+    last_frame_tsc = now;
+
+    world_update_hook.callOriginal(.{frame_count});
+
     prof.frames +|= 1;
     if (prof.frames >= DUMP_FRAMES) {
         dumpStats();
     }
-    return ret;
 }
 
 // =============================================================================
@@ -791,45 +800,38 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
 
     const s = rdtsc();
 
-    if (ab_use_custom) {
-        // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
-        const hash = std.hash.Murmur2_32.hashUint32WithSeed(c, a ^ d) & GLYPH_CACHE_MASK;
-        const entry = &glyph_cache[hash];
+    // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
+    const hash = std.hash.Murmur2_32.hashUint32WithSeed(c, a ^ d) & GLYPH_CACHE_MASK;
+    const entry = &glyph_cache[hash];
 
-        if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
-            // Cache hit — load cached width into ST(0) for caller
-            asm volatile ("flds (%[p])"
-                :: [p] "r" (&entry.width_bits)
-            );
-            prof.glyph_hits +|= 1;
-            prof.glyph_cycles +|= rdtsc() - s;
-            prof.glyph_calls +|= 1;
-            return null; // EAX unused by callers, they read ST(0)
-        }
-
-        // Cache miss — call original (sets ST(0)), then capture the result
-        const ret = glyph_hook.callOriginal(.{ a, b, c, d });
-
-        // Read ST(0) without popping — original's float return is still on FPU stack
-        var width_bits: u32 = undefined;
-        asm volatile ("fsts (%[p])"
-            :: [p] "r" (&width_bits)
+    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
+        // Cache hit — load cached width into ST(0) for caller
+        asm volatile ("flds (%[p])"
+            :: [p] "r" (&entry.width_bits)
         );
-
-        entry.* = .{
-            .font_ptr = a,
-            .char_code = c,
-            .param2 = d,
-            .width_bits = width_bits,
-        };
-
-        prof.glyph_misses +|= 1;
+        prof.glyph_hits +|= 1;
         prof.glyph_cycles +|= rdtsc() - s;
         prof.glyph_calls +|= 1;
-        return ret;
+        return null; // EAX unused by callers, they read ST(0)
     }
 
+    // Cache miss — call original (sets ST(0)), then capture the result
     const ret = glyph_hook.callOriginal(.{ a, b, c, d });
+
+    // Read ST(0) without popping — original's float return is still on FPU stack
+    var width_bits: u32 = undefined;
+    asm volatile ("fsts (%[p])"
+        :: [p] "r" (&width_bits)
+    );
+
+    entry.* = .{
+        .font_ptr = a,
+        .char_code = c,
+        .param2 = d,
+        .width_bits = width_bits,
+    };
+
+    prof.glyph_misses +|= 1;
     prof.glyph_cycles +|= rdtsc() - s;
     prof.glyph_calls +|= 1;
     return ret;
@@ -1189,10 +1191,26 @@ fn dumpStats() void {
 
     const mode: [*:0]const u8 = if (ab_use_custom) "CUSTOM" else "BASELINE";
 
+    // Frame jitter: convert min/max/avg from cycles to tenths-of-ms for one decimal place
+    const US10_DIV = 300; // cycles / 300 = tenths of us... no, cycles / 300_000 = tenths of ms
+    const TENTH_MS_DIV: u64 = 300_000; // @3GHz: cycles / 300_000 = tenths of ms
+    const frame_avg_t = if (f > 0) wall / f / TENTH_MS_DIV else 0;
+    const frame_min_t = if (prof.frame_min_cycles != std.math.maxInt(u64)) prof.frame_min_cycles / TENTH_MS_DIV else 0;
+    const frame_max_t = prof.frame_max_cycles / TENTH_MS_DIV;
+    _ = US10_DIV;
+
     const bt = if (ab_use_custom) blit_total_custom else blit_total_baseline;
 
     log.fmt(
-        \\[prof:{s}] {d} frames, wall={d}ms
+        \\[prof:{s}] {d} frames, wall={d}ms, frame: avg={d}.{d}ms min={d}.{d}ms max={d}.{d}ms
+        \\
+    , .{
+        mode, f, wall_ms,
+        frame_avg_t / 10, frame_avg_t % 10,
+        frame_min_t / 10, frame_min_t % 10,
+        frame_max_t / 10, frame_max_t % 10,
+    });
+    log.fmt(
         \\  ms: erp={d} rf={d} t44={d} rtq={d} mov={d}
         \\  %frame: erp={d}.{d}% rf={d}.{d}% t44={d}.{d}% rtq={d}.{d}% mov={d}.{d}%
         \\  calls/f: erp={d} rf={d} t44={d}({d}skip) rtq={d} mov={d}
@@ -1200,8 +1218,6 @@ fn dumpStats() void {
         \\  blit: {d}ms/{d}calls
         \\
     , .{
-        mode,
-        f,       wall_ms,
         erp_ms, rf_ms, t44_ms, rtq_ms, mov_ms,
         erp_pct / 10, erp_pct % 10,
         rf_pct / 10,  rf_pct % 10,
@@ -1256,14 +1272,11 @@ fn dumpStats() void {
         .{ .name = "partsetup",  .cycles = prof.partsetup_cycles, .calls = prof.partsetup_calls },
         .{ .name = "matmul",     .cycles = prof.matmul_cycles,    .calls = prof.matmul_calls },
         .{ .name = "textline",   .cycles = prof.textline_cycles,  .calls = prof.textline_calls },
-        .{ .name = "ff_cache",   .cycles = prof.filefind_cycles,           .calls = prof.filefind_calls },
-        .{ .name = "ff_orig",    .cycles = prof.filefind_baseline_cycles,  .calls = prof.filefind_calls },
     };
     for (hotspots) |h| {
         if (h.calls > 0) {
             const hp = pct(h.cycles, wall);
-            const name = std.mem.span(h.name);
-            const is_micro = std.mem.eql(u8, name, "ff_cache") or std.mem.eql(u8, name, "ff_orig") or std.mem.eql(u8, name, "glyph");
+            const is_micro = std.mem.eql(u8, std.mem.span(h.name), "glyph");
             if (is_micro) {
                 log.fmt("  {s}: {d}.{d}% {d}us {d}c/f\n", .{
                     h.name,
@@ -1323,6 +1336,7 @@ pub fn installHooks() void {
     _ = transform_hook.attach(0x714260, &transformDetour);
     _ = render_frame_hook.attach(0x707680, &renderFrameDetour);
     _ = exec_render_pass_hook.attach(0x708900, &execRenderPassDetour);
+    _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
     _ = render_quads_hook.attach(0x76FB00, &renderQuadsDetour);
     _ = movement_hook.attach(0x616620, &movementDetour);
     _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour);
@@ -1362,6 +1376,19 @@ pub fn installHooks() void {
     _ = matmul_hook.attach(0x7bc6a0, &matmulDetour);
     _ = textline_hook.attach(0x5ce0c0, &textlineDetour);
 
+    // TSC timer calibration (ported from VanillaFixes)
+    timer_fix.init();
+    const ti = timer_fix.getInfo();
+    if (ti.calibrated) {
+        if (ti.orig_freq == 1000) {
+            log.fmt("timer_fix: TSC was OFF, enabled with freq {d}\n", .{ti.cal_freq});
+        } else {
+            log.fmt("timer_fix: recalibrated TSC freq {d} -> {d} ({d}.{d}% drift)\n", .{ ti.orig_freq, ti.cal_freq, ti.diff_pct_x10 / 10, ti.diff_pct_x10 % 10 });
+        }
+    } else if (ti.cal_freq > 0) {
+        log.print("timer_fix: already calibrated, skipping\n");
+    }
+
     // blit_hub installed in lateInit() to clobber UnitXP's hook
     log.print("transform44: 39 profiling hooks installed (blit_hub deferred)\n");
 }
@@ -1395,6 +1422,7 @@ pub fn removeHooks() void {
         transform_hook.detach();
         render_frame_hook.detach();
         exec_render_pass_hook.detach();
+        world_update_hook.detach();
         render_quads_hook.detach();
         movement_hook.detach();
         interp_kf_hook.detach();
