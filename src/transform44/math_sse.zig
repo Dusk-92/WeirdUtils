@@ -30,6 +30,26 @@ inline fn splat(v: f32) V4 {
     return @splat(v);
 }
 
+/// Load 3 floats from addr into a V4 (4th element = 0)
+inline fn loadV3(addr: u32) V4 {
+    const p: [*]align(1) const f32 = @ptrFromInt(addr);
+    return .{ p[0], p[1], p[2], 0 };
+}
+
+/// Store 3 floats from V4 to addr
+inline fn storeV3(addr: u32, v: V4) void {
+    const p: [*]align(1) f32 = @ptrFromInt(addr);
+    p[0] = v[0];
+    p[1] = v[1];
+    p[2] = v[2];
+}
+
+/// Dot product of two V4 (first 3 components only)
+inline fn dot3(va: V4, vb: V4) f32 {
+    const prod = va * vb;
+    return prod[0] + prod[1] + prod[2];
+}
+
 // =============================================================================
 // Vector-Matrix multiplies (0x7BCA80, 0x7BCAE0, 0x7BCB40)
 //
@@ -85,10 +105,7 @@ export fn quatMulMat4(result: u32, quat: u32, mat: u32) u32 {
 /// 0x5F8CF0: result = vec3 * scalar
 /// __fastcall(ECX=result, EDX=vec3, stack: factor_float), RET 0x4
 export fn vec3MulScalar(result: u32, vec: u32, factor_bits: u32) u32 {
-    const f: f32 = @bitCast(factor_bits);
-    wf32(result, rf32(vec) * f);
-    wf32(result + 4, rf32(vec + 4) * f);
-    wf32(result + 8, rf32(vec + 8) * f);
+    storeV3(result, loadV3(vec) * splat(@bitCast(factor_bits)));
     return result;
 }
 
@@ -264,21 +281,18 @@ export fn createAxisAngleRotMat4x4(result: u32, axis: u32, angle_bits: u32, is_u
 /// 0x672130: Cross product: result = A x B
 /// __fastcall(ECX=result, EDX=vecA, stack: vecB*), RET 0x4
 /// Reference: polyfill.cpp line 451
-export fn crossProduct(result: u32, a: u32, b: u32) u32 {
-    wf32(result, rf32(a + 4) * rf32(b + 8) - rf32(a + 8) * rf32(b + 4));
-    wf32(result + 4, rf32(a + 8) * rf32(b) - rf32(a) * rf32(b + 8));
-    wf32(result + 8, rf32(a) * rf32(b + 4) - rf32(a + 4) * rf32(b));
+export fn crossProduct(result: u32, va: u32, vb: u32) u32 {
+    wf32(result, rf32(va + 4) * rf32(vb + 8) - rf32(va + 8) * rf32(vb + 4));
+    wf32(result + 4, rf32(va + 8) * rf32(vb) - rf32(va) * rf32(vb + 8));
+    wf32(result + 8, rf32(va) * rf32(vb + 4) - rf32(va + 4) * rf32(vb));
     return result;
 }
 
 /// 0x602630: Dot product: return A . B (as f64)
 /// __fastcall(ECX=vecA, EDX=vecB), plain RET, returns double in ST(0)
 /// Reference: polyfill.cpp line 460
-/// TODO: verify return convention — x87 ST(0) double requires special handling
-export fn dotProduct(a: u32, b: u32) f64 {
-    return @as(f64, rf32(a)) * @as(f64, rf32(b)) +
-        @as(f64, rf32(a + 4)) * @as(f64, rf32(b + 4)) +
-        @as(f64, rf32(a + 8)) * @as(f64, rf32(b + 8));
+export fn dotProduct(va: u32, vb: u32) f64 {
+    return dot3(loadV3(va), loadV3(vb));
 }
 
 /// 0x4549F0: Squared magnitude of vec3 (returns double in ST(0))
@@ -286,10 +300,8 @@ export fn dotProduct(a: u32, b: u32) f64 {
 /// Note: Ghidra labels this "emptyFunction" — it's NOT empty, it returns x*x+y*y+z*z
 /// Reference: polyfill.cpp line 289
 export fn squaredMagnitude(vec: u32) f64 {
-    const x: f64 = @floatCast(rf32(vec));
-    const y: f64 = @floatCast(rf32(vec + 4));
-    const z: f64 = @floatCast(rf32(vec + 8));
-    return x * x + y * y + z * z;
+    const v = loadV3(vec);
+    return dot3(v, v);
 }
 
 // 0x699330 removed -- was misidentified as normalize, actually vec3 comparison
@@ -307,11 +319,11 @@ export fn squaredMagnitude(vec: u32) f64 {
 /// 0x453620: Evaluate polynomial using Horner's method (returns double in ST(0))
 /// __fastcall(ECX=degree, EDX=coefficients*, stack: factor_float), RET 0x4
 export fn evaluatePolynomial(count: u32, coefficients: u32, factor_bits: u32) f64 {
-    const f: f64 = @floatCast(@as(f32, @bitCast(factor_bits)));
-    var result: f64 = @floatCast(rf32(coefficients));
+    const f: f32 = @bitCast(factor_bits);
+    var result: f32 = rf32(coefficients);
     var i: u32 = 1;
     while (i <= count) : (i += 1) {
-        result = result * f + @as(f64, @floatCast(rf32(coefficients + i * 4)));
+        result = result * f + rf32(coefficients + i * 4);
     }
     return result;
 }
@@ -331,50 +343,43 @@ export fn evaluatePolynomial(count: u32, coefficients: u32, factor_bits: u32) f6
 /// result = {nx, ny, nz, d} where n = normalize(cross(p2-p1, p3-p1)), d = -dot(n, p1)
 /// Reference: polyfill.cpp line 297
 export fn calculatePlaneNormal(result: u32, p1: u32, p2: u32, p3: u32) void {
-    // edge vectors
-    const e1x: f64 = @as(f64, rf32(p2)) - @as(f64, rf32(p1));
-    const e1y: f64 = @as(f64, rf32(p2 + 4)) - @as(f64, rf32(p1 + 4));
-    const e1z: f64 = @as(f64, rf32(p2 + 8)) - @as(f64, rf32(p1 + 8));
-    const e2x: f64 = @as(f64, rf32(p3)) - @as(f64, rf32(p1));
-    const e2y: f64 = @as(f64, rf32(p3 + 4)) - @as(f64, rf32(p1 + 4));
-    const e2z: f64 = @as(f64, rf32(p3 + 8)) - @as(f64, rf32(p1 + 8));
-    // cross product
-    const nx = e1y * e2z - e1z * e2y;
-    const ny = e1z * e2x - e1x * e2z;
-    const nz = e1x * e2y - e1y * e2x;
-    const len = @sqrt(nx * nx + ny * ny + nz * nz);
-    wf32(result, @floatCast(nx / len));
-    wf32(result + 4, @floatCast(ny / len));
-    wf32(result + 8, @floatCast(nz / len));
-    wf32(result + 12, @floatCast(-(nx * @as(f64, rf32(p1)) + ny * @as(f64, rf32(p1 + 4)) + nz * @as(f64, rf32(p1 + 8))) / len));
+    const v1 = loadV3(p1);
+    const e1 = loadV3(p2) - v1; // p2 - p1
+    const e2 = loadV3(p3) - v1; // p3 - p1
+    // cross product: e1 x e2
+    const e1_yzx = @shuffle(f32, e1, undefined, [4]i32{ 1, 2, 0, 3 });
+    const e1_zxy = @shuffle(f32, e1, undefined, [4]i32{ 2, 0, 1, 3 });
+    const e2_yzx = @shuffle(f32, e2, undefined, [4]i32{ 1, 2, 0, 3 });
+    const e2_zxy = @shuffle(f32, e2, undefined, [4]i32{ 2, 0, 1, 3 });
+    const n = e1_yzx * e2_zxy - e1_zxy * e2_yzx;
+    // normalize
+    const inv_len = splat(1.0 / @sqrt(dot3(n, n)));
+    const nn = n * inv_len;
+    // store {nx, ny, nz, d} where d = -dot(n_normalized, p1)
+    const p: [*]align(1) f32 = @ptrFromInt(result);
+    p[0] = nn[0];
+    p[1] = nn[1];
+    p[2] = nn[2];
+    p[3] = -dot3(nn, v1);
 }
 
 /// 0x6DC470: Transform axis-aligned bounding box by 3x3 matrix + translation
 /// __fastcall(ECX=mat3x3, EDX=vecA, stack: vecB*, boxIn*, boxOut*), RET 0xC
 /// Reference: polyfill.cpp line 312
-/// TODO: verify param order from assembly — UnitXP's C++ signature may differ
 export fn transformAABox(mat: u32, vec_a: u32, vec_b: u32, box_in: u32, box_out: u32) void {
-    // The original iterates 3 outer x 3 inner, comparing min/max per component
-    // Reference: polyfill.cpp lines 312-334
-    var ptrs: [3]u32 = .{ mat, vec_a, vec_b };
+    const ptrs = [3]u32{ mat, vec_a, vec_b };
     var out = box_out;
     var outer_i: u32 = 0;
-    while (outer_i < 3) : ({
-        outer_i += 1;
-        out += 4;
-    }) {
+    while (outer_i < 3) : ({ outer_i += 1; out += 4; }) {
         var inner_i: u32 = 0;
         while (inner_i < 3) : (inner_i += 1) {
-            const mat_val: f64 = @floatCast(rf32(ptrs[inner_i] + outer_i * 4));
-            const test1: f64 = mat_val * @as(f64, rf32(box_in + inner_i * 4));
-            const test2: f64 = @as(f64, rf32(box_in + inner_i * 4 + 12)) * mat_val;
-            if (test2 <= test1) {
-                wf32(out, @as(f32, @floatCast(test2 + @as(f64, rf32(out)))));
-                wf32(out + 12, @as(f32, @floatCast(test1 + @as(f64, rf32(out + 12)))));
-            } else {
-                wf32(out, @as(f32, @floatCast(test1 + @as(f64, rf32(out)))));
-                wf32(out + 12, @as(f32, @floatCast(test2 + @as(f64, rf32(out + 12)))));
-            }
+            const mv = rf32(ptrs[inner_i] + outer_i * 4);
+            const t1 = mv * rf32(box_in + inner_i * 4);
+            const t2 = rf32(box_in + inner_i * 4 + 12) * mv;
+            const lo = @min(t1, t2);
+            const hi = @max(t1, t2);
+            wf32(out, rf32(out) + lo);
+            wf32(out + 12, rf32(out + 12) + hi);
         }
     }
 }
