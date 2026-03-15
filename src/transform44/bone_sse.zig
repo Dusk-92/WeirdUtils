@@ -1908,8 +1908,10 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
                 buf_active = 1;
             } else {
                 // Call IsParticleBufferEmpty (0x7B5F60)
-                const isEmptyFn: *const fn (u32) callconv(.{ .x86_stdcall = .{} }) u32 = @ptrFromInt(0x7B5F60);
-                if (isEmptyFn(@intFromPtr(&local_14)) != 0) {
+                // Assembly: MOV ECX,[EBP-0x10]; CALL 0x7B5F60
+                // __thiscall(ECX=ptr), plain RET, returns 0 or 1 in EAX
+                const isEmptyFn: *const fn (u32) callconv(.{ .x86_fastcall = .{} }) u32 = @ptrFromInt(0x7B5F60);
+                if (isEmptyFn(local_14) != 0) {
                     buf_active = 1;
                 }
             }
