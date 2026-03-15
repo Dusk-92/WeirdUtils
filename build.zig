@@ -27,10 +27,10 @@ const module_list = [_]ModuleDesc{
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
-    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
+    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons" },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
-    .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
-    .{ .name = "filecache", .desc = "Enable MPQ archive file cache", .default = false },
+    .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API", .default = false },
+    .{ .name = "filecache", .desc = "Enable MPQ archive file cache" },
     .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
 };
@@ -71,6 +71,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    const bone_sse_ref_obj = b.addObject(.{
+        .name = "bone_sse_ref",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/bone_sse_reference.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
     const math_sse_obj = b.addObject(.{
         .name = "math_sse",
         .root_module = b.createModule(.{
@@ -95,6 +103,7 @@ pub fn build(b: *std.Build) void {
     });
     lib.root_module.addObject(clip_sse_obj);
     lib.root_module.addObject(bone_sse_obj);
+    lib.root_module.addObject(bone_sse_ref_obj);
     lib.root_module.addObject(math_sse_obj);
     b.installArtifact(lib);
 

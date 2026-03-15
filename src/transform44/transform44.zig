@@ -22,6 +22,7 @@ extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
 extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformMatrix4x4_SSE(u32, u32, u32, u32, u32) void;
+extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) void;
 
 pub const module_name: [*:0]const u8 = "transform44";
 
@@ -46,6 +47,13 @@ var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 // A/B testing: alternate between baseline (original) and custom (optimized) code paths.
 // Flips every DUMP_FRAMES so each dump period is purely one mode.
 pub var ab_use_custom: bool = false;
+
+// Teardown guard: set true when CleanupWorldAndEntities fires.
+// During teardown, SceneObject data may be partially freed — our SSE code
+// must not process it. Falls back to original function which the game
+// controls. NOTE: binary patching (instead of hooking) would avoid this
+// issue entirely since the patched code IS the original entry point.
+var teardown_active: bool = false;
 
 
 // Persistent blit totals per A/B mode — NOT reset each dump period.
@@ -236,8 +244,10 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
-    if (ab_use_custom) {
-        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+    if (ab_use_custom and !teardown_active) {
+        // Using reference version for stress testing
+        _ = transformMatrix4x4_SSE;
+        transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
     } else {
         transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
     }
@@ -318,6 +328,23 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     if (prof.frames >= DUMP_FRAMES) {
         dumpStats();
     }
+}
+
+// =============================================================================
+// Hook: World_HandleLogoutCleanup (0x491180)
+// Fires at the START of the logout/disconnect cleanup sequence, BEFORE any
+// model data is freed. Sets teardown_active flag so our SSE code falls back
+// to the original function during the entire cleanup chain.
+// NOTE: binary patching instead of hooking would avoid this issue entirely.
+// =============================================================================
+
+const TeardownFn = fn () callconv(.{ .x86_stdcall = .{} }) void;
+var teardown_hook: hook.Detour(TeardownFn) = .{};
+
+fn teardownDetour() callconv(.{ .x86_stdcall = .{} }) void {
+    teardown_active = true;
+    teardown_hook.callOriginal(.{});
+    teardown_active = false;
 }
 
 // =============================================================================
@@ -1379,6 +1406,7 @@ pub fn installHooks() void {
     _ = render_frame_hook.attach(0x707680, &renderFrameDetour);
     _ = exec_render_pass_hook.attach(0x708900, &execRenderPassDetour);
     _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
+    _ = teardown_hook.attach(0x491180, &teardownDetour);
     _ = render_quads_hook.attach(0x76FB00, &renderQuadsDetour);
     _ = movement_hook.attach(0x616620, &movementDetour);
     _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour);
@@ -1465,6 +1493,7 @@ pub fn removeHooks() void {
         render_frame_hook.detach();
         exec_render_pass_hook.detach();
         world_update_hook.detach();
+        teardown_hook.detach();
         render_quads_hook.detach();
         movement_hook.detach();
         interp_kf_hook.detach();
