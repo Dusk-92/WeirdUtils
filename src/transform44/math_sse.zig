@@ -149,7 +149,7 @@ export fn scaleMatrix3x3ByVector(mat: u32, vec: u32) u32 {
 }
 
 /// 0x7BDD00: Scale 3x3 rotation portion by uniform scalar
-/// __thiscall(ECX=mat4x4, stack: factor_float), plain RET
+/// __thiscall(ECX=mat4x4, stack: factor_float), RET 0x4
 /// Reference: polyfill.cpp line 162
 export fn scaleMatrix3x3ByScalar(mat: u32, factor_bits: u32) void {
     const f: f32 = @bitCast(factor_bits);
@@ -253,7 +253,7 @@ export fn createAxisAngleRotMat4x4(result: u32, axis: u32, angle_bits: u32, is_u
 }
 
 // =============================================================================
-// Vector math primitives (0x672130, 0x602630, 0x4549F0, 0x699330)
+// Vector math primitives (0x672130, 0x602630, 0x4549F0)
 //
 // These are called thousands of times per frame from collision, terrain,
 // and rendering code. The originals use x87 FPU.
@@ -282,7 +282,7 @@ export fn dotProduct(a: u32, b: u32) f64 {
 }
 
 /// 0x4549F0: Squared magnitude of vec3 (returns double in ST(0))
-/// __fastcall(ECX=vec3), plain RET
+/// __thiscall(ECX=vec3), plain RET
 /// Note: Ghidra labels this "emptyFunction" — it's NOT empty, it returns x*x+y*y+z*z
 /// Reference: polyfill.cpp line 289
 export fn squaredMagnitude(vec: u32) f64 {
@@ -292,21 +292,8 @@ export fn squaredMagnitude(vec: u32) f64 {
     return x * x + y * y + z * z;
 }
 
-/// 0x699330: Vector normalize (in-place) — from libSiliconPatch symbols
-/// __fastcall(ECX=vec3, EDX=vec3_other?), RET
-/// TODO: verify calling convention from assembly before enabling
-export fn vectorNormalize(vec: u32, _: u32) void {
-    const x = rf32(vec);
-    const y = rf32(vec + 4);
-    const z = rf32(vec + 8);
-    const len = @sqrt(x * x + y * y + z * z);
-    if (len > 1.0e-7) {
-        const inv = 1.0 / len;
-        wf32(vec, x * inv);
-        wf32(vec + 4, y * inv);
-        wf32(vec + 8, z * inv);
-    }
-}
+// 0x699330 removed -- was misidentified as normalize, actually vec3 comparison
+// from libSiliconPatch (not UnitXP). Stub lives in src/silicon/silicon.zig.
 
 // =============================================================================
 // Polynomial evaluation (0x453620)

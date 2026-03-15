@@ -38,7 +38,6 @@ extern fn createAxisAngleRotMat4x4(u32, u32, u32, u32) u32;
 extern fn crossProduct(u32, u32, u32) u32;
 extern fn dotProduct(u32, u32) f64;
 extern fn squaredMagnitude(u32) f64;
-extern fn vectorNormalize(u32, u32) void;
 extern fn evaluatePolynomial(u32, u32, u32) f64;
 extern fn calculatePlaneNormal(u32, u32, u32, u32) void;
 extern fn transformAABox(u32, u32, u32, u32, u32) void;
@@ -1108,107 +1107,100 @@ fn textlineDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.
 // Installed in lateInit() to clobber UnitXP's hooks. A/B tested.
 // =============================================================================
 
-// Fn types: Ret3 = fastcall(ECX,EDX,stack) -> u32, Ret2 = fastcall(ECX,EDX) -> u32, etc.
-const MathFn3r = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
-const MathFn2r = fn (u32, u32) callconv(hook.cc.fastcall) u32;
-const MathFn2v = fn (u32, u32) callconv(hook.cc.fastcall) void;
-const MathFn4r = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
-const MathFn5v = fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
-const MathFn2d = fn (u32, u32) callconv(hook.cc.fastcall) f64;
-const MathFn1d = fn (u32) callconv(hook.cc.fastcall) f64;
-const MathFn3d = fn (u32, u32, u32) callconv(hook.cc.fastcall) f64;
-const MathFn4v = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
+// Fastcall fn types (ECX + EDX + stack)
+const FC3r = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;   // ECX,EDX,stack -> u32
+const FC4r = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
+const FC5v = fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
+const FC2d = fn (u32, u32) callconv(hook.cc.fastcall) f64;
+const FC3d = fn (u32, u32, u32) callconv(hook.cc.fastcall) f64;
+// Thiscall fn types (ECX + stack)
+const TC2r = fn (u32, u32) callconv(hook.cc.thiscall) u32;        // ECX,stack -> u32
+const TC2v = fn (u32, u32) callconv(hook.cc.thiscall) void;
+const TC1d = fn (u32) callconv(hook.cc.thiscall) f64;             // ECX -> f64
+const TC4v = fn (u32, u32, u32, u32) callconv(hook.cc.thiscall) void; // ECX,stack*3 -> void
 
-var math_vecMulMat4_hook: hook.Detour(MathFn3r) = .{};        // 0x7BCA80
-var math_matMulVec3_hook: hook.Detour(MathFn3r) = .{};         // 0x7BCAE0
-var math_quatMulMat4_hook: hook.Detour(MathFn3r) = .{};        // 0x7BCB40
-var math_vec3MulScalar_hook: hook.Detour(MathFn3r) = .{};      // 0x5F8CF0
-var math_vec3MulAssign_hook: hook.Detour(MathFn2r) = .{};      // 0x5132F0
-var math_applyTranslation_hook: hook.Detour(MathFn2r) = .{};   // 0x7BDC40
-var math_scaleByVec_hook: hook.Detour(MathFn2r) = .{};         // 0x7BDCA0
-var math_scaleByScalar_hook: hook.Detour(MathFn2v) = .{};      // 0x7BDD00
-var math_mul3x3_hook: hook.Detour(MathFn3r) = .{};             // 0x7BDFC0
-var math_rotMat3x3_hook: hook.Detour(MathFn4r) = .{};          // 0x7BE490
-var math_rotMat4x4_hook: hook.Detour(MathFn4r) = .{};          // 0x7BDB00
-var math_cross_hook: hook.Detour(MathFn3r) = .{};              // 0x672130
-var math_dot_hook: hook.Detour(MathFn2d) = .{};                // 0x602630
-var math_sqmag_hook: hook.Detour(MathFn1d) = .{};              // 0x4549F0
-var math_normalize_hook: hook.Detour(MathFn2v) = .{};          // 0x699330
-var math_evalPoly_hook: hook.Detour(MathFn3d) = .{};           // 0x453620
-var math_planeNormal_hook: hook.Detour(MathFn4v) = .{};        // 0x637480
-var math_transformAABox_hook: hook.Detour(MathFn5v) = .{};     // 0x6DC470
+//  1: vecMulMat4       __fastcall(ECX=result, EDX=vec, stack:mat) RET 0x4
+//  2: matMulVec3       __fastcall(ECX=result, EDX=mat, stack:vec) RET 0x4
+//  3: quatMulMat4      __fastcall(ECX=result, EDX=quat, stack:mat) RET 0x4
+//  4: vec3MulScalar    __fastcall(ECX=result, EDX=vec, stack:factor) RET 0x4
+//  5: vec3MulAssign    __thiscall(ECX=self, stack:factor) RET 0x4
+//  6: applyTranslation __thiscall(ECX=mat, stack:vec) RET 0x4
+//  7: scaleByVec       __thiscall(ECX=mat, stack:vec) RET 0x4
+//  8: scaleByScalar    __thiscall(ECX=mat, stack:factor) RET 0x4
+//  9: mul3x3           __fastcall(ECX=result, EDX=matA, stack:matB) RET 0x4
+// 10: rotMat3x3        __fastcall(ECX=result, EDX=axis, stack:angle,is_unit) RET 0x8
+// 11: rotMat4x4        __fastcall(ECX=result, EDX=axis, stack:angle,is_unit) RET 0x8
+// 12: cross            __fastcall(ECX=result, EDX=vecA, stack:vecB) RET 0x4
+// 13: dot              __fastcall(ECX=vecA, EDX=vecB) RET
+// 14: sqmag            __thiscall(ECX=vec) RET
+// 15: (removed -- 0x699330 is vec3 comparison from Silicon, not UnitXP)
+// 16: evalPoly         __fastcall(ECX=count, EDX=coeffs, stack:factor) RET 0x4
+// 17: planeNormal      __thiscall(ECX=result, stack:p1,p2,p3) RET 0xC
+// 18: transformAABox   __fastcall(ECX=mat, EDX=vecA, stack:vecB,boxIn,boxOut) RET 0xC
+var math_vecMulMat4_hook: hook.Detour(FC3r) = .{};         //  1 fastcall
+var math_matMulVec3_hook: hook.Detour(FC3r) = .{};         //  2 fastcall
+var math_quatMulMat4_hook: hook.Detour(FC3r) = .{};        //  3 fastcall
+var math_vec3MulScalar_hook: hook.Detour(FC3r) = .{};      //  4 fastcall
+var math_vec3MulAssign_hook: hook.Detour(TC2r) = .{};      //  5 thiscall
+var math_applyTranslation_hook: hook.Detour(TC2r) = .{};   //  6 thiscall
+var math_scaleByVec_hook: hook.Detour(TC2r) = .{};         //  7 thiscall
+var math_scaleByScalar_hook: hook.Detour(TC2v) = .{};      //  8 thiscall
+var math_mul3x3_hook: hook.Detour(FC3r) = .{};             //  9 fastcall
+var math_rotMat3x3_hook: hook.Detour(FC4r) = .{};          // 10 fastcall
+var math_rotMat4x4_hook: hook.Detour(FC4r) = .{};          // 11 fastcall
+var math_cross_hook: hook.Detour(FC3r) = .{};              // 12 fastcall
+var math_dot_hook: hook.Detour(FC2d) = .{};                // 13 fastcall
+var math_sqmag_hook: hook.Detour(TC1d) = .{};              // 14 thiscall
+var math_evalPoly_hook: hook.Detour(FC3d) = .{};           // 16 fastcall
+var math_planeNormal_hook: hook.Detour(TC4v) = .{};        // 17 thiscall
+var math_transformAABox_hook: hook.Detour(FC5v) = .{};     // 18 fastcall
 
-// A/B detour wrappers for each math_sse signature
-fn abDetour3r(comptime custom_fn: anytype, comptime h: anytype) *const MathFn3r {
-    return &struct {
-        fn f(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) u32 {
-            return if (ab_use_custom) custom_fn(a, b, c) else h.callOriginal(.{ a, b, c });
-        }
-    }.f;
+// A/B detour wrappers -- fastcall variants
+fn abFC3r(comptime custom_fn: anytype, comptime h: anytype) *const FC3r {
+    return &struct { fn f(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) u32 {
+        return if (ab_use_custom) custom_fn(a, b, c) else h.callOriginal(.{ a, b, c });
+    } }.f;
 }
-
-fn abDetour2r(comptime custom_fn: anytype, comptime h: anytype) *const MathFn2r {
-    return &struct {
-        fn f(a: u32, b: u32) callconv(hook.cc.fastcall) u32 {
-            return if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
-        }
-    }.f;
+fn abFC4r(comptime custom_fn: anytype, comptime h: anytype) *const FC4r {
+    return &struct { fn f(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) u32 {
+        return if (ab_use_custom) custom_fn(a, b, c, d) else h.callOriginal(.{ a, b, c, d });
+    } }.f;
 }
-
-fn abDetour2v(comptime custom_fn: anytype, comptime h: anytype) *const MathFn2v {
-    return &struct {
-        fn f(a: u32, b: u32) callconv(hook.cc.fastcall) void {
-            if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
-        }
-    }.f;
+fn abFC5v(comptime custom_fn: anytype, comptime h: anytype) *const FC5v {
+    return &struct { fn f(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) void {
+        if (ab_use_custom) custom_fn(a, b, c, d, e) else h.callOriginal(.{ a, b, c, d, e });
+    } }.f;
 }
-
-fn abDetour4r(comptime custom_fn: anytype, comptime h: anytype) *const MathFn4r {
-    return &struct {
-        fn f(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) u32 {
-            return if (ab_use_custom) custom_fn(a, b, c, d) else h.callOriginal(.{ a, b, c, d });
-        }
-    }.f;
+fn abFC2d(comptime custom_fn: anytype, comptime h: anytype) *const FC2d {
+    return &struct { fn f(a: u32, b: u32) callconv(hook.cc.fastcall) f64 {
+        return if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
+    } }.f;
 }
-
-fn abDetour5v(comptime custom_fn: anytype, comptime h: anytype) *const MathFn5v {
-    return &struct {
-        fn f(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) void {
-            if (ab_use_custom) custom_fn(a, b, c, d, e) else h.callOriginal(.{ a, b, c, d, e });
-        }
-    }.f;
+fn abFC3d(comptime custom_fn: anytype, comptime h: anytype) *const FC3d {
+    return &struct { fn f(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) f64 {
+        return if (ab_use_custom) custom_fn(a, b, c) else h.callOriginal(.{ a, b, c });
+    } }.f;
 }
-
-fn abDetour2d(comptime custom_fn: anytype, comptime h: anytype) *const MathFn2d {
-    return &struct {
-        fn f(a: u32, b: u32) callconv(hook.cc.fastcall) f64 {
-            return if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
-        }
-    }.f;
+// A/B detour wrappers -- thiscall variants
+fn abTC2r(comptime custom_fn: anytype, comptime h: anytype) *const TC2r {
+    return &struct { fn f(a: u32, b: u32) callconv(hook.cc.thiscall) u32 {
+        return if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
+    } }.f;
 }
-
-fn abDetour1d(comptime custom_fn: anytype, comptime h: anytype) *const MathFn1d {
-    return &struct {
-        fn f(a: u32) callconv(hook.cc.fastcall) f64 {
-            return if (ab_use_custom) custom_fn(a) else h.callOriginal(.{a});
-        }
-    }.f;
+fn abTC2v(comptime custom_fn: anytype, comptime h: anytype) *const TC2v {
+    return &struct { fn f(a: u32, b: u32) callconv(hook.cc.thiscall) void {
+        if (ab_use_custom) custom_fn(a, b) else h.callOriginal(.{ a, b });
+    } }.f;
 }
-
-fn abDetour3d(comptime custom_fn: anytype, comptime h: anytype) *const MathFn3d {
-    return &struct {
-        fn f(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) f64 {
-            return if (ab_use_custom) custom_fn(a, b, c) else h.callOriginal(.{ a, b, c });
-        }
-    }.f;
+fn abTC1d(comptime custom_fn: anytype, comptime h: anytype) *const TC1d {
+    return &struct { fn f(a: u32) callconv(hook.cc.thiscall) f64 {
+        return if (ab_use_custom) custom_fn(a) else h.callOriginal(.{a});
+    } }.f;
 }
-
-fn abDetour4v(comptime custom_fn: anytype, comptime h: anytype) *const MathFn4v {
-    return &struct {
-        fn f(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) void {
-            if (ab_use_custom) custom_fn(a, b, c, d) else h.callOriginal(.{ a, b, c, d });
-        }
-    }.f;
+fn abTC4v(comptime custom_fn: anytype, comptime h: anytype) *const TC4v {
+    return &struct { fn f(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.thiscall) void {
+        if (ab_use_custom) custom_fn(a, b, c, d) else h.callOriginal(.{ a, b, c, d });
+    } }.f;
 }
 
 // =============================================================================
@@ -1620,8 +1612,9 @@ pub fn lateInit() void {
 
     // math_sse replacements -- restore original prologues (clobber UnitXP), then hook
     // A/B tested: CUSTOM=our SSE, BASELINE=original x87
-    // Set MATH_TEST_HOOK to 0 to disable all, 1-18 to enable only that one, 99 for all
-    const MATH_TEST_HOOK: u32 = 14;
+    // Bitmask: bit N enables hook N (bit 0 unused). 0x3FFFE = all 17, 0 = none.
+    // Hook 15 removed (0x699330 is vec3 comparison from Silicon, not UnitXP x87 polyfill)
+    const MATH_HOOKS: u32 = 0x77FFE; // all 17 (bits 1-14, 16-18; skip 15)
     const MathHook = struct { addr: u32, prologue: []const u8 };
     const math_hooks = [_]MathHook{
         .{ .addr = 0x7BCA80, .prologue = &.{ 0x55, 0x8b, 0xec, 0x56, 0x8b, 0x75, 0x08 } },  //  1: vecMulMat4
@@ -1638,31 +1631,29 @@ pub fn lateInit() void {
         .{ .addr = 0x672130, .prologue = &.{ 0x55, 0x8b, 0xec, 0xd9, 0x02 } },               // 12: cross
         .{ .addr = 0x602630, .prologue = &.{ 0xd9, 0x41, 0x08, 0xd8, 0x4a, 0x08 } },         // 13: dot
         .{ .addr = 0x4549F0, .prologue = &.{ 0xd9, 0x41, 0x08, 0xd9, 0x41, 0x04 } },         // 14: sqmag
-        .{ .addr = 0x699330, .prologue = &.{ 0xd9, 0x01, 0xd8, 0x1a, 0xdf, 0xe0 } },         // 15: normalize
-        .{ .addr = 0x453620, .prologue = &.{ 0x55, 0x8b, 0xec, 0xd9, 0x02 } },               // 16: evalPoly
-        .{ .addr = 0x637480, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x18 } },         // 17: planeNormal
-        .{ .addr = 0x6DC470, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c } },         // 18: transformAABox
+        .{ .addr = 0x453620, .prologue = &.{ 0x55, 0x8b, 0xec, 0xd9, 0x02 } },               // 15: evalPoly (was 16)
+        .{ .addr = 0x637480, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x18 } },         // 16: planeNormal (was 17)
+        .{ .addr = 0x6DC470, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c } },         // 17: transformAABox (was 18)
     };
     var math_count: u32 = 0;
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 1) { hook.writeProtected(0x7BCA80, math_hooks[0].prologue); _ = math_vecMulMat4_hook.attach(0x7BCA80, abDetour3r(&vecMulMat4_ColMajor, &math_vecMulMat4_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 2) { hook.writeProtected(0x7BCAE0, math_hooks[1].prologue); _ = math_matMulVec3_hook.attach(0x7BCAE0, abDetour3r(&matMulVec3_RowMajor, &math_matMulVec3_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 3) { hook.writeProtected(0x7BCB40, math_hooks[2].prologue); _ = math_quatMulMat4_hook.attach(0x7BCB40, abDetour3r(&quatMulMat4, &math_quatMulMat4_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 4) { hook.writeProtected(0x5F8CF0, math_hooks[3].prologue); _ = math_vec3MulScalar_hook.attach(0x5F8CF0, abDetour3r(&vec3MulScalar, &math_vec3MulScalar_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 5) { hook.writeProtected(0x5132F0, math_hooks[4].prologue); _ = math_vec3MulAssign_hook.attach(0x5132F0, abDetour2r(&vec3MulAssign, &math_vec3MulAssign_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 6) { hook.writeProtected(0x7BDC40, math_hooks[5].prologue); _ = math_applyTranslation_hook.attach(0x7BDC40, abDetour2r(&applyTranslationMatrix, &math_applyTranslation_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 7) { hook.writeProtected(0x7BDCA0, math_hooks[6].prologue); _ = math_scaleByVec_hook.attach(0x7BDCA0, abDetour2r(&scaleMatrix3x3ByVector, &math_scaleByVec_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 8) { hook.writeProtected(0x7BDD00, math_hooks[7].prologue); _ = math_scaleByScalar_hook.attach(0x7BDD00, abDetour2v(&scaleMatrix3x3ByScalar, &math_scaleByScalar_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 9) { hook.writeProtected(0x7BDFC0, math_hooks[8].prologue); _ = math_mul3x3_hook.attach(0x7BDFC0, abDetour3r(&multiply3x3Matrix, &math_mul3x3_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 10) { hook.writeProtected(0x7BE490, math_hooks[9].prologue); _ = math_rotMat3x3_hook.attach(0x7BE490, abDetour4r(&createAxisAngleRotMat3x3, &math_rotMat3x3_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 11) { hook.writeProtected(0x7BDB00, math_hooks[10].prologue); _ = math_rotMat4x4_hook.attach(0x7BDB00, abDetour4r(&createAxisAngleRotMat4x4, &math_rotMat4x4_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 12) { hook.writeProtected(0x672130, math_hooks[11].prologue); _ = math_cross_hook.attach(0x672130, abDetour3r(&crossProduct, &math_cross_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 13) { hook.writeProtected(0x602630, math_hooks[12].prologue); _ = math_dot_hook.attach(0x602630, abDetour2d(&dotProduct, &math_dot_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 14) { hook.writeProtected(0x4549F0, math_hooks[13].prologue); _ = math_sqmag_hook.attach(0x4549F0, abDetour1d(&squaredMagnitude, &math_sqmag_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 15) { hook.writeProtected(0x699330, math_hooks[14].prologue); _ = math_normalize_hook.attach(0x699330, abDetour2v(&vectorNormalize, &math_normalize_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 16) { hook.writeProtected(0x453620, math_hooks[15].prologue); _ = math_evalPoly_hook.attach(0x453620, abDetour3d(&evaluatePolynomial, &math_evalPoly_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 17) { hook.writeProtected(0x637480, math_hooks[16].prologue); _ = math_planeNormal_hook.attach(0x637480, abDetour4v(&calculatePlaneNormal, &math_planeNormal_hook)); math_count += 1; }
-    if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 18) { hook.writeProtected(0x6DC470, math_hooks[17].prologue); _ = math_transformAABox_hook.attach(0x6DC470, abDetour5v(&transformAABox, &math_transformAABox_hook)); math_count += 1; }
-    log.fmt("math_sse: {d}/18 hooks installed (MATH_TEST_HOOK={d})\n", .{ math_count, MATH_TEST_HOOK });
+    if ((MATH_HOOKS & (1 << 1) != 0)) { hook.writeProtected(0x7BCA80, math_hooks[0].prologue); _ = math_vecMulMat4_hook.attach(0x7BCA80, abFC3r(&vecMulMat4_ColMajor, &math_vecMulMat4_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 2) != 0)) { hook.writeProtected(0x7BCAE0, math_hooks[1].prologue); _ = math_matMulVec3_hook.attach(0x7BCAE0, abFC3r(&matMulVec3_RowMajor, &math_matMulVec3_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 3) != 0)) { hook.writeProtected(0x7BCB40, math_hooks[2].prologue); _ = math_quatMulMat4_hook.attach(0x7BCB40, abFC3r(&quatMulMat4, &math_quatMulMat4_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 4) != 0)) { hook.writeProtected(0x5F8CF0, math_hooks[3].prologue); _ = math_vec3MulScalar_hook.attach(0x5F8CF0, abFC3r(&vec3MulScalar, &math_vec3MulScalar_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 5) != 0)) { hook.writeProtected(0x5132F0, math_hooks[4].prologue); _ = math_vec3MulAssign_hook.attach(0x5132F0, abTC2r(&vec3MulAssign, &math_vec3MulAssign_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 6) != 0)) { hook.writeProtected(0x7BDC40, math_hooks[5].prologue); _ = math_applyTranslation_hook.attach(0x7BDC40, abTC2r(&applyTranslationMatrix, &math_applyTranslation_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 7) != 0)) { hook.writeProtected(0x7BDCA0, math_hooks[6].prologue); _ = math_scaleByVec_hook.attach(0x7BDCA0, abTC2r(&scaleMatrix3x3ByVector, &math_scaleByVec_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 8) != 0)) { hook.writeProtected(0x7BDD00, math_hooks[7].prologue); _ = math_scaleByScalar_hook.attach(0x7BDD00, abTC2v(&scaleMatrix3x3ByScalar, &math_scaleByScalar_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 9) != 0)) { hook.writeProtected(0x7BDFC0, math_hooks[8].prologue); _ = math_mul3x3_hook.attach(0x7BDFC0, abFC3r(&multiply3x3Matrix, &math_mul3x3_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 10) != 0)) { hook.writeProtected(0x7BE490, math_hooks[9].prologue); _ = math_rotMat3x3_hook.attach(0x7BE490, abFC4r(&createAxisAngleRotMat3x3, &math_rotMat3x3_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 11) != 0)) { hook.writeProtected(0x7BDB00, math_hooks[10].prologue); _ = math_rotMat4x4_hook.attach(0x7BDB00, abFC4r(&createAxisAngleRotMat4x4, &math_rotMat4x4_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 12) != 0)) { hook.writeProtected(0x672130, math_hooks[11].prologue); _ = math_cross_hook.attach(0x672130, abFC3r(&crossProduct, &math_cross_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 13) != 0)) { hook.writeProtected(0x602630, math_hooks[12].prologue); _ = math_dot_hook.attach(0x602630, abFC2d(&dotProduct, &math_dot_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 14) != 0)) { hook.writeProtected(0x4549F0, math_hooks[13].prologue); _ = math_sqmag_hook.attach(0x4549F0, abTC1d(&squaredMagnitude, &math_sqmag_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 16) != 0)) { hook.writeProtected(0x453620, math_hooks[14].prologue); _ = math_evalPoly_hook.attach(0x453620, abFC3d(&evaluatePolynomial, &math_evalPoly_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 17) != 0)) { hook.writeProtected(0x637480, math_hooks[15].prologue); _ = math_planeNormal_hook.attach(0x637480, abTC4v(&calculatePlaneNormal, &math_planeNormal_hook)); math_count += 1; }
+    if ((MATH_HOOKS & (1 << 18) != 0)) { hook.writeProtected(0x6DC470, math_hooks[16].prologue); _ = math_transformAABox_hook.attach(0x6DC470, abFC5v(&transformAABox, &math_transformAABox_hook)); math_count += 1; }
+    log.fmt("math_sse: {d}/17 hooks installed (mask=0x{x})\n", .{ math_count, MATH_HOOKS });
 }
 
 pub fn removeHooks() void {
@@ -1723,7 +1714,6 @@ pub fn removeHooks() void {
         math_cross_hook.detach();
         math_dot_hook.detach();
         math_sqmag_hook.detach();
-        math_normalize_hook.detach();
         math_evalPoly_hook.detach();
         math_planeNormal_hook.detach();
         math_transformAABox_hook.detach();
