@@ -22,7 +22,7 @@ extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
 extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformMatrix4x4_SSE(u32, u32, u32, u32, u32) void;
-extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) void;
+extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 
 pub const module_name: [*:0]const u8 = "transform44";
 
@@ -42,11 +42,15 @@ const DUMP_FRAMES: u64 = 450; // ~7.5s at 60fps
 
 var prof = ProfState{};
 var t44_depth: u64 = 0; // recursion depth — survives resets
+var dbg_dump_count: u32 = 0; // DEBUG: limit bone matrix dumps
+var dbg_orig_done: bool = false; // DEBUG: run original once
+var dbg_ref_this: u32 = 0; // DEBUG: target for REF overwrite
 var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 
 // A/B testing: alternate between baseline (original) and custom (optimized) code paths.
 // Flips every DUMP_FRAMES so each dump period is purely one mode.
 pub var ab_use_custom: bool = false;
+export var original_trampoline: u32 = 0; // DEBUG: expose trampoline for REF passthrough test
 
 // Teardown guard: set true when CleanupWorldAndEntities fires.
 // During teardown, SceneObject data may be partially freed — our SSE code
@@ -203,22 +207,59 @@ inline fn rdtsc() u64 {
 // =============================================================================
 // Hook: transformMatrix4x4 (0x714260)
 // __thiscall(ECX=SceneObject*, stack: Matrix4x4* ×4)
-// Fastcall mapping: ECX=this, EDX=unused, stack: mat1, mat2, mat3, mat4
 // RET 0x10
 // =============================================================================
 
-const TransformFn = fn (u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
+const TransformFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) void;
 var transform_hook: hook.Detour(TransformFn) = .{};
 
-fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(hook.cc.fastcall) void {
-    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+// --- Comprehensive memory comparison diagnostic ---
+const DIAG_MAX: u32 = 5; // compare first N non-early-exit calls
+var diag_count: u32 = 0;
+// Snapshot buffer: 128KB static for original's state
+var diag_buf: [128 * 1024]u8 align(4) = undefined;
 
+fn diagSnapshot(dst: []u8, src: u32, len: u32) void {
+    const s: [*]const u8 = @ptrFromInt(src);
+    @memcpy(dst[0..len], s[0..len]);
+}
+
+fn diagCompare(label: [*:0]const u8, snap: []const u8, live: u32, len: u32) void {
+    const l: [*]const u8 = @ptrFromInt(live);
+    var diffs: u32 = 0;
+    var first_off: u32 = 0;
+    var first_orig: u32 = 0;
+    var first_ref: u32 = 0;
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        if (snap[i] != l[i]) {
+            if (diffs == 0) {
+                first_off = i;
+                first_orig = snap[i];
+                first_ref = l[i];
+            }
+            diffs += 1;
+        }
+    }
+    if (diffs > 0) {
+        log.fmt("  DIFF {s}: {d} bytes differ, first at +0x{x:0>4} orig=0x{x:0>2} ref=0x{x:0>2}", .{ label, diffs, first_off, first_orig, first_ref });
+        // Also dump first 4 dword-aligned diffs for context
+        var shown: u32 = 0;
+        i = 0;
+        while (i + 3 < len and shown < 8) : (i += 4) {
+            const so = @as(u32, snap[i]) | (@as(u32, snap[i + 1]) << 8) | (@as(u32, snap[i + 2]) << 16) | (@as(u32, snap[i + 3]) << 24);
+            const sr = @as(u32, l[i]) | (@as(u32, l[i + 1]) << 8) | (@as(u32, l[i + 2]) << 16) | (@as(u32, l[i + 3]) << 24);
+            if (so != sr) {
+                log.fmt("    +0x{x:0>4}: orig=0x{x:0>8} ref=0x{x:0>8}", .{ i, so, sr });
+                shown += 1;
+            }
+        }
+    }
+}
+
+fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(hook.cc.thiscall) void {
     const start = rdtsc();
 
-    // Check sync gate — predict early exit
-    // Assembly truth (NOT Ghidra decompiler labels):
-    //   +0x2C = animation_context_ptr  (sync check at +0x10, timestamp at +0x0C)
-    //   +0x30 = model_container_ptr    (+0x130 = M2 model header)
     const model_data = hook.readMem(u32, this + 0x10);
     var is_early = false;
     var bone_count: u32 = 0;
@@ -231,7 +272,6 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
             const anim_sync = hook.readMem(u32, anim_ctx + 0x10);
             if (sync_val == anim_sync) is_early = true;
         }
-        // Model header: *(*(this+0x30) + 0x130), bone count at +0x34
         const model_ctr = hook.readMem(u32, this + 0x30);
         if (model_ctr != 0) {
             const model_hdr = hook.readMem(u32, model_ctr + 0x130);
@@ -244,12 +284,270 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
-    if (ab_use_custom and !teardown_active) {
-        // Using reference version for stress testing
-        _ = transformMatrix4x4_SSE;
+    if (teardown_active) {
+        transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
+    } else if (!is_early and diag_count < DIAG_MAX and t44_depth == 1) {
+        // --- DIAGNOSTIC (disabled): run original, snapshot, run REF, compare ---
+        transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
+
+        // Gather region info from SceneObject
+        const model_ctr_d = hook.readMem(u32, this + 0x30);
+        const model_hdr_d = if (model_ctr_d != 0) hook.readMem(u32, model_ctr_d + 0x130) else 0;
+        const bc = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x34) else 0;
+        const bone_rt_base = hook.readMem(u32, this + 0x90);
+        const bone_out_base = hook.readMem(u32, this + 0x94);
+        const tex_out = hook.readMem(u32, this + 0xA0);
+        const col_out = hook.readMem(u32, this + 0xA8);
+        const scale2 = hook.readMem(u32, this + 0xB0);
+        const scale3 = hook.readMem(u32, this + 0xB4);
+        const gs_vals = hook.readMem(u32, this + 0x64);
+        const anim_ctx_d = hook.readMem(u32, this + 0x2C);
+        const emitter_d = hook.readMem(u32, this + 0x1CC);
+        const gs_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x14) else 0;
+        const tex_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x54) else 0;
+        const col_gate = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x64) else 0;
+        const col_count = if (model_hdr_d != 0 and col_gate != 0) hook.readMem(u32, model_hdr_d + 0x6C) else 0;
+        const bkf_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x74) else 0;
+        const rib_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x11C) else 0;
+        const p124_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x124) else 0;
+        const p134_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x134) else 0;
+        const p13c_count = if (model_hdr_d != 0) hook.readMem(u32, model_hdr_d + 0x13C) else 0;
+
+        // Define regions to compare (addr, len, label) — fit in 128KB buffer
+        const Region = struct { addr: u32, len: u32, label: [*:0]const u8 };
+        var regions: [20]Region = undefined;
+        var n_regions: u32 = 0;
+
+        // SceneObject: 0x000-0x3E0
+        regions[n_regions] = .{ .addr = this, .len = 0x3E0, .label = "SceneObject" };
+        n_regions += 1;
+
+        // Bone runtime: all bones
+        if (bc > 0 and bone_rt_base != 0) {
+            const brt_len = @min(bc * 0x118, 0x10000); // cap at 64KB
+            regions[n_regions] = .{ .addr = bone_rt_base, .len = brt_len, .label = "BoneRT" };
+            n_regions += 1;
+        }
+
+        // Bone output: all bones
+        if (bc > 0 and bone_out_base != 0) {
+            const bout_len = @min(bc * 0x40, 0x4000);
+            regions[n_regions] = .{ .addr = bone_out_base, .len = bout_len, .label = "BoneOut" };
+            n_regions += 1;
+        }
+
+        // Global sequence values
+        if (gs_count > 0 and gs_vals != 0) {
+            regions[n_regions] = .{ .addr = gs_vals, .len = gs_count * 4, .label = "GSValues" };
+            n_regions += 1;
+        }
+
+        // Texture animation output
+        if (tex_count > 0 and tex_out != 0) {
+            regions[n_regions] = .{ .addr = tex_out, .len = @min(tex_count * 0x50, 0x1000), .label = "TexAnim" };
+            n_regions += 1;
+        }
+
+        // Color animation output
+        if (col_count > 0 and col_out != 0) {
+            regions[n_regions] = .{ .addr = col_out, .len = @min(col_count * 0x20, 0x400), .label = "ColorAnim" };
+            n_regions += 1;
+        }
+
+        // Bone keyframe scale2/scale3 buffers
+        if (bkf_count > 0 and scale2 != 0) {
+            regions[n_regions] = .{ .addr = scale2, .len = @min(bkf_count * 0x98, 0x2000), .label = "BKF_Scale2" };
+            n_regions += 1;
+        }
+        if (bkf_count > 0 and scale3 != 0) {
+            regions[n_regions] = .{ .addr = scale3, .len = @min(bkf_count * 0x40, 0x1000), .label = "BKF_Scale3" };
+            n_regions += 1;
+        }
+
+        // Animation context (read-only but check)
+        if (anim_ctx_d != 0) {
+            regions[n_regions] = .{ .addr = anim_ctx_d, .len = 0x20, .label = "AnimCtx" };
+            n_regions += 1;
+        }
+
+        // Emitter context
+        if (emitter_d != 0) {
+            regions[n_regions] = .{ .addr = emitter_d, .len = 0x200, .label = "EmitterCtx" };
+            n_regions += 1;
+        }
+
+        // Ribbon emitter output (this+0x200)
+        if (rib_count > 0) {
+            const rib_out = hook.readMem(u32, this + 0x200);
+            if (rib_out != 0) {
+                regions[n_regions] = .{ .addr = rib_out, .len = @min(rib_count * 0x170, 0x4000), .label = "RibbonOut" };
+                n_regions += 1;
+            }
+        }
+
+        // Particle 0x124 output (this+0x3C4)
+        if (p124_count > 0) {
+            const p124_out = hook.readMem(u32, this + 0x3C4);
+            if (p124_out != 0) {
+                regions[n_regions] = .{ .addr = p124_out, .len = @min(p124_count * 0x84, 0x2000), .label = "Part124" };
+                n_regions += 1;
+            }
+        }
+
+        // Particle 0x134 output (this+0x3C8)
+        if (p134_count > 0) {
+            const p134_out = hook.readMem(u32, this + 0x3C8);
+            if (p134_out != 0) {
+                regions[n_regions] = .{ .addr = p134_out, .len = @min(p134_count * 0xD0, 0x4000), .label = "Part134" };
+                n_regions += 1;
+            }
+        }
+
+        // Particle 0x13C output (this+0x3D0)
+        if (p13c_count > 0) {
+            const p13c_out = hook.readMem(u32, this + 0x3D0);
+            if (p13c_out != 0) {
+                regions[n_regions] = .{ .addr = p13c_out, .len = @min(p13c_count * 0x16C, 0x8000), .label = "Part13C" };
+                n_regions += 1;
+            }
+        }
+
+        // Globals
+        regions[n_regions] = .{ .addr = 0xCF0400, .len = 0x100, .label = "Globals_CF04" };
+        n_regions += 1;
+
+        // Snapshot all regions after original ran
+        var buf_off: u32 = 0;
+        var region_starts: [20]u32 = undefined;
+        var ri: u32 = 0;
+        while (ri < n_regions) : (ri += 1) {
+            region_starts[ri] = buf_off;
+            const len = regions[ri].len;
+            if (buf_off + len <= diag_buf.len) {
+                diagSnapshot(diag_buf[buf_off .. buf_off + len], regions[ri].addr, len);
+                buf_off += len;
+            }
+        }
+
+        // Clear sync so REF doesn't early-exit
+        @as(*align(1) u32, @ptrFromInt(this + 0x40)).* = 0;
+
+        // Run REF
         transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+
+        // Compare each region
+        log.fmt("=== DIAG COMPARE #{d} this=0x{x:0>8} bones={d} regions={d} buf_used={d}", .{ diag_count, this, bc, n_regions, buf_off });
+
+        // Log ALL game constants that might differ from static analysis
+        if (diag_count == 0) {
+            log.fmt("  CONST: s2f=0x{x:0>8} eps1=0x{x:0>8} eps2=0x{x:0>8} h3=0x{x:0>8} h5=0x{x:0>8} c74=0x{x:0>8} cd8=0x{x:0>8}", .{
+                hook.readMem(u32, 0x811610), // SHORT_TO_FLOAT
+                hook.readMem(u32, 0x8029d4), // epsilon 1
+                hook.readMem(u32, 0x80c5c8), // epsilon 2
+                hook.readMem(u32, 0x80297c), // hermite 3
+                hook.readMem(u32, 0x802990), // hermite 5/6
+                hook.readMem(u32, 0x7ffd74), // frequent FLD (particle sections)
+                hook.readMem(u32, 0x7ff9d8), // hermite FADD (particle sections)
+            });
+        }
+
+        ri = 0;
+        while (ri < n_regions) : (ri += 1) {
+            const len = regions[ri].len;
+            const snap_start = region_starts[ri];
+            if (snap_start + len <= diag_buf.len) {
+                diagCompare(regions[ri].label, diag_buf[snap_start .. snap_start + len], regions[ri].addr, len);
+            }
+        }
+
+        // TexAnim gate analysis: dump anim_frame_ctr and per-entry alpha kf_count
+        if (tex_count > 0) {
+            const tex_data_base = hook.readMem(u32, model_hdr_d + 0x58);
+            const afc = hook.readMem(u32, this + 0x8C);
+            log.fmt("  TexAnim gates: anim_frame_ctr={d} tex_count={d}", .{ afc, tex_count });
+            var ti: u32 = 0;
+            while (ti < tex_count and ti < 8) : (ti += 1) {
+                const td = tex_data_base + ti * 0x38;
+                const vec3_gate = hook.readMem(u32, td + 0x0C); // Vec3 kf_count
+                const alpha_gate = hook.readMem(u32, td + 0x28); // alpha kf_count
+                const alpha_mode = hook.readMem(u16, td + 0x1C); // alpha interp_mode
+                // Also read what's at the alpha output slot BEFORE REF wrote to it (from snapshot)
+                const alpha_out_off = ti * 0x50 + 0x3C; // offset within tex_anim_out buffer
+                // Find tex_anim snapshot
+                var snap_alpha_orig: u32 = 0xDEAD;
+                var live_alpha: u32 = 0xDEAD;
+                if (tex_out != 0 and alpha_out_off + 4 <= @min(tex_count * 0x50, 0x1000)) {
+                    // Find the TexAnim snapshot in diag_buf
+                    var si: u32 = 0;
+                    while (si < n_regions) : (si += 1) {
+                        if (regions[si].addr == tex_out) {
+                            const soff = region_starts[si] + alpha_out_off;
+                            if (soff + 4 <= diag_buf.len) {
+                                snap_alpha_orig = @as(u32, diag_buf[soff]) | (@as(u32, diag_buf[soff + 1]) << 8) | (@as(u32, diag_buf[soff + 2]) << 16) | (@as(u32, diag_buf[soff + 3]) << 24);
+                            }
+                            break;
+                        }
+                    }
+                    live_alpha = hook.readMem(u32, tex_out + alpha_out_off);
+                }
+                // Also read the raw short value and the constant at 0x811610
+                const alpha_data_base = hook.readMem(u32, td + 0x1C + 0x18); // AD.keyframe_base for alpha
+                const alpha_idx0 = hook.readMem(u32, tex_out + ti * 0x50 + 0x30); // idx0 from findInterpIdx
+                const raw_short: i16 = if (alpha_data_base != 0) @as(*align(1) const i16, @ptrFromInt(alpha_data_base + alpha_idx0 * 2)).* else 0;
+                const s2f_const = hook.readMem(u32, 0x811610); // SHORT_TO_FLOAT constant
+                log.fmt("    tex[{d}]: vec3_kf={d} alpha_kf={d} mode={d} orig=0x{x:0>8} ref=0x{x:0>8} short={d} s2f=0x{x:0>8}", .{ ti, vec3_gate, alpha_gate, alpha_mode, snap_alpha_orig, live_alpha, raw_short, s2f_const });
+            }
+        }
+
+        diag_count += 1;
     } else {
-        transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
+        // FPU state comparison: capture full x87 state after original vs REF
+        if (diag_count >= DIAG_MAX and diag_count < DIAG_MAX + 3 and t44_depth == 1 and !is_early) {
+            // Run original, capture FPU state
+            transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
+            var fpu_orig: [108]u8 align(16) = undefined;
+            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])"
+                :: [p] "r" (@intFromPtr(&fpu_orig))
+                : "memory"
+            );
+
+            // Clear sync, run REF
+            @as(*align(1) u32, @ptrFromInt(this + 0x40)).* = 0;
+            transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+            var fpu_ref: [108]u8 align(16) = undefined;
+            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])"
+                :: [p] "r" (@intFromPtr(&fpu_ref))
+                : "memory"
+            );
+
+            // Compare and log FPU state
+            // FNSAVE layout (108 bytes): CW(4), SW(4), TW(4), IP(4), CS(4), DP(4), DS(4), ST0-ST7(8×10=80)
+            const cw_o = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_orig) + 0)).*;
+            const sw_o = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_orig) + 4)).*;
+            const tw_o = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_orig) + 8)).*;
+            const cw_r = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + 0)).*;
+            const sw_r = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + 4)).*;
+            const tw_r = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + 8)).*;
+            log.fmt("  FPU orig: CW=0x{x:0>4} SW=0x{x:0>4} TW=0x{x:0>4}", .{ cw_o & 0xFFFF, sw_o & 0xFFFF, tw_o & 0xFFFF });
+            log.fmt("  FPU ref:  CW=0x{x:0>4} SW=0x{x:0>4} TW=0x{x:0>4}", .{ cw_r & 0xFFFF, sw_r & 0xFFFF, tw_r & 0xFFFF });
+            // Dump ST0-ST7 (10 bytes each, starting at offset 28)
+            var sti: u32 = 0;
+            while (sti < 8) : (sti += 1) {
+                const base = 28 + sti * 10;
+                const o0 = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_orig) + base)).*;
+                const o1 = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_orig) + base + 4)).*;
+                const o2 = @as(*align(1) const u16, @ptrFromInt(@intFromPtr(&fpu_orig) + base + 8)).*;
+                const r0 = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + base)).*;
+                const r1 = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + base + 4)).*;
+                const r2 = @as(*align(1) const u16, @ptrFromInt(@intFromPtr(&fpu_ref) + base + 8)).*;
+                if (o0 != r0 or o1 != r1 or o2 != r2) {
+                    log.fmt("  ST{d} DIFF: orig={x:0>4}_{x:0>8}_{x:0>8} ref={x:0>4}_{x:0>8}_{x:0>8}", .{ sti, o2, o1, o0, r2, r1, r0 });
+                }
+            }
+            diag_count += 1;
+        } else {
+            transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+        }
     }
 
     t44_depth -|= 1;
@@ -1403,13 +1701,14 @@ pub fn installHooks() void {
 
     log = logging.Logger.open(module_name, .both);
     _ = transform_hook.attach(0x714260, &transformDetour);
+    original_trampoline = @intCast(transform_hook.inner.trampoline);
     _ = render_frame_hook.attach(0x707680, &renderFrameDetour);
     _ = exec_render_pass_hook.attach(0x708900, &execRenderPassDetour);
     _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
     _ = teardown_hook.attach(0x491180, &teardownDetour);
     _ = render_quads_hook.attach(0x76FB00, &renderQuadsDetour);
     _ = movement_hook.attach(0x616620, &movementDetour);
-    _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour);
+    // _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour); // disabled — pure passthrough, REF calls 0x713ea0 directly
 
     // Perf-identified hotspot hooks
     _ = clip_hook.attach(0x6318c0, &clipDetour);
