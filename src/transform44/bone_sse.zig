@@ -180,9 +180,6 @@ const HERMITE_5: f32 = 5.0; // DAT_00802990 (used as 3*5/3 in some bezier)
 extern fn sinf(f32) f32;
 extern fn cosf(f32) f32;
 
-// Original transformMatrix4x4 for recursive attachment calls.
-// The hook's detour will auto-dispatch to our SSE version.
-const OrigTransformFn = *const fn (u32, u32, u32, u32, u32) callconv(.c) void;
 
 // =============================================================================
 // Memory access helpers
@@ -365,6 +362,43 @@ inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void 
     inline for (0..16) |i| {
         wf32(mat + @as(u32, @intCast(i)) * 4, tmp[i]);
     }
+}
+
+/// 4x4 matrix multiply: dst = left × right (row-major)
+/// Handles aliasing: dst may equal left or right.
+inline fn matMul4x4(dst: u32, left: u32, right: u32) void {
+    const r0: V4 = .{ rf32(right + 0x00), rf32(right + 0x04), rf32(right + 0x08), rf32(right + 0x0C) };
+    const r1: V4 = .{ rf32(right + 0x10), rf32(right + 0x14), rf32(right + 0x18), rf32(right + 0x1C) };
+    const r2: V4 = .{ rf32(right + 0x20), rf32(right + 0x24), rf32(right + 0x28), rf32(right + 0x2C) };
+    const r3: V4 = .{ rf32(right + 0x30), rf32(right + 0x34), rf32(right + 0x38), rf32(right + 0x3C) };
+
+    // Read all left rows before writing (handles dst==left aliasing)
+    var result: [16]f32 = undefined;
+    inline for (0..4) |i| {
+        const b = @as(u32, @intCast(i)) * 0x10;
+        const row = splat(rf32(left + b)) * r0 + splat(rf32(left + b + 4)) * r1 + splat(rf32(left + b + 8)) * r2 + splat(rf32(left + b + 12)) * r3;
+        result[i * 4 + 0] = row[0];
+        result[i * 4 + 1] = row[1];
+        result[i * 4 + 2] = row[2];
+        result[i * 4 + 3] = row[3];
+    }
+    inline for (0..16) |i| {
+        wf32(dst + @as(u32, @intCast(i)) * 4, result[i]);
+    }
+}
+
+/// IsParticleBufferEmpty reimplemented from assembly at 0x7B5F60.
+/// Returns true if buffer is NOT empty (has active particles).
+/// Recursive: checks [this+0x64], then iterates children at [this+0x80].
+fn isParticleBufferNotEmpty(ptr: u32) bool {
+    if (ru32(ptr + 0x64) != 0) return true;
+    const count = ru32(ptr + 0x7C);
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const child = ru32(ptr + 0x80 + i * 4);
+        if (isParticleBufferNotEmpty(child)) return true;
+    }
+    return false;
 }
 
 /// Copy 16 floats (4x4 matrix)
@@ -859,16 +893,10 @@ export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
         }
     }
 
-    // initParticlePixelShaderGeneration (0x74a7c0) — matrix multiply.
-    // Computes: *(this+0xFC) = *(this+0xBC) × mat1
-    // Calls multiplyMatrix4x4_Basic (0x7507BB) directly:
-    //   __stdcall(output=this+0xFC, left=this+0xBC, right=mat1), RET 0xC
-    // Assembly-verified param order from 0x71438B:
-    //   PUSH mat1 (right), PUSH &0xBC (left), PUSH &0xFC (output), CALL
-    {
-        const matMulBasic: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x7507BB);
-        matMulBasic(this + 0xFC, this + 0xBC, mat1);
-    }
+    // initPPSG: *(this+0xFC) = *(this+0xBC) × mat1
+    // Assembly at 0x71438B: PUSH mat1, PUSH &0xBC, PUSH &0xFC, CALL 0x74A7C0
+    // Reimplemented as inline SSE 4x4 matrix multiply.
+    matMul4x4(this + 0xFC, this + 0xBC, mat1);
 
     // =========================================================================
     // Section 5: child_objects_padding (len_sq of world transform translation)
@@ -1284,11 +1312,14 @@ export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                 //   CALL 0x74A7C0 (multiplyMatrix4x4: output = left * right)
                 // This is bone_local *= *(bone_rt+0xF0)
                 if ((@as(i8, @bitCast(@as(u8, @truncate(combined_flags)))) < 0) and ru32(brt + BR.bone_flag_cache) != 0) {
-                    const extra_mat = ru32(brt + BR.bone_flag_cache); // pointer to additional matrix
+                    const extra_mat = ru32(brt + BR.bone_flag_cache);
                     // In-place multiply: bone_local = bone_local * extra_mat
-                    // Use multiplyMatrix4x4_Basic directly (0x7507BB, __stdcall RET 0xC)
-                    const matMulBasic: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x7507BB);
-                    matMulBasic(lm2_addr, lm2_addr, extra_mat);
+                    // Original copies to temp when output==left, then multiplies.
+                    var tmp: [16]f32 = undefined;
+                    for (0..16) |fi| {
+                        tmp[fi] = local_mat2[fi];
+                    }
+                    matMul4x4(lm2_addr, @intFromPtr(&tmp), extra_mat);
                 }
 
                 // Step 3: Translation interpolation
@@ -1703,14 +1734,26 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
         const bone_idx = @as(u32, ru16(entry + 2));
         const bone_rt = bone_rt_base + bone_idx * 0x118;
 
-        // Process each sub-track (visibility, position, speed, emission rate, scale, color)
-        // Position track
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x30)) {
-            interpVec3Track(this, bone_rt, entry + 0x24, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+        // Ribbon emitter tracks from assembly (0x716402-0x716AA9):
+        // Track 1 (Vec3): gate=entry+0x1C, AnimData=entry+0x10, output=output+0x00
+        // Assembly: 0x71660D CMP [EDX+0x1C]; 0x716624 LEA ESI,[EAX+0x10]; PUSH EDI
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x1C)) {
+            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
-        // Additional scalar tracks follow same pattern
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x4C)) {
-            interpFloatTrack(this, bone_rt, entry + 0x40, output + 0x50);
+        // Track 2 (Vec3): gate=entry+0x38, AnimData=entry+0x2C, output=output+0x30
+        // Assembly: 0x716517 CMP [EDX+0x38]; 0x716530 LEA ECX,[EDX+0x2C]; 0x716539 LEA EAX,[EDI+0x30]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x38)) {
+            interpVec3Track(this, bone_rt, entry + 0x2C, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
+        }
+        // Track 3 (float): gate=entry+0x70, AnimData=entry+0x64, output=output+0x80
+        // Assembly: 0x7167D4 CMP [EAX+0x70]; 0x7167F0 LEA ECX,[EDX+0x64]; 0x7167F9 LEA EAX,[EDI+0x80]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x70)) {
+            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80);
+        }
+        // Track 4 (Vec3): gate=entry+0x54, AnimData=entry+0x48, output=output+0x50
+        // Assembly: 0x7168EE CMP [EDX+0x54]; 0x716905 LEA ECX,[EAX+0x48]; 0x716912 LEA ESI,[EDI+0x50]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x54)) {
+            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
     }
 }
@@ -1918,11 +1961,8 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (emitter_active != 0) {
                 buf_active = 1;
             } else {
-                // Call IsParticleBufferEmpty (0x7B5F60)
-                // Assembly: MOV ECX,[EBP-0x10]; CALL 0x7B5F60
-                // __thiscall(ECX=ptr), plain RET, returns 0 or 1 in EAX
-                const isEmptyFn: *const fn (u32) callconv(.{ .x86_fastcall = .{} }) u32 = @ptrFromInt(0x7B5F60);
-                if (isEmptyFn(local_14) != 0) {
+                // IsParticleBufferEmpty — reimplemented from assembly at 0x7B5F60
+                if (isParticleBufferNotEmpty(local_14)) {
                     buf_active = 1;
                 }
             }
