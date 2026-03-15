@@ -1018,8 +1018,666 @@ const FC4v = fn (u32, u32, u32, u32) callconv(FC) void;
 // __cdecl for CRT functions (caller cleanup)
 const CD0r = fn () callconv(hook.cc.cdecl) u32; // ftol: no params, returns EAX (ST(0) implicit)
 
-/// Generates a probe detour that atomically increments a counter, then calls
-/// through to the original function via callOriginal.
+// =============================================================================
+// SSE math replacements — ordered by call frequency (highest first)
+// =============================================================================
+
+// --- transformVector3ByMatrix4x4 (10.8M calls/7.5s) ---
+// __fastcall(outVec3_ECX, inVec3_EDX, matrix_stack), RET 0x4
+// Affine: out[i] = dot(vec4(in, 1.0), matrix_row[i])
+fn sseTransformVec3Mat4(out: u32, in_vec: u32, mat: u32) callconv(FC) u32 {
+    const dst: [*]f32 = @ptrFromInt(out);
+    const src: [*]const f32 = @ptrFromInt(in_vec);
+    const m: [*]const f32 = @ptrFromInt(mat);
+    const v: @Vector(4, f32) = .{ src[0], src[1], src[2], 1.0 };
+    const r0: @Vector(4, f32) = .{ m[0], m[1], m[2], m[3] };
+    const r1: @Vector(4, f32) = .{ m[4], m[5], m[6], m[7] };
+    const r2: @Vector(4, f32) = .{ m[8], m[9], m[10], m[11] };
+    dst[0] = @reduce(.Add, v * r0);
+    dst[1] = @reduce(.Add, v * r1);
+    dst[2] = @reduce(.Add, v * r2);
+    return out;
+}
+
+// --- scaleMatrix3x3ByVector (1.3M calls/7.5s) ---
+// __thiscall(matrix_ECX, scaleVec3_stack), RET 0x4
+// In-place: row0 *= s.x, row1 *= s.y, row2 *= s.z
+fn sseScaleMat3x3(mat: u32, scale: u32) callconv(TC) u32 {
+    const m: [*]f32 = @ptrFromInt(mat);
+    const s: [*]const f32 = @ptrFromInt(scale);
+    // Row 0 *= s.x
+    m[0] *= s[0];
+    m[1] *= s[0];
+    m[2] *= s[0];
+    // Row 1 *= s.y
+    m[3] *= s[1];
+    m[4] *= s[1];
+    m[5] *= s[1];
+    // Row 2 *= s.z
+    m[6] *= s[2];
+    m[7] *= s[2];
+    m[8] *= s[2];
+    return mat;
+}
+
+// --- ClassifyPointAgainstFrustum (3.2M calls/7.5s) ---
+// __thiscall(frustumPlanes_ECX, pointVec3_stack, outBitmask_stack), RET 0x8
+// Tests point against 6 frustum planes, produces 6-bit outcode bitmask.
+fn sseClassifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) callconv(TC) u32 {
+    const p: [*]const f32 = @ptrFromInt(point);
+    const mask: *u32 = @ptrFromInt(out_mask);
+    const planes: [*]const f32 = @ptrFromInt(planes_ptr);
+    const px = p[0];
+    const py = p[1];
+    const pz = p[2];
+    var bits: u32 = 0;
+    // 6 planes, each is {nx, ny, nz, d} = 4 floats
+    inline for (0..6) |i| {
+        const pl = planes + i * 4;
+        const dist = px * pl[0] + py * pl[1] + pz * pl[2] + pl[3];
+        if (dist < 0) bits |= (@as(u32, 1) << @intCast(i));
+    }
+    mask.* = bits;
+    return planes_ptr;
+}
+
+// --- CheckBoxLineIntersection (2.7M calls/7.5s) ---
+// __fastcall(boxMin_ECX, lineStart_EDX, lineEnd_stack), RET 0x4
+// Slab-method AABB-line intersection. Box is min[3] at +0, max[3] at +0xC.
+fn sseCheckBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32) callconv(FC) u32 {
+    const bmin: [*]const f32 = @ptrFromInt(box_ptr);
+    const bmax: [*]const f32 = @ptrFromInt(box_ptr + 0xC);
+    const start: [*]const f32 = @ptrFromInt(line_start);
+    const end: [*]const f32 = @ptrFromInt(line_end);
+
+    var tmin: f32 = 0.0;
+    var tmax: f32 = 1.0;
+
+    inline for (0..3) |i| {
+        const dir = end[i] - start[i];
+        if (@abs(dir) < 1.0e-20) {
+            // Ray parallel to slab — check if origin is within
+            if (start[i] < bmin[i] or start[i] > bmax[i]) return 0;
+        } else {
+            const inv_dir = 1.0 / dir;
+            var t0 = (bmin[i] - start[i]) * inv_dir;
+            var t1 = (bmax[i] - start[i]) * inv_dir;
+            if (t0 > t1) {
+                const tmp = t0;
+                t0 = t1;
+                t1 = tmp;
+            }
+            if (t0 > tmin) tmin = t0;
+            if (t1 < tmax) tmax = t1;
+            if (tmin > tmax) return 0;
+        }
+    }
+    return 1;
+}
+
+// --- CalculateDistanceToPlane (525K calls/7.5s) ---
+// __fastcall(point_ECX, plane_EDX, direction_stack), RET 0x4
+// Returns (dot(point,normal)+d) / dot(direction,normal) via x87 ST(0)
+fn sseDistanceToPlane(point: u32, plane: u32, direction: u32) callconv(FC) f64 {
+    const p: [*]const f32 = @ptrFromInt(point);
+    const pl: [*]const f32 = @ptrFromInt(plane);
+    const dir: [*]const f32 = @ptrFromInt(direction);
+    const dot1 = p[0] * pl[0] + p[1] * pl[1] + p[2] * pl[2] + pl[3];
+    const dot2 = dir[0] * pl[0] + dir[1] * pl[1] + dir[2] * pl[2];
+    if (@abs(dot2) < 1.0e-20) return 0.0;
+    return @floatCast(dot1 / dot2);
+}
+
+// --- normalizeVector3 (137K calls/7.5s) ---
+// __thiscall(Vec3_ECX, length_stack), RET 0x4
+// Divides each component by length: xyz *= 1.0/length
+fn sseNormalizeVec3(vec: u32, length_bits: u32) callconv(TC) void {
+    const v: [*]f32 = @ptrFromInt(vec);
+    const length: f32 = @bitCast(length_bits);
+    const scale = 1.0 / length;
+    v[0] *= scale;
+    v[1] *= scale;
+    v[2] *= scale;
+}
+
+// --- ApplyTranslationMatrix (182K calls/7.5s) ---
+// __thiscall(matrix_ECX, vec3_stack), RET 0x4
+// mat[12] += dot(row0, vec), mat[13] += dot(row1, vec), mat[14] += dot(row2, vec)
+fn sseApplyTranslation(mat: u32, vec: u32) callconv(TC) u32 {
+    const m: [*]f32 = @ptrFromInt(mat);
+    const v: [*]const f32 = @ptrFromInt(vec);
+    m[12] += m[0] * v[0] + m[4] * v[1] + m[8] * v[2];
+    m[13] += m[1] * v[0] + m[5] * v[1] + m[9] * v[2];
+    m[14] += m[2] * v[0] + m[6] * v[1] + m[10] * v[2];
+    return mat;
+}
+
+// --- MultiplyMatrix3x4 (hooked but low count — still pure math) ---
+// __fastcall(out_ECX, matA_EDX, matB_stack), RET 0x4
+fn sseMulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
+    const dst: [*]f32 = @ptrFromInt(out);
+    const a: [*]const f32 = @ptrFromInt(a_ptr);
+    const b: [*]const f32 = @ptrFromInt(b_ptr);
+    // 3x3 rotation block
+    inline for (0..3) |row| {
+        inline for (0..3) |col| {
+            dst[row * 3 + col] = a[col] * b[row * 3] + a[col + 3] * b[row * 3 + 1] + a[col + 6] * b[row * 3 + 2];
+        }
+    }
+    // Translation row (indices 9-11): same multiply + add B's translation
+    inline for (0..3) |col| {
+        dst[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+    }
+    return out;
+}
+
+// --- multiplyMatrix3x3 (low count but trivial) ---
+// __fastcall(dst_ECX, lhs_EDX, rhs_stack), RET 0x4
+fn sseMulMat3x3(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
+    const dst: [*]f32 = @ptrFromInt(out);
+    const a: [*]const f32 = @ptrFromInt(a_ptr);
+    const b: [*]const f32 = @ptrFromInt(b_ptr);
+    inline for (0..3) |row| {
+        inline for (0..3) |col| {
+            dst[row * 3 + col] = a[col] * b[row * 3] + a[col + 3] * b[row * 3 + 1] + a[col + 6] * b[row * 3 + 2];
+        }
+    }
+    return out;
+}
+
+// --- transformVector4ByMatrix4x4 (120K calls/7.5s) ---
+// __fastcall(outVec4_ECX, inVec4_EDX, matrix_stack), RET 0x4
+fn sseTransformVec4Mat4(out: u32, in_vec: u32, mat: u32) callconv(FC) u32 {
+    const dst: [*]f32 = @ptrFromInt(out);
+    const src: [*]const f32 = @ptrFromInt(in_vec);
+    const m: [*]const f32 = @ptrFromInt(mat);
+    const v: @Vector(4, f32) = .{ src[0], src[1], src[2], src[3] };
+    inline for (0..4) |i| {
+        const row: @Vector(4, f32) = .{ m[i * 4], m[i * 4 + 1], m[i * 4 + 2], m[i * 4 + 3] };
+        dst[i] = @reduce(.Add, v * row);
+    }
+    return out;
+}
+
+// --- TestSphereAgainstFrustum (375K calls/7.5s) ---
+// __thiscall(frustumPlanes_ECX, sphere_stack), RET 0x4
+// Tests sphere (xyz + radius at [3]) against 6 planes. Returns 0 (outside) / 3 (inside).
+fn sseTestSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
+    const planes: [*]const f32 = @ptrFromInt(planes_ptr);
+    const s: [*]const f32 = @ptrFromInt(sphere);
+    const cx = s[0];
+    const cy = s[1];
+    const cz = s[2];
+    const r = s[3];
+    inline for (0..6) |i| {
+        const pl = planes + i * 4;
+        const dist = cx * pl[0] + cy * pl[1] + cz * pl[2] + pl[3];
+        if (dist < -r) return 0; // fully outside this plane
+    }
+    return 3;
+}
+
+// --- IsPointInsideBounds (1.7M calls/7.5s) ---
+// __fastcall(vec3A_ECX, vec3B_EDX), RET (no stack cleanup)
+// Returns 1 if all components of B <= A
+fn sseIsPointInsideBounds(a: u32, b: u32) callconv(FC) u32 {
+    const va: [*]const f32 = @ptrFromInt(a);
+    const vb: [*]const f32 = @ptrFromInt(b);
+    if (vb[0] <= va[0] and vb[1] <= va[1] and vb[2] <= va[2]) return 1;
+    return 0;
+}
+
+// --- createAxisAngleRotationMatrix (304K calls/7.5s) ---
+// __fastcall(outMatrix4x4_ECX, axisVec3_EDX, angle_stack, isNormalized_stack), RET 0x8
+// Rodrigues' formula: R = cos(a)*I + (1-cos(a))*outer(axis) + sin(a)*skew(axis)
+fn sseCreateAxisAngleRotMat4(out: u32, axis_ptr: u32, angle_bits: u32, is_normalized: u32) callconv(FC) u32 {
+    const m: [*]f32 = @ptrFromInt(out);
+    const ax: [*]const f32 = @ptrFromInt(axis_ptr);
+    var x = ax[0];
+    var y = ax[1];
+    var z = ax[2];
+    // Normalize axis if not already
+    if (is_normalized == 0) {
+        const len = @sqrt(x * x + y * y + z * z);
+        if (len > 1.0e-20) {
+            const inv = 1.0 / len;
+            x *= inv;
+            y *= inv;
+            z *= inv;
+        }
+    }
+    const angle: f32 = @bitCast(angle_bits);
+    const c = @cos(angle);
+    const s = @sin(angle);
+    const t = 1.0 - c;
+    // Row 0
+    m[0] = t * x * x + c;
+    m[1] = t * x * y + s * z;
+    m[2] = t * x * z - s * y;
+    m[3] = 0;
+    // Row 1
+    m[4] = t * x * y - s * z;
+    m[5] = t * y * y + c;
+    m[6] = t * y * z + s * x;
+    m[7] = 0;
+    // Row 2
+    m[8] = t * x * z + s * y;
+    m[9] = t * y * z - s * x;
+    m[10] = t * z * z + c;
+    m[11] = 0;
+    // Row 3 — identity
+    m[12] = 0;
+    m[13] = 0;
+    m[14] = 0;
+    m[15] = 1;
+    return out;
+}
+
+// --- createAxisAngleRotationMatrix3x3 (13K calls/7.5s) ---
+// __fastcall(outMat3x3_ECX, axisVec3_EDX, angle_stack, isNorm_stack), RET 0x8
+fn sseCreateAxisAngleRotMat3x3(out: u32, axis_ptr: u32, angle_bits: u32, is_normalized: u32) callconv(FC) u32 {
+    const m: [*]f32 = @ptrFromInt(out);
+    const ax: [*]const f32 = @ptrFromInt(axis_ptr);
+    var x = ax[0];
+    var y = ax[1];
+    var z = ax[2];
+    if (is_normalized == 0) {
+        const len = @sqrt(x * x + y * y + z * z);
+        if (len > 1.0e-20) {
+            const inv = 1.0 / len;
+            x *= inv;
+            y *= inv;
+            z *= inv;
+        }
+    }
+    const angle: f32 = @bitCast(angle_bits);
+    const c = @cos(angle);
+    const s = @sin(angle);
+    const t = 1.0 - c;
+    m[0] = t * x * x + c;
+    m[1] = t * x * y + s * z;
+    m[2] = t * x * z - s * y;
+    m[3] = t * x * y - s * z;
+    m[4] = t * y * y + c;
+    m[5] = t * y * z + s * x;
+    m[6] = t * x * z + s * y;
+    m[7] = t * y * z - s * x;
+    m[8] = t * z * z + c;
+    return out;
+}
+
+// --- CreateRotationMatrix 3x4 (probe only, same Rodrigues) ---
+// __fastcall(outMatrix_ECX, axisVec_EDX, angle_stack, isNorm_stack), RET 0x8
+fn sseCreateRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normalized: u32) callconv(FC) u32 {
+    const m: [*]f32 = @ptrFromInt(out);
+    const ax: [*]const f32 = @ptrFromInt(axis_ptr);
+    var x = ax[0];
+    var y = ax[1];
+    var z = ax[2];
+    if (is_normalized == 0) {
+        const len = @sqrt(x * x + y * y + z * z);
+        if (len > 1.0e-20) {
+            const inv = 1.0 / len;
+            x *= inv;
+            y *= inv;
+            z *= inv;
+        }
+    }
+    const angle: f32 = @bitCast(angle_bits);
+    const c = @cos(angle);
+    const s = @sin(angle);
+    const t = 1.0 - c;
+    // 3x3 rotation block
+    m[0] = t * x * x + c;
+    m[1] = t * x * y + s * z;
+    m[2] = t * x * z - s * y;
+    m[3] = t * x * y - s * z;
+    m[4] = t * y * y + c;
+    m[5] = t * y * z + s * x;
+    m[6] = t * x * z + s * y;
+    m[7] = t * y * z - s * x;
+    m[8] = t * z * z + c;
+    // Translation column zeroed
+    m[9] = 0;
+    m[10] = 0;
+    m[11] = 0;
+    return out;
+}
+
+// --- quaternion_slerp (5.7K but foundational) ---
+// __fastcall(outQuat_ECX, quatA_EDX, t_stack, quatB_stack), RET 0x8
+fn sseQuatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) callconv(FC) u32 {
+    const dst: [*]f32 = @ptrFromInt(out);
+    const a: [*]const f32 = @ptrFromInt(a_ptr);
+    const b_raw: [*]const f32 = @ptrFromInt(b_ptr);
+    const t: f32 = @bitCast(t_bits);
+    // Dot product
+    var dot = a[0] * b_raw[0] + a[1] * b_raw[1] + a[2] * b_raw[2] + a[3] * b_raw[3];
+    // Shortest path — negate b if dot < 0
+    var sign: f32 = 1.0;
+    if (dot < 0) {
+        dot = -dot;
+        sign = -1.0;
+    }
+    var s0: f32 = undefined;
+    var s1: f32 = undefined;
+    if (dot > 0.9995) {
+        // Very close — linear interpolation
+        s0 = 1.0 - t;
+        s1 = t * sign;
+    } else {
+        const theta = std.math.acos(dot);
+        const sin_theta = @sin(theta);
+        const inv_sin = 1.0 / sin_theta;
+        s0 = @sin((1.0 - t) * theta) * inv_sin;
+        s1 = @sin(t * theta) * inv_sin * sign;
+    }
+    dst[0] = s0 * a[0] + s1 * b_raw[0];
+    dst[1] = s0 * a[1] + s1 * b_raw[1];
+    dst[2] = s0 * a[2] + s1 * b_raw[2];
+    dst[3] = s0 * a[3] + s1 * b_raw[3];
+    return out;
+}
+
+// --- NormalizeVector3_InPlace (29K calls/7.5s) ---
+// __fastcall(vec3_ECX), RET (no stack cleanup)
+fn sseNormalizeVec3InPlace(vec: u32) callconv(FC) void {
+    const v: [*]f32 = @ptrFromInt(vec);
+    const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (len > 1.0e-20) {
+        const inv = 1.0 / len;
+        v[0] *= inv;
+        v[1] *= inv;
+        v[2] *= inv;
+    }
+}
+
+// --- Vector3_DotProduct (31K calls/7.5s) ---
+// __fastcall(vecA_ECX, vecB_EDX), RET (no stack cleanup). Returns f64 via x87.
+fn sseVec3Dot(a: u32, b: u32) callconv(FC) f64 {
+    const va: [*]const f32 = @ptrFromInt(a);
+    const vb: [*]const f32 = @ptrFromInt(b);
+    return @floatCast(va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2]);
+}
+
+// --- getTransposedMatrix4x4 ---
+// __thiscall(srcMatrix_ECX, dstMatrix_stack), RET 0x4
+fn sseTransposeMat4x4(src: u32, dst: u32) callconv(TC) u32 {
+    const s: [*]const f32 = @ptrFromInt(src);
+    const d: [*]f32 = @ptrFromInt(dst);
+    inline for (0..4) |row| {
+        inline for (0..4) |col| {
+            d[row * 4 + col] = s[col * 4 + row];
+        }
+    }
+    return src;
+}
+
+// --- MultiplyMatrix3x4InPlace ---
+// __thiscall(matrixA_ECX, matrixB_stack), RET 0x4. Returns this.
+// this = this * matB. Uses stack temp for safe aliasing.
+fn sseMulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
+    const a: [*]f32 = @ptrFromInt(mat_a);
+    const b: [*]const f32 = @ptrFromInt(mat_b);
+    // Temp for result (12 floats)
+    var tmp: [12]f32 = undefined;
+    inline for (0..3) |row| {
+        inline for (0..3) |col| {
+            tmp[row * 3 + col] = a[col] * b[row * 3] + a[col + 3] * b[row * 3 + 1] + a[col + 6] * b[row * 3 + 2];
+        }
+    }
+    inline for (0..3) |col| {
+        tmp[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+    }
+    // Copy back
+    inline for (0..12) |i| {
+        a[i] = tmp[i];
+    }
+    return mat_a;
+}
+
+// --- TestOrientedBoundingBoxAgainstFrustum ---
+// __thiscall(frustumPlanes_ECX, aabb_stack, rotMatrix_stack, transVec_stack), RET 0xC
+// Tests OBB against 6 frustum planes. Returns 0 (rejected) / 3 (inside).
+fn sseTestOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_ptr: u32) callconv(TC) u32 {
+    const planes: [*]const f32 = @ptrFromInt(planes_ptr);
+    const aabb: [*]const f32 = @ptrFromInt(aabb_ptr); // min[3] at +0, max[3] at +3
+    const rot: [*]const f32 = @ptrFromInt(rot_ptr); // 3x3 rotation matrix
+    const trans: [*]const f32 = @ptrFromInt(trans_ptr); // translation vec3
+    // Build 8 corners from AABB min/max
+    const min = [3]f32{ aabb[0], aabb[1], aabb[2] };
+    const max = [3]f32{ aabb[3], aabb[4], aabb[5] };
+    var corners: [8][3]f32 = undefined;
+    inline for (0..8) |i| {
+        const lx = if (i & 1 != 0) max[0] else min[0];
+        const ly = if (i & 2 != 0) max[1] else min[1];
+        const lz = if (i & 4 != 0) max[2] else min[2];
+        // Transform: world = rot * local + trans
+        corners[i][0] = rot[0] * lx + rot[3] * ly + rot[6] * lz + trans[0];
+        corners[i][1] = rot[1] * lx + rot[4] * ly + rot[7] * lz + trans[1];
+        corners[i][2] = rot[2] * lx + rot[5] * ly + rot[8] * lz + trans[2];
+    }
+    // Test against 6 planes
+    inline for (0..6) |p| {
+        const pl = planes + p * 4;
+        var all_outside = true;
+        inline for (0..8) |c| {
+            const dist = corners[c][0] * pl[0] + corners[c][1] * pl[1] + corners[c][2] * pl[2] + pl[3];
+            if (dist >= 0) all_outside = false;
+        }
+        if (all_outside) return 0;
+    }
+    return 3;
+}
+
+// --- createZRotationMatrix3x3 ---
+// __thiscall(outMat3x3_ECX, angle_stack), RET 0x4. Returns this.
+fn sseCreateZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
+    const m: [*]f32 = @ptrFromInt(out);
+    const angle: f32 = @bitCast(angle_bits);
+    const c = @cos(angle);
+    const s = @sin(angle);
+    m[0] = c;  m[1] = s;  m[2] = 0;
+    m[3] = -s; m[4] = c;  m[5] = 0;
+    m[6] = 0;  m[7] = 0;  m[8] = 1;
+    return out;
+}
+
+// --- addVector3ToAccumulator (136K calls/7.5s) ---
+// __thiscall(this_ECX, vec3_stack), RET 0x4
+// Adds Vec3 to this+0x54, also adds scaled copy (global 0x81207C) into 3x3 diagonal
+// at +0x84/+0xA8/+0xCC
+fn sseAddVec3ToAccumulator(this: u32, vec: u32) callconv(TC) void {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const v: [*]const f32 = @ptrFromInt(vec);
+    const scale: f32 = @as(*const f32, @ptrFromInt(0x81207C)).*;
+    // Accumulate translation at +0x54 (offset in f32 = 0x54/4 = 21)
+    obj[21] += v[0];
+    obj[22] += v[1];
+    obj[23] += v[2];
+    // Scaled copy into 3x3 matrix diagonal: +0x84=33, +0xA8=42, +0xCC=51
+    obj[33] += v[0] * scale;
+    obj[42] += v[1] * scale;
+    obj[51] += v[2] * scale;
+}
+
+// --- addToColorAccumulator (10K calls/7.5s) ---
+// __thiscall(this_ECX, colorVec3_stack), RET 0x4
+// Accumulates color/light into this+0x6C (offset in f32 = 0x6C/4 = 27)
+fn sseAddToColorAccumulator(this: u32, color: u32) callconv(TC) void {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const c: [*]const f32 = @ptrFromInt(color);
+    obj[27] += c[0];
+    obj[28] += c[1];
+    obj[29] += c[2];
+}
+
+// --- calculateSinCos ---
+// __stdcall(float angle, float* outSin, float* outCos), RET 0xC
+fn sseCalculateSinCos(angle_bits: u32, out_sin: u32, out_cos: u32) callconv(SC) void {
+    const angle: f32 = @bitCast(angle_bits);
+    const s: *f32 = @ptrFromInt(out_sin);
+    const c: *f32 = @ptrFromInt(out_cos);
+    s.* = @sin(angle);
+    c.* = @cos(angle);
+}
+
+// --- rotateMatrixByQuaternion (5.7K calls/7.5s) ---
+// __thiscall(matrix_ECX, quat_stack), RET 0x4
+// Builds rotation matrix from quaternion, multiplies with existing matrix.
+fn sseRotateMatByQuat(mat: u32, quat: u32) callconv(TC) u32 {
+    const m: [*]f32 = @ptrFromInt(mat);
+    const q: [*]const f32 = @ptrFromInt(quat);
+    const x = q[0];
+    const y = q[1];
+    const z = q[2];
+    const w = q[3];
+    // Build rotation matrix from quaternion
+    const x2 = x + x;
+    const y2 = y + y;
+    const z2 = z + z;
+    const xx = x * x2;
+    const xy = x * y2;
+    const xz = x * z2;
+    const yy = y * y2;
+    const yz = y * z2;
+    const zz = z * z2;
+    const wx = w * x2;
+    const wy = w * y2;
+    const wz = w * z2;
+    var r: [16]f32 = undefined;
+    r[0] = 1.0 - (yy + zz);
+    r[1] = xy + wz;
+    r[2] = xz - wy;
+    r[3] = 0;
+    r[4] = xy - wz;
+    r[5] = 1.0 - (xx + zz);
+    r[6] = yz + wx;
+    r[7] = 0;
+    r[8] = xz + wy;
+    r[9] = yz - wx;
+    r[10] = 1.0 - (xx + yy);
+    r[11] = 0;
+    r[12] = 0;
+    r[13] = 0;
+    r[14] = 0;
+    r[15] = 1;
+    // Multiply: result = quat_matrix * existing_matrix, store back to m
+    var tmp: [16]f32 = undefined;
+    inline for (0..4) |row| {
+        inline for (0..4) |col| {
+            tmp[row * 4 + col] = r[row * 4] * m[col] + r[row * 4 + 1] * m[4 + col] + r[row * 4 + 2] * m[8 + col] + r[row * 4 + 3] * m[12 + col];
+        }
+    }
+    inline for (0..16) |i| {
+        m[i] = tmp[i];
+    }
+    return mat;
+}
+
+// --- packParticleColorToBytes (2K calls/7.5s) ---
+// __fastcall(obj_ECX, unused_EDX, floatR_stack, floatG_stack, floatB_stack), RET 0xC
+// Reads alpha at obj+0x12F, packs ARGB into u32 at obj+0x12C
+fn ssePackParticleColor(obj: u32, _: u32, r_bits: u32, g_bits: u32, b_bits: u32) callconv(FC) void {
+    const base: [*]u8 = @ptrFromInt(obj);
+    const out: *u32 = @ptrCast(@alignCast(base + 0x12C));
+    const alpha = base[0x12F];
+    const r: f32 = @bitCast(r_bits);
+    const g: f32 = @bitCast(g_bits);
+    const b: f32 = @bitCast(b_bits);
+    const rb: u8 = @intFromFloat(std.math.clamp(r * 255.0, 0.0, 255.0));
+    const gb: u8 = @intFromFloat(std.math.clamp(g * 255.0, 0.0, 255.0));
+    const bb: u8 = @intFromFloat(std.math.clamp(b * 255.0, 0.0, 255.0));
+    out.* = @as(u32, alpha) << 24 | @as(u32, rb) << 16 | @as(u32, gb) << 8 | @as(u32, bb);
+}
+
+// --- setParticleAlphaFromFloat (2K calls/7.5s) ---
+// __fastcall(obj_ECX, unused_EDX, floatAlpha_stack), RET 0x4
+fn sseSetParticleAlpha(obj: u32, _: u32, alpha_bits: u32) callconv(FC) void {
+    const base: [*]u8 = @ptrFromInt(obj);
+    const alpha: f32 = @bitCast(alpha_bits);
+    base[0x12F] = @intFromFloat(std.math.clamp(alpha * 255.0, 0.0, 255.0));
+}
+
+// --- TranslateBoundingVolume (2K calls/7.5s) ---
+// __thiscall(this_ECX, offsetVec3_stack), RET 0x4
+// Translates 8 corners (+0x60..+0xB4, stride 12), recomputes 6 plane distances,
+// translates min/max bounds (+0xC0, +0xCC)
+fn sseTranslateBoundingVol(this: u32, offset: u32) callconv(TC) void {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const off: [*]const f32 = @ptrFromInt(offset);
+    const dx = off[0];
+    const dy = off[1];
+    const dz = off[2];
+    // 8 corners: +0x60 = float offset 24, stride 3 floats
+    inline for (0..8) |i| {
+        const base = 24 + i * 3;
+        obj[base] += dx;
+        obj[base + 1] += dy;
+        obj[base + 2] += dz;
+    }
+    // 6 plane distances: planes start at +0x0, each plane is {nx,ny,nz,d} = 4 floats
+    // d -= dot(normal, offset)
+    inline for (0..6) |i| {
+        const base = i * 4;
+        obj[base + 3] -= obj[base] * dx + obj[base + 1] * dy + obj[base + 2] * dz;
+    }
+    // Min bounds at +0xC0 = float offset 48, Max at +0xCC = float offset 51
+    obj[48] += dx;
+    obj[49] += dy;
+    obj[50] += dz;
+    obj[51] += dx;
+    obj[52] += dy;
+    obj[53] += dz;
+}
+
+// --- TransformBoundingVolume (3K calls/7.5s) ---
+// __thiscall(this_ECX, matrix3x3_stack), RET 0x4
+// Transforms 8 corners via 3x3 matrix, recomputes planes and bounds.
+fn sseTransformBoundingVol(this: u32, mat: u32) callconv(TC) u32 {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const m: [*]const f32 = @ptrFromInt(mat);
+    // Transform 8 corners in-place
+    inline for (0..8) |i| {
+        const base = 24 + i * 3; // +0x60 / 4
+        const x = obj[base];
+        const y = obj[base + 1];
+        const z = obj[base + 2];
+        obj[base] = m[0] * x + m[3] * y + m[6] * z;
+        obj[base + 1] = m[1] * x + m[4] * y + m[7] * z;
+        obj[base + 2] = m[2] * x + m[5] * y + m[8] * z;
+    }
+    // Recompute planes from transformed corners — call ComputeFrustumPlanes logic
+    // This is equivalent to calling 0x686640 on self, which we've also hooked.
+    // For correctness, call the original ComputeFrustumPlanes via its hook trampoline.
+    h109.callOriginal(.{this});
+    // Transform min/max bounds
+    const mnx = obj[48];
+    const mny = obj[49];
+    const mnz = obj[50];
+    obj[48] = m[0] * mnx + m[3] * mny + m[6] * mnz;
+    obj[49] = m[1] * mnx + m[4] * mny + m[7] * mnz;
+    obj[50] = m[2] * mnx + m[5] * mny + m[8] * mnz;
+    const mxx = obj[51];
+    const mxy = obj[52];
+    const mxz = obj[53];
+    obj[51] = m[0] * mxx + m[3] * mxy + m[6] * mxz;
+    obj[52] = m[1] * mxx + m[4] * mxy + m[7] * mxz;
+    obj[53] = m[2] * mxx + m[5] * mxy + m[8] * mxz;
+    return this;
+}
+
+// --- ComputeFrustumPlanesFromVertices (7K calls/7.5s) ---
+// __fastcall(this_ECX), RET (no stack cleanup)
+// Computes 4 clipping planes from 8 corner vertices using cross products + normalize.
+// Keep as probe — complex geometry with cross products, normalize calls, and
+// plane distance computation. The 8 corners are already transformed by our hooks above.
+
+// =============================================================================
+// Probe infrastructure (for functions not yet SSE-replaced)
+// =============================================================================
+
+
 fn probeDetour(
     comptime FnType: type,
     comptime detour_hook: *hook.Detour(FnType),
@@ -1384,7 +2042,7 @@ pub fn installHooks() void {
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
-    log_state = logging.Logger.open(module_name, .console);
+    log_state = logging.Logger.open(module_name, .both);
     log_state.print("silicon: module loaded (probe hooks deferred to lateInit)\n");
 }
 
@@ -1394,38 +2052,38 @@ pub fn lateInit() void {
 
     var installed: u32 = 0;
 
-    // Cat 1: Scalar math
-    if (h00.attach(0x4549C0, probeDetour(TC2v, &h00, &cnt[0])) == .ok) installed += 1;
+    // Cat 1: Scalar math — SSE replacements
+    if (h00.attach(0x4549C0, &sseNormalizeVec3) == .ok) installed += 1;   // 137K/7.5s
     if (h01.attach(0x41AE40, probeDetour(SC1d, &h01, &cnt[1])) == .ok) installed += 1;
     if (h02.attach(0x41AE50, probeDetour(SC1d, &h02, &cnt[2])) == .ok) installed += 1;
     if (h03.attach(0x41AE60, probeDetour(SC1d, &h03, &cnt[3])) == .ok) installed += 1;
     if (h04.attach(0x41AE70, probeDetour(SC1d, &h04, &cnt[4])) == .ok) installed += 1;
-    // Cat 4: Matrix
-    if (h05.attach(0x7BCA80, probeDetour(FC3r, &h05, &cnt[5])) == .ok) installed += 1;
-    if (h06.attach(0x7BCB40, probeDetour(FC3r, &h06, &cnt[6])) == .ok) installed += 1;
-    if (h07.attach(0x7BAE60, probeDetour(FC3r, &h07, &cnt[7])) == .ok) installed += 1;
-    if (h08.attach(0x7BDFC0, probeDetour(FC3r, &h08, &cnt[8])) == .ok) installed += 1;
-    if (h09.attach(0x7BDB00, probeDetour(FC4r, &h09, &cnt[9])) == .ok) installed += 1;
-    if (h10.attach(0x7BDC40, probeDetour(TC2r, &h10, &cnt[10])) == .ok) installed += 1;
-    if (h11.attach(0x7BDCA0, probeDetour(TC2r, &h11, &cnt[11])) == .ok) installed += 1;
-    if (h12.attach(0x7BDDB0, probeDetour(TC2r, &h12, &cnt[12])) == .ok) installed += 1;
-    if (h13.attach(0x7BE490, probeDetour(FC4r, &h13, &cnt[13])) == .ok) installed += 1;
-    if (h14.attach(0x7BB860, probeDetour(FC4r, &h14, &cnt[14])) == .ok) installed += 1;
-    // Cat 5: Collision/spatial
-    if (h15.attach(0x632830, probeDetour(FC5r, &h15, &cnt[15])) == .ok) installed += 1;
-    if (h16.attach(0x6329E0, probeDetour(FC3d, &h16, &cnt[16])) == .ok) installed += 1;
+    // Cat 4: Matrix — SSE replacements
+    if (h05.attach(0x7BCA80, &sseTransformVec3Mat4) == .ok) installed += 1; // 10.8M/7.5s
+    if (h06.attach(0x7BCB40, &sseTransformVec4Mat4) == .ok) installed += 1; // 120K/7.5s
+    if (h07.attach(0x7BAE60, &sseMulMat3x4) == .ok) installed += 1;
+    if (h08.attach(0x7BDFC0, &sseMulMat3x3) == .ok) installed += 1;
+    if (h09.attach(0x7BDB00, &sseCreateAxisAngleRotMat4) == .ok) installed += 1; // 304K/7.5s
+    if (h10.attach(0x7BDC40, &sseApplyTranslation) == .ok) installed += 1; // 182K/7.5s
+    if (h11.attach(0x7BDCA0, &sseScaleMat3x3) == .ok) installed += 1;      // 1.3M/7.5s
+    if (h12.attach(0x7BDDB0, &sseRotateMatByQuat) == .ok) installed += 1;
+    if (h13.attach(0x7BE490, &sseCreateAxisAngleRotMat3x3) == .ok) installed += 1; // 13K/7.5s
+    if (h14.attach(0x7BB860, &sseCreateRotMat3x4) == .ok) installed += 1;
+    // Cat 5: Collision/spatial — SSE replacements
+    if (h15.attach(0x632830, probeDetour(FC5r, &h15, &cnt[15])) == .ok) installed += 1; // RayPolygonIntersect — complex, keep probe
+    if (h16.attach(0x6329E0, &sseDistanceToPlane) == .ok) installed += 1;   // 525K/7.5s
     if (h17.attach(0x632F80, probeDetour(FC5r, &h17, &cnt[17])) == .ok) installed += 1;
     if (h18.attach(0x6335D0, probeDetour(FC2r, &h18, &cnt[18])) == .ok) installed += 1;
     if (h19.attach(0x681B50, probeDetour(FC5r, &h19, &cnt[19])) == .ok) installed += 1;
-    if (h20.attach(0x686C20, probeDetour(TC3r, &h20, &cnt[20])) == .ok) installed += 1;
+    if (h20.attach(0x686C20, &sseClassifyPointFrustum) == .ok) installed += 1; // 3.2M/7.5s
     if (h21.attach(0x6856C0, probeDetour(FC2r, &h21, &cnt[21])) == .ok) installed += 1;
     if (h22.attach(0x686000, probeDetour(FC3r, &h22, &cnt[22])) == .ok) installed += 1;
     if (h23.attach(0x686180, probeDetour(FC2r, &h23, &cnt[23])) == .ok) installed += 1;
-    if (h24.attach(0x6DC5A0, probeDetour(FC3r, &h24, &cnt[24])) == .ok) installed += 1;
+    if (h24.attach(0x6DC5A0, &sseCheckBoxLineIntersect) == .ok) installed += 1; // 2.7M/7.5s
     if (h25.attach(0x50A840, probeDetour(FC4r, &h25, &cnt[25])) == .ok) installed += 1;
     if (h26.attach(0x509220, probeDetour(FC4r, &h26, &cnt[26])) == .ok) installed += 1;
-    if (h27.attach(0x6869C0, probeDetour(TC4r, &h27, &cnt[27])) == .ok) installed += 1;
-    if (h28.attach(0x686B80, probeDetour(TC2r, &h28, &cnt[28])) == .ok) installed += 1;
+    if (h27.attach(0x6869C0, &sseTestOBBFrustum) == .ok) installed += 1;
+    if (h28.attach(0x686B80, &sseTestSphereFrustum) == .ok) installed += 1; // 375K/7.5s
     // Cat 6: Rendering
     if (h29.attach(0x6ABC40, probeDetour(FC4r, &h29, &cnt[29])) == .ok) installed += 1;
     if (h30.attach(0x6ABE60, probeDetour(FC4r, &h30, &cnt[30])) == .ok) installed += 1;
@@ -1441,8 +2099,8 @@ pub fn lateInit() void {
     if (h39.attach(0x71AE90, probeDetour(FC4r, &h39, &cnt[39])) == .ok) installed += 1;
     if (h40.attach(0x71AF20, probeDetour(FC4r, &h40, &cnt[40])) == .ok) installed += 1;
     if (h41.attach(0x71B6A0, probeDetour(TC2v, &h41, &cnt[41])) == .ok) installed += 1;
-    if (h42.attach(0x71BC70, probeDetour(TC2v, &h42, &cnt[42])) == .ok) installed += 1;
-    if (h43.attach(0x71BF60, probeDetour(TC2v, &h43, &cnt[43])) == .ok) installed += 1;
+    if (h42.attach(0x71BC70, &sseAddVec3ToAccumulator) == .ok) installed += 1; // 136K/7.5s
+    if (h43.attach(0x71BF60, &sseAddToColorAccumulator) == .ok) installed += 1;
     if (h44.attach(0x71C160, probeDetour(FC1v, &h44, &cnt[44])) == .ok) installed += 1;
     if (h45.attach(0x71C2F0, probeDetour(FC1v, &h45, &cnt[45])) == .ok) installed += 1;
     if (h46.attach(0x71C4E0, probeDetour(TC2r, &h46, &cnt[46])) == .ok) installed += 1;
@@ -1455,7 +2113,7 @@ pub fn lateInit() void {
     if (h52.attach(0x7B5A10, probeDetour(TC3v, &h52, &cnt[52])) == .ok) installed += 1;
     if (h53.attach(0x7B7E60, probeDetour(TC3v, &h53, &cnt[53])) == .ok) installed += 1;
     // Cat 9: Geometry
-    if (h54.attach(0x7C0570, probeDetour(FC4r, &h54, &cnt[54])) == .ok) installed += 1;
+    if (h54.attach(0x7C0570, &sseQuatSlerp) == .ok) installed += 1;
     if (h55.attach(0x7C2040, probeDetour(FC3r, &h55, &cnt[55])) == .ok) installed += 1;
     if (h56.attach(0x7C22B0, probeDetour(FC5r, &h56, &cnt[56])) == .ok) installed += 1;
     if (h57.attach(0x7C5880, probeDetour(FC1v, &h57, &cnt[57])) == .ok) installed += 1;
@@ -1487,7 +2145,7 @@ pub fn lateInit() void {
     if (h81.attach(0x683F80, probeDetour(SC0v, &h81, &cnt[81])) == .ok) installed += 1;
     if (h82.attach(0x68B0D0, probeDetour(TC6v, &h82, &cnt[82])) == .ok) installed += 1;
     if (h83.attach(0x68D540, probeDetour(FC1v, &h83, &cnt[83])) == .ok) installed += 1;
-    if (h84.attach(0x699330, probeDetour(FC2r, &h84, &cnt[84])) == .ok) installed += 1;
+    if (h84.attach(0x699330, &sseIsPointInsideBounds) == .ok) installed += 1; // 1.7M/7.5s
     if (h85.attach(0x69B1C0, probeDetour(FC2r, &h85, &cnt[85])) == .ok) installed += 1;
     if (h86.attach(0x69B6D0, probeDetour(FC5r, &h86, &cnt[86])) == .ok) installed += 1;
     if (h87.attach(0x6A8050, probeDetour(TC2r, &h87, &cnt[87])) == .ok) installed += 1;
@@ -1503,21 +2161,21 @@ pub fn lateInit() void {
     if (h97.attach(0x7BA200, probeDetour(TC4v, &h97, &cnt[97])) == .ok) installed += 1;
 
     // Batch 3: newly explored + previously skipped
-    if (h98.attach(0x749280, probeDetour(SC3v, &h98, &cnt[98])) == .ok) installed += 1;
-    if (h99.attach(0x7BE5B0, probeDetour(TC2r, &h99, &cnt[99])) == .ok) installed += 1;
+    if (h98.attach(0x749280, &sseCalculateSinCos) == .ok) installed += 1;
+    if (h99.attach(0x7BE5B0, &sseCreateZRotMat3x3) == .ok) installed += 1;
     if (h100.attach(0x76D680, probeDetour(FC3r, &h100, &cnt[100])) == .ok) installed += 1;
     if (h101.attach(0x7786A0, probeDetour(TC2r, &h101, &cnt[101])) == .ok) installed += 1;
     if (h102.attach(0x69BFF0, probeDetour(FC5r, &h102, &cnt[102])) == .ok) installed += 1;
-    if (h103.attach(0x7BCEF0, probeDetour(TC2r, &h103, &cnt[103])) == .ok) installed += 1;
-    if (h104.attach(0x7BB420, probeDetour(TC2r, &h104, &cnt[104])) == .ok) installed += 1;
+    if (h103.attach(0x7BCEF0, &sseTransposeMat4x4) == .ok) installed += 1;
+    if (h104.attach(0x7BB420, &sseMulMat3x4InPlace) == .ok) installed += 1;
     if (h105.attach(0x7B2A50, probeDetour(TC3r, &h105, &cnt[105])) == .ok) installed += 1;
-    if (h106.attach(0x7B7A80, probeDetour(FC5v, &h106, &cnt[106])) == .ok) installed += 1;
-    if (h107.attach(0x7B7B10, probeDetour(FC3v, &h107, &cnt[107])) == .ok) installed += 1;
-    if (h108.attach(0x602630, probeDetour(FC2d, &h108, &cnt[108])) == .ok) installed += 1;
+    if (h106.attach(0x7B7A80, &ssePackParticleColor) == .ok) installed += 1;
+    if (h107.attach(0x7B7B10, &sseSetParticleAlpha) == .ok) installed += 1;
+    if (h108.attach(0x602630, &sseVec3Dot) == .ok) installed += 1;
     if (h109.attach(0x686640, probeDetour(FC1v, &h109, &cnt[109])) == .ok) installed += 1;
-    if (h110.attach(0x686820, probeDetour(TC2v, &h110, &cnt[110])) == .ok) installed += 1;
-    if (h111.attach(0x6868E0, probeDetour(TC2r, &h111, &cnt[111])) == .ok) installed += 1;
-    if (h112.attach(0x6720F0, probeDetour(FC1v, &h112, &cnt[112])) == .ok) installed += 1;
+    if (h110.attach(0x686820, &sseTranslateBoundingVol) == .ok) installed += 1;
+    if (h111.attach(0x6868E0, &sseTransformBoundingVol) == .ok) installed += 1;
+    if (h112.attach(0x6720F0, &sseNormalizeVec3InPlace) == .ok) installed += 1;
     if (h113.attach(0x5C8710, probeDetour(TC10r, &h113, &cnt[113])) == .ok) installed += 1;
     // h114 (GetFPUControlWord 0x40CF81) — modifies FPU control word via FLDCW as side
     // effect; generic probe callOriginal wrapper may emit FPU instructions that corrupt
