@@ -97,6 +97,41 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(math_sse_obj);
     b.installArtifact(lib);
 
+    // Benchmark harness — native x86 Linux executable for profiling SSE replacements
+    {
+        const bench_target = b.resolveTargetQuery(.{
+            .cpu_arch = .x86,
+            .os_tag = .linux,
+            .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
+        });
+        const bench_math_sse = b.addObject(.{
+            .name = "bench_math_sse",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/transform44/math_sse.zig"),
+                .target = bench_target,
+                .optimize = .ReleaseFast,
+            }),
+        });
+        const bench_optimize = b.option(std.builtin.OptimizeMode, "bench-opt", "Bench optimization (default: ReleaseFast)") orelse .ReleaseFast;
+        const bench = b.addExecutable(.{
+            .name = "bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bench/main.zig"),
+                .target = bench_target,
+                .optimize = bench_optimize,
+            }),
+        });
+        bench.root_module.addObject(bench_math_sse);
+        bench.root_module.linkSystemLibrary("m", .{});
+        const install_bench = b.addInstallArtifact(bench, .{});
+        const bench_step = b.step("bench", "Build math_sse benchmark harness (x86 Linux)");
+        bench_step.dependOn(&install_bench.step);
+
+        const run_bench = b.addRunArtifact(bench);
+        const run_step = b.step("run-bench", "Build and run math_sse benchmark");
+        run_step.dependOn(&run_bench.step);
+    }
+
     // Convenience step to build all single-module variants
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
