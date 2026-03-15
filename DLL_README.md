@@ -117,8 +117,9 @@ Can be disabled easily from normal AddOn menu.
 - Check/uncheck NPC categories to toggle their minimap icons
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
 
-Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more  
-Supported game objects: Mailbox, Brainwasher  
+Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more
+Supported game objects: Mailbox, Brainwasher
+Quest tracking: shows nearby NPCs with available quests (yellow !) on the minimap
 
 **DLL:** `minimapicons.dll`
 

@@ -27,6 +27,11 @@ Track notable changes here between releases. Clear this file when cutting a new 
 - **Addon Profiling Stub (addonperf)** - TBC+ addon CPU profiling API stub
   (GetScriptCPUUsage). Internal/experimental, not in DLL_README.
 
+- **Minimap Quest Tracking** - shows nearby NPCs with available quests (yellow !) on the
+  minimap. Reads the per-player quest status cached on unit objects by the client's
+  SMSG_QUESTGIVER_STATUS handler. Enabled by default in the tracking dropdown, togglable
+  like other NPC tracking categories.
+
 ## Enhancements
 
 - **Clickthrough**: Lootable corpses now click-through over players. Previously only

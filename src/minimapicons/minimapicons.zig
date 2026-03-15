@@ -39,6 +39,7 @@ const ADDR = struct {
     const EnumVisibleObjects: usize = 0x468380;
 
     // Called functions
+    const CheckQuestAvailability: usize = 0x5ED210;
     const WorldPosToMinimapCoords: usize = 0x4EAA30;
     const TextureCreate: usize = 0x449D90;
     const TextureGetGxTex: usize = 0x44ACF0;
@@ -59,6 +60,7 @@ const ADDR = struct {
     // Object struct offsets (module-specific)
     const OBJ_VTABLE: usize = 0x00;
     const OBJ_CREATURE_CACHE: usize = 0xB30;
+    const OBJ_QUEST_STATUS: usize = 0xCB8;
 
     // Creature cache entry offsets
     const CACHE_SUBNAME: usize = 0x10;
@@ -86,6 +88,9 @@ const NPC_FLAG_BATTLEMASTER: u32 = 0x00000800;
 const NPC_FLAG_AUCTIONEER: u32 = 0x00001000;
 const NPC_FLAG_STABLEMASTER: u32 = 0x00002000;
 const NPC_FLAG_REPAIR: u32 = 0x00004000;
+
+// Quest giver status values (cached at unit + 0xCB8 by SMSG_QUESTGIVER_STATUS handler)
+const QUEST_STATUS_AVAILABLE: u32 = 5; // yellow ! — quest ready to accept
 
 const GO_TYPE_MAILBOX: u32 = 19;
 
@@ -209,6 +214,12 @@ const GoEntryEntry = struct {
     active: bool = false,
 };
 
+const QuestStatusEntry = struct {
+    status: u32 = 0, // matches one QUEST_STATUS_* value
+    blip: Blip = .{ .texture = 0, .scale = 1.0 },
+    active: bool = false,
+};
+
 const TextureEntry = struct {
     path_hash: u32 = 0,
     handle: u32 = 0,
@@ -246,12 +257,14 @@ const CStatus = extern struct {
 const MAX_FLAG_ENTRIES = 16;
 const MAX_GO_ENTRIES = 4;
 const MAX_GO_ID_ENTRIES = 4;
+const MAX_QUEST_ENTRIES = 4;
 const MAX_BLIPS = 128;
 const MAX_TEXTURES = 16;
 
 var g_flag_tracking: [MAX_FLAG_ENTRIES]FlagEntry = .{FlagEntry{}} ** MAX_FLAG_ENTRIES;
 var g_go_tracking: [MAX_GO_ENTRIES]GoTypeEntry = .{GoTypeEntry{}} ** MAX_GO_ENTRIES;
 var g_go_id_tracking: [MAX_GO_ID_ENTRIES]GoEntryEntry = .{GoEntryEntry{}} ** MAX_GO_ID_ENTRIES;
+var g_quest_tracking: [MAX_QUEST_ENTRIES]QuestStatusEntry = .{QuestStatusEntry{}} ** MAX_QUEST_ENTRIES;
 var g_blips: [MAX_BLIPS]TrackedBlip = undefined;
 var g_blip_count: u32 = 0;
 var g_has_active_tracking: bool = false;
@@ -270,6 +283,7 @@ const CITY_ZONES = [_]u32{
 const ZONE_AREA_ID: usize = offsets.ZONE_AREA_ID;
 var g_has_active_unit_tracking: bool = false;
 var g_has_active_go_tracking: bool = false;
+var g_has_active_quest_tracking: bool = false;
 var g_has_any_filters: bool = false;
 var g_active_flag_mask: u32 = 0; // OR of all active flag entry flags
 var g_tex_cache: [MAX_TEXTURES]TextureEntry = .{TextureEntry{}} ** MAX_TEXTURES;
@@ -365,6 +379,10 @@ fn getCreatureSubName(obj: u32) ?[*:0]const u8 {
 }
 
 const getObjectEntry = wow.getObjectEntry;
+
+fn getQuestStatus(obj: u32) u32 {
+    return hook.readMem(u32, obj + ADDR.OBJ_QUEST_STATUS);
+}
 
 // Creature entry IDs that should be treated as reagent vendors despite having no subname.
 const REAGENT_VENDOR_ENTRIES = [_]u32{
@@ -672,6 +690,24 @@ fn drawMinimapBlip(pos: C2Vector, scale: f32) void {
 // =============================================================================
 
 fn checkObject(info: u32, guid_lo: u32, guid_hi: u32) bool {
+    // Quest status check runs BEFORE GUID cache — status is dynamic (changes as
+    // player accepts/completes quests) and server already computes it per-player.
+    if (g_has_active_quest_tracking) {
+        const obj = getObjectByGUID(guid_lo, guid_hi);
+        if (obj != 0 and isValidPtr(obj) and getObjectType(obj) == OBJ_TYPE_UNIT) {
+            const quest_status = getQuestStatus(obj);
+            if (quest_status != 0) {
+                for (&g_quest_tracking) |*entry| {
+                    if (!entry.active) continue;
+                    if (entry.status == quest_status) {
+                        trackObject(info, guid_lo, guid_hi, entry.blip);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
     // GUID cache stores type classification (NPC flags/subname/GO type -> blip).
     // Dynamic checks (faction, interactability) run every frame, even on cache hits,
     // since these can change as players join/leave groups.
@@ -850,9 +886,14 @@ fn refreshActiveTrackingCache() void {
     for (&g_go_id_tracking) |*entry| {
         if (entry.active) has_go = true;
     }
+    var has_quest = false;
+    for (&g_quest_tracking) |*entry| {
+        if (entry.active) has_quest = true;
+    }
     g_has_active_unit_tracking = has_unit;
     g_has_active_go_tracking = has_go;
-    g_has_active_tracking = has_unit or has_go;
+    g_has_active_quest_tracking = has_quest;
+    g_has_active_tracking = has_unit or has_go or has_quest;
     g_has_any_filters = has_filters;
     g_active_flag_mask = flag_mask;
 
@@ -984,7 +1025,7 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(hook.cc.fastcall) i32 {
     const type_name = lua.tostring(L, 1) orelse return 0;
 
     const mapping = findTypeMapping(type_name) orelse {
-        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, brainwasher, flightmaster, innkeeper, oranges, repair, stablemaster, trainer, vendor, mailbox");
+        lua.luaError(L, "Unknown type. Use: auctioneer, banker, battlemaster, brainwasher, flightmaster, innkeeper, oranges, repair, stablemaster, trainer, vendor, mailbox, quest_available");
         return 0;
     };
 
@@ -1017,6 +1058,14 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(hook.cc.fastcall) i32 {
                         entry.filtersEqual(inc, exc))
                     {
                         entry.clear();
+                        break;
+                    }
+                }
+            },
+            .quest_status => {
+                for (&g_quest_tracking) |*entry| {
+                    if (entry.active and entry.status == mapping.value) {
+                        entry.active = false;
                         break;
                     }
                 }
@@ -1090,6 +1139,20 @@ pub fn luaSetObjectTypeBlip(L: lua.State) callconv(hook.cc.fastcall) i32 {
                 }
             }
         },
+        .quest_status => {
+            for (&g_quest_tracking) |*entry| {
+                if (entry.active and entry.status == mapping.value) {
+                    entry.blip = blip;
+                    return 0;
+                }
+            }
+            for (&g_quest_tracking) |*entry| {
+                if (!entry.active) {
+                    entry.* = .{ .status = mapping.value, .blip = blip, .active = true };
+                    return 0;
+                }
+            }
+        },
     }
 
     return 0;
@@ -1102,7 +1165,7 @@ pub fn luaSetCityToggle(L: lua.State) callconv(hook.cc.fastcall) i32 {
 }
 
 const TypeMapping = struct {
-    kind: enum { npc_flag, go_type, go_entry } = .npc_flag,
+    kind: enum { npc_flag, go_type, go_entry, quest_status } = .npc_flag,
     value: u32,
 };
 
@@ -1121,6 +1184,7 @@ fn findTypeMapping(name: [*:0]const u8) ?TypeMapping {
         .{ .n = "mailbox", .m = .{ .kind = .go_type, .value = GO_TYPE_MAILBOX } },
         .{ .n = "oranges", .m = .{ .kind = .go_entry, .value = 1000084 } }, // Refreshment Table
         .{ .n = "brainwasher", .m = .{ .kind = .go_entry, .value = 1000333 } }, // Goblin Brainwashing Device
+        .{ .n = "quest_available", .m = .{ .kind = .quest_status, .value = QUEST_STATUS_AVAILABLE } },
     };
 
     for (&table) |*entry| {
@@ -1186,6 +1250,7 @@ pub fn removeHooks() void {
         for (&g_flag_tracking) |*entry| entry.active = false;
         for (&g_go_tracking) |*entry| entry.active = false;
         for (&g_go_id_tracking) |*entry| entry.active = false;
+        for (&g_quest_tracking) |*entry| entry.active = false;
         g_blip_count = 0;
 
         log.close();

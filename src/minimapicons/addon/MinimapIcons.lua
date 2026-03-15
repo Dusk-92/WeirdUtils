@@ -93,6 +93,7 @@ local NPC_CATEGORIES = {
     { name = "Brainwasher",   trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.8, default = 1 },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper", default = 1 },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
+    { name = "Quest Available", trackingType = "quest_available", icon = "Interface\\GossipFrame\\AvailableQuestIcon", default = 1 },
     { name = "Reagent Vendor", trackingType = "vendor",      icon = "Interface\\Minimap\\Tracking\\Reagents",
         getFilter = function() return getLocaleFilter(REAGENT_FILTERS) end },
     { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Poison",
