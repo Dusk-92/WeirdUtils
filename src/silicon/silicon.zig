@@ -1166,7 +1166,7 @@ fn sseMulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
     }
     // Translation row (indices 9-11): same multiply + add B's translation
     inline for (0..3) |col| {
-        dst[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+        dst[9 + col] = a[9] * b[col] + a[10] * b[col + 3] + a[11] * b[col + 6] + b[9 + col];
     }
     return out;
 }
@@ -1427,7 +1427,7 @@ fn sseMulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
         }
     }
     inline for (0..3) |col| {
-        tmp[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+        tmp[9 + col] = a[9] * b[col] + a[10] * b[col + 3] + a[11] * b[col + 6] + b[9 + col];
     }
     // Copy back
     inline for (0..12) |i| {

@@ -32,7 +32,7 @@ export fn si_mulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) u32 {
         }
     }
     inline for (0..3) |col| {
-        dst[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+        dst[9 + col] = a[9] * b[col] + a[10] * b[col + 3] + a[11] * b[col + 6] + b[9 + col];
     }
     return out;
 }
@@ -270,7 +270,7 @@ export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) u32 {
         }
     }
     inline for (0..3) |col| {
-        tmp[9 + col] = a[col] * b[9] + a[col + 3] * b[10] + a[col + 6] * b[11] + a[9 + col];
+        tmp[9 + col] = a[9] * b[col] + a[10] * b[col + 3] + a[11] * b[col + 6] + b[9 + col];
     }
     inline for (0..12) |i| { a[i] = tmp[i]; }
     return mat_a;
@@ -321,9 +321,9 @@ export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) 
     const r: f32 = @bitCast(r_bits);
     const g: f32 = @bitCast(g_bits);
     const b: f32 = @bitCast(b_bits);
-    const rb: u8 = @intFromFloat(@min(@max(r * 255.0, 0.0), 255.0));
-    const gb: u8 = @intFromFloat(@min(@max(g * 255.0, 0.0), 255.0));
-    const bb: u8 = @intFromFloat(@min(@max(b * 255.0, 0.0), 255.0));
+    const rb: u8 = @intFromFloat(@round(@min(@max(r * 255.0, 0.0), 255.0)));
+    const gb: u8 = @intFromFloat(@round(@min(@max(g * 255.0, 0.0), 255.0)));
+    const bb: u8 = @intFromFloat(@round(@min(@max(b * 255.0, 0.0), 255.0)));
     out.* = @as(u32, alpha) << 24 | @as(u32, rb) << 16 | @as(u32, gb) << 8 | @as(u32, bb);
 }
 

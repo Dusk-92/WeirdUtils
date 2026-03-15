@@ -596,6 +596,14 @@ pub fn main() void {
         _ = of(a(&ro), a(&ma), a(&mb));
         _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb));
         const ok = cmpSlice(&ro, &rs);
+        if (!ok) {
+            print("  mulMat3x4 MISMATCH detail:\n", .{});
+            for (0..12) |i| {
+                if (!compareF32(ro[i], rs[i])) {
+                    print("    [{d}] orig={d} sse={d}\n", .{ i, @as(i32, @intFromFloat(ro[i] * 1000)), @as(i32, @intFromFloat(rs[i] * 1000)) });
+                }
+            }
+        }
         var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&ma), a(&mb)); } t = rdtsc() - t;
         var s = rdtsc(); for (0..ITERS) |_| { _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb)); } s = rdtsc() - s;
         report("mulMat3x4", t, s, ok);
@@ -641,6 +649,14 @@ pub fn main() void {
         _ = of(a(&mo2), a(&mb2));
         _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2));
         const ok = cmpSlice(&mo2, &ms2);
+        if (!ok) {
+            print("  mulMat3x4InPlace MISMATCH detail:\n", .{});
+            for (0..12) |i| {
+                if (!compareF32(mo2[i], ms2[i])) {
+                    print("    [{d}] orig={d} sse={d}\n", .{ i, @as(i32, @intFromFloat(mo2[i] * 1000)), @as(i32, @intFromFloat(ms2[i] * 1000)) });
+                }
+            }
+        }
         var t = rdtsc(); for (0..ITERS) |_| { mo2 = tmpl2; _ = of(a(&mo2), a(&mb2)); } t = rdtsc() - t;
         var s = rdtsc(); for (0..ITERS) |_| { ms2 = tmpl2; _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2)); } s = rdtsc() - s;
         report("mulMat3x4InPlace", t, s, ok);
@@ -761,6 +777,11 @@ pub fn main() void {
         const out_o = @as(*align(1) const u32, @ptrCast(&obj_o[0x12C])).*;
         const out_s = @as(*align(1) const u32, @ptrCast(&obj_s[0x12C])).*;
         const ok = out_o == out_s;
+        if (!ok) {
+            print("  packParticleColor MISMATCH: orig=0x{x} sse=0x{x}\n", .{ out_o, out_s });
+            print("    orig bytes: [{x} {x} {x} {x}]\n", .{ obj_o[0x12C], obj_o[0x12D], obj_o[0x12E], obj_o[0x12F] });
+            print("    sse  bytes: [{x} {x} {x} {x}]\n", .{ obj_s[0x12C], obj_s[0x12D], obj_s[0x12E], obj_s[0x12F] });
+        }
         var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, rb, gb, bb); } t = rdtsc() - t;
         var s = rdtsc(); for (0..ITERS) |_| { si_packParticleColor(a(&obj_s), rb, gb, bb); } s = rdtsc() - s;
         report("packParticleColor", t, s, ok);
