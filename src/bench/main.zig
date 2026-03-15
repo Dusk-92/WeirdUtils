@@ -49,6 +49,10 @@ extern fn si_mulMat3x4InPlace(u32, u32) u32;
 extern fn si_normalizeVec3InPlace(u32) void;
 extern fn si_vec3Dot(u32, u32) f64;
 extern fn si_translateBoundingVol(u32, u32) void;
+extern fn si_addVec3ToAccumulator(u32, u32, u32) void;
+extern fn si_addToColorAccumulator(u32, u32) void;
+extern fn si_packParticleColor(u32, u32, u32, u32) void;
+extern fn si_setParticleAlpha(u32, u32) void;
 
 // =========================================================================
 // Infrastructure
@@ -640,6 +644,140 @@ pub fn main() void {
         var t = rdtsc(); for (0..ITERS) |_| { mo2 = tmpl2; _ = of(a(&mo2), a(&mb2)); } t = rdtsc() - t;
         var s = rdtsc(); for (0..ITERS) |_| { ms2 = tmpl2; _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2)); } s = rdtsc() - s;
         report("mulMat3x4InPlace", t, s, ok);
+    }
+
+    // si_normalizeVec3 (137K/7.5s) -- thiscall(vec3_ECX, length_stack) -> void
+    {
+        const tmpl3 = tv3();
+        var vo = tmpl3;
+        var vs = tmpl3;
+        const len: f32 = @sqrt(vo[0] * vo[0] + vo[1] * vo[1] + vo[2] * vo[2]);
+        const lb: u32 = @bitCast(len);
+        const of = origFn(fn (u32, u32) callconv(cc_tc) void, 0x4549C0);
+        of(a(&vo), lb);
+        si_normalizeVec3(a(&vs), lb);
+        const ok = cmpSlice(&vo, &vs);
+        var t = rdtsc(); for (0..ITERS) |_| { vo = tmpl3; of(a(&vo), lb); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { vs = tmpl3; si_normalizeVec3(a(&vs), lb); } s = rdtsc() - s;
+        report("normalizeVec3", t, s, ok);
+    }
+
+    // si_testOBBFrustum -- thiscall(planes_ECX, aabb_stack, rot_stack, trans_stack) -> u32
+    {
+        var planes: [24]f32 = undefined;
+        const normals = [6][3]f32{ .{1,0,0}, .{-1,0,0}, .{0,1,0}, .{0,-1,0}, .{0,0,1}, .{0,0,-1} };
+        for (0..6) |i| { planes[i*4] = normals[i][0]; planes[i*4+1] = normals[i][1]; planes[i*4+2] = normals[i][2]; planes[i*4+3] = -10; }
+        const aabb = [6]f32{ -1, -1, -1, 1, 1, 1 };
+        const rot = Mat3{ 1,0,0, 0,1,0, 0,0,1 }; // identity
+        const trans = Vec3{ 0, 0, 0 };
+        const of = origFn(fn (u32, u32, u32, u32) callconv(cc_tc) u32, 0x6869C0);
+        const ov = of(a(&planes), a(&aabb), a(&rot), a(&trans));
+        const sv = si_testOBBFrustum(a(&planes), a(&aabb), a(&rot), a(&trans));
+        const ok = ov == sv;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&aabb), a(&rot), a(&trans)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_testOBBFrustum(a(&planes), a(&aabb), a(&rot), a(&trans)); } s = rdtsc() - s;
+        report("testOBBFrustum", t, s, ok);
+    }
+
+    // si_calculateSinCos -- stdcall(angle_bits, outSin, outCos) -> void
+    {
+        const ab2: u32 = @bitCast(@as(f32, 1.2345));
+        var sin_o: f32 = undefined;
+        var cos_o: f32 = undefined;
+        var sin_s: f32 = undefined;
+        var cos_s: f32 = undefined;
+        const cc_sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
+        const of = origFn(fn (u32, u32, u32) callconv(cc_sc) void, 0x749280);
+        of(ab2, a(&sin_o), a(&cos_o));
+        si_calculateSinCos(ab2, a(&sin_s), a(&cos_s));
+        const ok = compareF32(sin_o, sin_s) and compareF32(cos_o, cos_s);
+        var t = rdtsc(); for (0..ITERS) |_| { of(ab2, a(&sin_o), a(&cos_o)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { si_calculateSinCos(ab2, a(&sin_s), a(&cos_s)); } s = rdtsc() - s;
+        report("calculateSinCos", t, s, ok);
+    }
+
+    // si_translateBoundingVol -- thiscall(this_ECX, offset_stack) -> void
+    {
+        // 54 floats: 6 planes (24) + 8 corners (24) + min/max (6)
+        var obj_o: [54]f32 = undefined;
+        var obj_s: [54]f32 = undefined;
+        // Init planes with simple normals and d=5
+        for (0..6) |i| { obj_o[i*4] = 0; obj_o[i*4+1] = 0; obj_o[i*4+2] = 0; obj_o[i*4+3] = 5; }
+        obj_o[0] = 1; obj_o[5] = -1; obj_o[10] = 1; obj_o[13] = -1; obj_o[18] = 1; obj_o[21] = -1;
+        // Init corners at unit cube
+        for (0..8) |i| {
+            const base = 24 + i * 3;
+            obj_o[base] = if (i & 1 != 0) @as(f32, 1) else -1;
+            obj_o[base+1] = if (i & 2 != 0) @as(f32, 1) else -1;
+            obj_o[base+2] = if (i & 4 != 0) @as(f32, 1) else -1;
+        }
+        // Min/max
+        obj_o[48] = -1; obj_o[49] = -1; obj_o[50] = -1;
+        obj_o[51] = 1; obj_o[52] = 1; obj_o[53] = 1;
+        obj_s = obj_o;
+        const offset = Vec3{ 2, 3, 4 };
+        const of = origFn(fn (u32, u32) callconv(cc_tc) void, 0x686820);
+        of(a(&obj_o), a(&offset));
+        si_translateBoundingVol(a(&obj_s), a(&offset));
+        const ok = cmpSlice(&obj_o, &obj_s);
+        const tmpl_bv = obj_o; // already translated, use as stable input
+        _ = tmpl_bv;
+        // Use fresh data per iter since it's in-place
+        var obj_bench_o = obj_o;
+        var obj_bench_s = obj_s;
+        const zero_off = Vec3{ 0.001, -0.001, 0.001 }; // tiny offset to avoid overflow
+        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_bench_o), a(&zero_off)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { si_translateBoundingVol(a(&obj_bench_s), a(&zero_off)); } s = rdtsc() - s;
+        report("translateBoundingVol", t, s, ok);
+    }
+
+    // si_addToColorAccumulator -- thiscall(this_ECX, color_stack) -> void
+    {
+        var obj_o: [32]f32 = std.mem.zeroes([32]f32);
+        var obj_s: [32]f32 = std.mem.zeroes([32]f32);
+        const color = Vec3{ 0.5, 0.3, 0.8 };
+        const of = origFn(fn (u32, u32) callconv(cc_tc) void, 0x71BF60);
+        of(a(&obj_o), a(&color));
+        si_addToColorAccumulator(a(&obj_s), a(&color));
+        const ok = compareF32(obj_o[27], obj_s[27]) and compareF32(obj_o[28], obj_s[28]) and compareF32(obj_o[29], obj_s[29]);
+        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), a(&color)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { si_addToColorAccumulator(a(&obj_s), a(&color)); } s = rdtsc() - s;
+        report("addToColorAccum", t, s, ok);
+    }
+
+    // si_packParticleColor -- fastcall(obj_ECX, unused_EDX, r_stack, g_stack, b_stack) -> void
+    // Note: original is __fastcall with unused EDX, our export fn drops it
+    {
+        var obj_o: [320]u8 = std.mem.zeroes([320]u8);
+        var obj_s: [320]u8 = std.mem.zeroes([320]u8);
+        obj_o[0x12F] = 200; // alpha
+        obj_s[0x12F] = 200;
+        const rb: u32 = @bitCast(@as(f32, 0.8));
+        const gb: u32 = @bitCast(@as(f32, 0.5));
+        const bb: u32 = @bitCast(@as(f32, 0.3));
+        const of = origFn(fn (u32, u32, u32, u32, u32) callconv(cc_fc) void, 0x7B7A80);
+        of(a(&obj_o), 0, rb, gb, bb);
+        si_packParticleColor(a(&obj_s), rb, gb, bb);
+        const out_o = @as(*align(1) const u32, @ptrCast(&obj_o[0x12C])).*;
+        const out_s = @as(*align(1) const u32, @ptrCast(&obj_s[0x12C])).*;
+        const ok = out_o == out_s;
+        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, rb, gb, bb); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { si_packParticleColor(a(&obj_s), rb, gb, bb); } s = rdtsc() - s;
+        report("packParticleColor", t, s, ok);
+    }
+
+    // si_setParticleAlpha -- fastcall(obj_ECX, unused_EDX, alpha_stack) -> void
+    {
+        var obj_o: [320]u8 = std.mem.zeroes([320]u8);
+        var obj_s: [320]u8 = std.mem.zeroes([320]u8);
+        const ab2: u32 = @bitCast(@as(f32, 0.75));
+        const of = origFn(fn (u32, u32, u32) callconv(cc_fc) void, 0x7B7B10);
+        of(a(&obj_o), 0, ab2);
+        si_setParticleAlpha(a(&obj_s), ab2);
+        const ok = obj_o[0x12F] == obj_s[0x12F];
+        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, ab2); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), ab2); } s = rdtsc() - s;
+        report("setParticleAlpha", t, s, ok);
     }
 
     print("\n", .{});

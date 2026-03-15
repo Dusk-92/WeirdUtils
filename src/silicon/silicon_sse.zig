@@ -288,6 +288,52 @@ export fn si_normalizeVec3InPlace(vec: u32) void {
     }
 }
 
+// --- 0x71BC70: addVec3ToAccumulator (136K/7.5s) ---
+// Adds vec3 to this+0x54, adds scaled copy (global at 0x81207C) to diagonal at +0x84/+0xA8/+0xCC
+export fn si_addVec3ToAccumulator(this: u32, vec: u32, scale_addr: u32) void {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const v: [*]const f32 = @ptrFromInt(vec);
+    const scale: f32 = @as(*const f32, @ptrFromInt(scale_addr)).*;
+    obj[21] += v[0];
+    obj[22] += v[1];
+    obj[23] += v[2];
+    obj[33] += v[0] * scale;
+    obj[42] += v[1] * scale;
+    obj[51] += v[2] * scale;
+}
+
+// --- 0x71BF60: addToColorAccumulator (10K/7.5s) ---
+// Accumulates color vec3 into this+0x6C (float offset 27)
+export fn si_addToColorAccumulator(this: u32, color: u32) void {
+    const obj: [*]f32 = @ptrFromInt(this);
+    const c: [*]const f32 = @ptrFromInt(color);
+    obj[27] += c[0];
+    obj[28] += c[1];
+    obj[29] += c[2];
+}
+
+// --- 0x7B7A80: packParticleColor (2K/7.5s) ---
+// Reads alpha at obj+0x12F, packs ARGB into u32 at obj+0x12C
+export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) void {
+    const base: [*]u8 = @ptrFromInt(obj);
+    const out: *align(1) u32 = @ptrCast(base + 0x12C);
+    const alpha = base[0x12F];
+    const r: f32 = @bitCast(r_bits);
+    const g: f32 = @bitCast(g_bits);
+    const b: f32 = @bitCast(b_bits);
+    const rb: u8 = @intFromFloat(@min(@max(r * 255.0, 0.0), 255.0));
+    const gb: u8 = @intFromFloat(@min(@max(g * 255.0, 0.0), 255.0));
+    const bb: u8 = @intFromFloat(@min(@max(b * 255.0, 0.0), 255.0));
+    out.* = @as(u32, alpha) << 24 | @as(u32, rb) << 16 | @as(u32, gb) << 8 | @as(u32, bb);
+}
+
+// --- 0x7B7B10: setParticleAlpha (2K/7.5s) ---
+export fn si_setParticleAlpha(obj: u32, alpha_bits: u32) void {
+    const base: [*]u8 = @ptrFromInt(obj);
+    const alpha: f32 = @bitCast(alpha_bits);
+    base[0x12F] = @intFromFloat(@min(@max(alpha * 255.0, 0.0), 255.0));
+}
+
 // --- 0x602630: vec3Dot ---
 export fn si_vec3Dot(a: u32, b: u32) f64 {
     const va: [*]const f32 = @ptrFromInt(a);
