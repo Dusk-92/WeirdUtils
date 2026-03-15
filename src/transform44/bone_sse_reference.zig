@@ -1695,35 +1695,67 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
     const data_base = ru32(model_hdr + 0x120);
     const out_base = ru32(this + SO.field_200);
     const bone_rt_base = ru32(this + SO.bone_rt_base);
+    const frame_ctr = ru32(this + SO.anim_frame_ctr);
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
-        const entry = data_base + i * 0xD4; // assembly 0x716ABC: ADD EDI, 0xD4
-        const output = out_base + i * 0x170; // assembly 0x716AC2: ADD ESI, 0x170
+        const entry = data_base + i * 0xD4; // asm 0x716ABC: ADD EDI, 0xD4
+        const output = out_base + i * 0x170; // asm 0x716AC2: ADD ESI, 0x170
         const bone_idx = @as(u32, ru16(entry + 2));
         const bone_rt = bone_rt_base + bone_idx * 0x118;
 
-        // Ribbon emitter tracks from assembly (0x716402-0x716AA9):
+        // ---- Visibility byte animation (asm 0x7163FC-0x7164F2) ----
+        if (ru32(output + 0x100) != 0) {
+            if (ru32(entry + 0xC4) != 0) {
+                findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), entry + 0xB8, output + 0xE0);
+                const vis_idx0 = ru32(output + 0xE0);
+                const vis_values = ru32(entry + 0xD0); // entry+0xB8+0x18 = AD.keyframe_base
+                wu8(output + 0xEC, ru8(vis_values + vis_idx0));
+                if (ri16(entry + 0xB8) != 0) {
+                    if (rf32(bone_rt + BR.blend_weight) != 0.0 and ri16(entry + 0xBA) == -1) {
+                        findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), entry + 0xB8, output + 0xF0);
+                        wu8(output + 0xFC, ru8(vis_values + ru32(output + 0xF0)));
+                    }
+                }
+            }
+        }
 
-        // Track 1 (Vec3): gate=entry+0x1C, AnimData=entry+0x10, output=output+0x00
-        // Assembly: 0x71660D CMP [EDX+0x1C]; 0x716624 LEA ESI,[EAX+0x10]; PUSH EDI
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x1C)) {
+        // ---- Visibility gate (asm 0x7164F2-0x716514) ----
+        const should_process = blk: {
+            if (ru32(output + 0x100) != 0 and ru8(output + 0xEC) != 0) break :blk true;
+            if (frame_ctr == 0) break :blk true;
+            break :blk false;
+        };
+        if (!should_process) continue;
+
+        // ---- Track A (float): gate=entry+0x38, AD=entry+0x2C, output+0x30 ----
+        if (frame_ctr < ru32(entry + 0x38)) {
+            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30);
+        }
+
+        // ---- Track B (Vec3): gate=entry+0x1C, AD=entry+0x10, output+0x00 ----
+        if (frame_ctr < ru32(entry + 0x1C)) {
             interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+            // Post-processing 1 (asm 0x71678A-0x7167CE)
+            const scale1 = rf32(output + 0x3C) * rf32(this + SO.render_scale_z);
+            wf32(output + 0x134, rf32(output + 0x0C) * scale1);
+            wf32(output + 0x138, rf32(output + 0x10) * scale1);
+            wf32(output + 0x13C, rf32(output + 0x14) * scale1);
         }
-        // Track 2 (Vec3): gate=entry+0x38, AnimData=entry+0x2C, output=output+0x30
-        // Assembly: 0x716517 CMP [EDX+0x38]; 0x716530 LEA ECX,[EDX+0x2C]; 0x716539 LEA EAX,[EDI+0x30]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x38)) {
-            interpVec3Track(this, bone_rt, entry + 0x2C, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
-        }
-        // Track 3 (float): gate=entry+0x70, AnimData=entry+0x64, output=output+0x80
-        // Assembly: 0x7167D4 CMP [EAX+0x70]; 0x7167F0 LEA ECX,[EDX+0x64]; 0x7167F9 LEA EAX,[EDI+0x80]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x70)) {
+
+        // ---- Track C (float): gate=entry+0x70, AD=entry+0x64, output+0x80 ----
+        if (frame_ctr < ru32(entry + 0x70)) {
             interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80);
         }
-        // Track 4 (Vec3): gate=entry+0x54, AnimData=entry+0x48, output=output+0x50
-        // Assembly: 0x7168EE CMP [EDX+0x54]; 0x716905 LEA ECX,[EAX+0x48]; 0x716912 LEA ESI,[EDI+0x50]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x54)) {
+
+        // ---- Track D (Vec3): gate=entry+0x54, AD=entry+0x48, output+0x50 ----
+        if (frame_ctr < ru32(entry + 0x54)) {
             interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
+            // Post-processing 2 (asm 0x716A67-0x716AA6)
+            const scale2 = rf32(output + 0x8C) * rf32(this + SO.render_scale_z);
+            wf32(output + 0x140, rf32(output + 0x5C) * scale2);
+            wf32(output + 0x144, rf32(output + 0x60) * scale2);
+            wf32(output + 0x148, rf32(output + 0x64) * scale2);
         }
     }
 }
