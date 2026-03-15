@@ -935,9 +935,9 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x6CF6C0: interpolateKeyframes
-//   __fastcall(outPtr_ECX, keyCount_EDX, normTime_stack, param3_stack), RET 0x4
-//   Keyframe interpolation for M2 animation tracks. Searches (time,value) pairs for
-//   bracketing keyframes, computes interpolated result.
+//   __fastcall(keyframeArray_ECX, count_EDX, t_float_stack), RET 0x4
+//   3 params (not 4). Keyframe lerp: clamps t to [0,1], finds bracketing pair in
+//   {time,value}[count] array (8 bytes/entry), linearly interpolates. Returns f32 via x87.
 //   Silicon: hook_sub_6CF6C0
 //   Status: stub
 
@@ -990,11 +990,13 @@ const FC1v = fn (u32) callconv(FC) void;
 const FC1r = fn (u32) callconv(FC) u32;
 const FC2v = fn (u32, u32) callconv(FC) void;
 const FC2r = fn (u32, u32) callconv(FC) u32;
+const FC3v = fn (u32, u32, u32) callconv(FC) void;
 const FC3r = fn (u32, u32, u32) callconv(FC) u32;
 const FC2d = fn (u32, u32) callconv(FC) f64;
 const FC3d = fn (u32, u32, u32) callconv(FC) f64;
 const FC4r = fn (u32, u32, u32, u32) callconv(FC) u32;
 const FC4d = fn (u32, u32, u32, u32) callconv(FC) f64;
+const FC5v = fn (u32, u32, u32, u32, u32) callconv(FC) void;
 const FC5r = fn (u32, u32, u32, u32, u32) callconv(FC) u32;
 const FC6r = fn (u32, u32, u32, u32, u32, u32) callconv(FC) u32;
 const TC1v = fn (u32) callconv(TC) void;
@@ -1158,11 +1160,11 @@ var h63: hook.Detour(TC4r) = .{}; // 0x4541B0 interpolateVector3
 var h64: hook.Detour(FC5r) = .{}; // 0x483340 UpdateLightingData
 var h65: hook.Detour(FC6r) = .{}; // 0x509BF0 ClampBounds
 var h66: hook.Detour(TC2r) = .{}; // 0x593040 VertexData_UpdateRenderState
-var h67: hook.Detour(TC2r) = .{}; // 0x5C7010 ConvertPixelsToScreenAlt
+var h67: hook.Detour(TC2d) = .{}; // 0x5C7010 ConvertPixelsToScreenAlt (returns float via x87)
 var h68: hook.Detour(FC2r) = .{}; // 0x5E22D0 CheckPlayerInTriggerZone
 var h69: hook.Detour(TC3r) = .{}; // 0x5F6280 InterpolateSpellPosition
 var h70: hook.Detour(TC6v) = .{}; // 0x5F8DC0 CalculateRenderingBounds
-var h71: hook.Detour(FC2r) = .{}; // 0x614CD0 UpdateObjectTransform
+var h71: hook.Detour(FC3r) = .{}; // 0x614CD0 UpdateObjectTransform (3 params, RET 0x4)
 var h72: hook.Detour(TC4r) = .{}; // 0x616AF0 ValidatePositionUpdate
 var h73: hook.Detour(FC1r) = .{}; // 0x616BF0 ValidateCoordinateBounds
 var h74: hook.Detour(FC1r) = .{}; // 0x618920 GetUnitPositionBufIfValid
@@ -1180,7 +1182,7 @@ var h85: hook.Detour(FC2r) = .{}; // 0x69B1C0 GetTerrainDataAtPosition
 var h86: hook.Detour(FC5r) = .{}; // 0x69B6D0 GetWaterSurfaceData
 var h87: hook.Detour(TC2r) = .{}; // 0x6A8050 SetupRenderingTransforms
 var h88: hook.Detour(FC6r) = .{}; // 0x6AADC0 procTerrainChunkMeshGen
-var h89: hook.Detour(FC4d) = .{}; // 0x6CF6C0 interpolateKeyframes
+var h89: hook.Detour(FC3d) = .{}; // 0x6CF6C0 interpolateKeyframes (3 params, not 4)
 var h90: hook.Detour(FC2r) = .{}; // 0x6FA1A0 lua_table_hash_index
 var h91: hook.Detour(FC2r) = .{}; // 0x6FA700 lua_table_get_array_elem
 var h92: hook.Detour(FC2r) = .{}; // 0x6FA7A0 lua_table_lookup_key
@@ -1198,8 +1200,8 @@ var h102: hook.Detour(FC5r) = .{}; // 0x69BFF0 CMap::VectorIntersect
 var h103: hook.Detour(TC2r) = .{}; // 0x7BCEF0 getTransposedMatrix4x4
 var h104: hook.Detour(TC2r) = .{}; // 0x7BB420 MultiplyMatrix3x4InPlace
 var h105: hook.Detour(TC3r) = .{}; // 0x7B2A50 RenderParticleSprites
-var h106: hook.Detour(FC4v) = .{}; // 0x7B7A80 packParticleColorToBytes
-var h107: hook.Detour(FC2v) = .{}; // 0x7B7B10 setParticleAlphaFromFloat
+var h106: hook.Detour(FC5v) = .{}; // 0x7B7A80 packParticleColorToBytes (5 params, RET 0xC)
+var h107: hook.Detour(FC3v) = .{}; // 0x7B7B10 setParticleAlphaFromFloat (3 params, RET 0x4)
 var h108: hook.Detour(FC2d) = .{}; // 0x602630 Vector3_DotProduct
 var h109: hook.Detour(FC1v) = .{}; // 0x686640 ComputeFrustumPlanesFromVerts
 var h110: hook.Detour(TC2v) = .{}; // 0x686820 TranslateBoundingVolume
@@ -1210,6 +1212,25 @@ const TC10r = fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(TC)
 var h113: hook.Detour(TC10r) = .{}; // 0x5C8710 RenderTextToVertexBuffer
 var h114: hook.Detour(SC2r) = .{};  // 0x40CF81 GetFPUControlWord
 var h115: hook.Detour(CD0r) = .{};  // 0x40A2B0 __ftol (real)
+
+/// Hand-written __ftol probe. ST(0) holds the implicit float input and must be
+/// preserved across the counter increment. Saves/restores EAX as scratch to
+/// hold absolute addresses — EAX is caller-saved in cdecl so this is safe
+/// for the counter, then we restore it before jumping to the original.
+fn ftolProbe() callconv(.naked) void {
+    asm volatile (
+        \\push %%eax
+        \\mov %[cnt], %%eax
+        \\lock addl $1, (%%eax)
+        \\mov %[orig], %%eax
+        \\mov (%%eax), %%eax
+        \\xchg %%eax, (%%esp)
+        \\ret
+        :
+        : [cnt] "i" (&cnt[115]),
+          [orig] "i" (&h115.inner.trampoline),
+    );
+}
 
 const ProbeInfo = struct { name: [*:0]const u8, idx: u32 };
 
@@ -1333,6 +1354,26 @@ const probe_infos = [NUM_PROBES]ProbeInfo{
 };
 
 // =============================================================================
+// Periodic reporting via OnWorldUpdate (0x482EA0)
+// =============================================================================
+
+const REPORT_FRAMES: u32 = 450; // ~7.5s at 60fps
+var frame_counter: u32 = 0;
+
+const WorldUpdateFn = fn (u32) callconv(FC) void;
+var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
+
+fn worldUpdateDetour(frame_count: u32) callconv(FC) void {
+    world_update_hook.callOriginal(.{frame_count});
+
+    frame_counter +%= 1;
+    if (frame_counter >= REPORT_FRAMES) {
+        reportProbes();
+        frame_counter = 0;
+    }
+}
+
+// =============================================================================
 // Module lifecycle
 // =============================================================================
 
@@ -1429,11 +1470,11 @@ pub fn lateInit() void {
     if (h64.attach(0x483340, probeDetour(FC5r, &h64, &cnt[64])) == .ok) installed += 1;
     if (h65.attach(0x509BF0, probeDetour(FC6r, &h65, &cnt[65])) == .ok) installed += 1;
     if (h66.attach(0x593040, probeDetour(TC2r, &h66, &cnt[66])) == .ok) installed += 1;
-    if (h67.attach(0x5C7010, probeDetour(TC2r, &h67, &cnt[67])) == .ok) installed += 1;
+    if (h67.attach(0x5C7010, probeDetour(TC2d, &h67, &cnt[67])) == .ok) installed += 1;
     if (h68.attach(0x5E22D0, probeDetour(FC2r, &h68, &cnt[68])) == .ok) installed += 1;
     if (h69.attach(0x5F6280, probeDetour(TC3r, &h69, &cnt[69])) == .ok) installed += 1;
     if (h70.attach(0x5F8DC0, probeDetour(TC6v, &h70, &cnt[70])) == .ok) installed += 1;
-    if (h71.attach(0x614CD0, probeDetour(FC2r, &h71, &cnt[71])) == .ok) installed += 1;
+    if (h71.attach(0x614CD0, probeDetour(FC3r, &h71, &cnt[71])) == .ok) installed += 1;
     if (h72.attach(0x616AF0, probeDetour(TC4r, &h72, &cnt[72])) == .ok) installed += 1;
     if (h73.attach(0x616BF0, probeDetour(FC1r, &h73, &cnt[73])) == .ok) installed += 1;
     if (h74.attach(0x618920, probeDetour(FC1r, &h74, &cnt[74])) == .ok) installed += 1;
@@ -1451,7 +1492,7 @@ pub fn lateInit() void {
     if (h86.attach(0x69B6D0, probeDetour(FC5r, &h86, &cnt[86])) == .ok) installed += 1;
     if (h87.attach(0x6A8050, probeDetour(TC2r, &h87, &cnt[87])) == .ok) installed += 1;
     if (h88.attach(0x6AADC0, probeDetour(FC6r, &h88, &cnt[88])) == .ok) installed += 1;
-    if (h89.attach(0x6CF6C0, probeDetour(FC4d, &h89, &cnt[89])) == .ok) installed += 1;
+    if (h89.attach(0x6CF6C0, probeDetour(FC3d, &h89, &cnt[89])) == .ok) installed += 1;
     if (h90.attach(0x6FA1A0, probeDetour(FC2r, &h90, &cnt[90])) == .ok) installed += 1;
     if (h91.attach(0x6FA700, probeDetour(FC2r, &h91, &cnt[91])) == .ok) installed += 1;
     if (h92.attach(0x6FA7A0, probeDetour(FC2r, &h92, &cnt[92])) == .ok) installed += 1;
@@ -1470,25 +1511,34 @@ pub fn lateInit() void {
     if (h103.attach(0x7BCEF0, probeDetour(TC2r, &h103, &cnt[103])) == .ok) installed += 1;
     if (h104.attach(0x7BB420, probeDetour(TC2r, &h104, &cnt[104])) == .ok) installed += 1;
     if (h105.attach(0x7B2A50, probeDetour(TC3r, &h105, &cnt[105])) == .ok) installed += 1;
-    if (h106.attach(0x7B7A80, probeDetour(FC4v, &h106, &cnt[106])) == .ok) installed += 1;
-    if (h107.attach(0x7B7B10, probeDetour(FC2v, &h107, &cnt[107])) == .ok) installed += 1;
+    if (h106.attach(0x7B7A80, probeDetour(FC5v, &h106, &cnt[106])) == .ok) installed += 1;
+    if (h107.attach(0x7B7B10, probeDetour(FC3v, &h107, &cnt[107])) == .ok) installed += 1;
     if (h108.attach(0x602630, probeDetour(FC2d, &h108, &cnt[108])) == .ok) installed += 1;
     if (h109.attach(0x686640, probeDetour(FC1v, &h109, &cnt[109])) == .ok) installed += 1;
     if (h110.attach(0x686820, probeDetour(TC2v, &h110, &cnt[110])) == .ok) installed += 1;
     if (h111.attach(0x6868E0, probeDetour(TC2r, &h111, &cnt[111])) == .ok) installed += 1;
     if (h112.attach(0x6720F0, probeDetour(FC1v, &h112, &cnt[112])) == .ok) installed += 1;
     if (h113.attach(0x5C8710, probeDetour(TC10r, &h113, &cnt[113])) == .ok) installed += 1;
-    if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
-    if (h115.attach(0x40A2B0, probeDetour(CD0r, &h115, &cnt[115])) == .ok) installed += 1;
+    // h114 (GetFPUControlWord 0x40CF81) — modifies FPU control word via FLDCW as side
+    // effect; generic probe callOriginal wrapper may emit FPU instructions that corrupt
+    // the control word state after the original returns. Needs naked asm like ftol.
+    // if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
+    if (h115.attach(0x40A2B0, @ptrCast(&ftolProbe)) == .ok) installed += 1;
+
+    // Periodic reporting hook
+    if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) {
+        log_state.print("silicon: world update reporter installed\n");
+    }
 
     log_state.fmt("silicon: {d}/{d} probe hooks installed\n", .{ installed, @as(u32, NUM_PROBES) });
 }
 
-/// Dump probe hit counts to console. Called from removeHooks on shutdown.
+/// Dump probe hit counts and reset. Called periodically from worldUpdateDetour
+/// and once from removeHooks on shutdown.
 fn reportProbes() void {
     log_state.print("silicon: probe hit counts:\n");
     for (&probe_infos) |*info| {
-        const c = @atomicLoad(u32, &cnt[info.idx], .monotonic);
+        const c = @atomicRmw(u32, &cnt[info.idx], .Xchg, 0, .monotonic);
         if (c > 0) {
             log_state.fmt("  {s}: {d}\n", .{ info.name, c });
         }
@@ -1497,6 +1547,7 @@ fn reportProbes() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        world_update_hook.detach();
         reportProbes();
         log_state.close();
         mod_mutex.release(&g_mutex);
