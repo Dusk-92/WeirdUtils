@@ -236,9 +236,11 @@ fn transformDetour(this: u32, edx: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
-    // bone_sse disabled while verifying from assembly
-    _ = transformMatrix4x4_SSE;
-    transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
+    if (ab_use_custom) {
+        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+    } else {
+        transform_hook.callOriginal(.{ this, edx, mat1, mat2, mat3, mat4 });
+    }
 
     t44_depth -|= 1;
     const elapsed = rdtsc() - start;

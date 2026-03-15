@@ -1575,7 +1575,7 @@ fn texAnimLoop(this: u32, model_hdr: u32) void {
                 const kf_data = alpha_anim + 0x08; // _padding field in AnimationData = keyframe_ranges offset
                 _ = kf_data;
                 // getIndexOffset: returns *(data+4) + idx * 2 = pointer to short
-                const short_base = ru32(alpha_anim + 0x0C); // keyframe_ranges = short array base
+                const short_base = ru32(alpha_anim + 0x18); // AD.keyframe_base = ofsValues (asm 0x715B33: [EAX+0x18])
                 const v0 = @as(f32, @floatFromInt(@as(i32, @intCast(@as(i16, @bitCast(ru16(short_base + ru32(alpha_out) * 2)))))));
                 const v1 = @as(f32, @floatFromInt(@as(i32, @intCast(@as(i16, @bitCast(ru16(short_base + ru32(alpha_out + 4) * 2)))))));
                 wf32(output + 0xF * 4, (v1 * SHORT_TO_FLOAT - v0 * SHORT_TO_FLOAT) * t + v0 * SHORT_TO_FLOAT);
@@ -1611,7 +1611,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32) void {
                 wf32(output + 0x0C, sv * SHORT_TO_FLOAT);
             } else {
                 const t = ufloat(ru32(output + 8));
-                const short_base = ru32(anim_data + 0x0C);
+                const short_base = ru32(anim_data + 0x18); // AD.keyframe_base (asm: [EDI+0x18] for short values)
                 const v0 = @as(f32, @floatFromInt(@as(i32, @intCast(@as(i16, @bitCast(ru16(short_base + ru32(output) * 2)))))));
                 const v1 = @as(f32, @floatFromInt(@as(i32, @intCast(@as(i16, @bitCast(ru16(short_base + ru32(output + 4) * 2)))))));
                 wf32(output + 0x0C, (v1 * SHORT_TO_FLOAT - v0 * SHORT_TO_FLOAT) * t + v0 * SHORT_TO_FLOAT);
@@ -1645,26 +1645,30 @@ fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
         // Init identity matrix for this keyframe entry
         setIdentity(mat_out);
 
-        // Rotation
-        const rot_anim = kf_data + 0x10;
-        if (ru32(rot_anim + AD.keyframe_count) != 0) {
-            interpAnimKF(this, bone_rt_base, rot_anim, output + 0xC * 4);
-            // Apply rotation via quaternion
-            const lm_addr = mat_out;
-            applyTranslation(lm_addr, 0.5, 0.5, 0.0); // DAT_00cf043c/40/44 = {0.5, 0.5, 0.0}
-            rotateByQuaternion(lm_addr, ufloat(ru32(output + 0xF * 4)), ufloat(ru32(output + 0x10 * 4)), ufloat(ru32(output + 0x11 * 4)), ufloat(ru32(output + 0x12 * 4)));
-            applyTranslation(lm_addr, -0.5, -0.5, 0.0);
+        // Rotation: AnimData at kf_entry+0x1C, gate at kf_entry+0x28
+        // Assembly at 0x715FDB: CMP [ECX+0x28], 0; AnimData at EDX+0x1C
+        if (ru32(kf_data + 0x28) != 0) {
+            interpAnimKF(this, bone_rt_base, kf_data + 0x1C, output + 0x30);
+            // ApplyTranslation(0.5, 0.5, 0.0), rotateByQuaternion, ApplyTranslation(-0.5, -0.5, 0.0)
+            applyTranslation(mat_out, 0.5, 0.5, 0.0);
+            rotateByQuaternion(mat_out, ufloat(ru32(output + 0x3C)), ufloat(ru32(output + 0x40)), ufloat(ru32(output + 0x44)), ufloat(ru32(output + 0x48)));
+            applyTranslation(mat_out, -0.5, -0.5, 0.0);
         }
 
-        // Scale
-        const scale_anim = kf_data + 0x28;
-        if (ru32(scale_anim + AD.keyframe_count - 0x28 + 0x34) != 0) {
-            // Translation for bone keyframe
-            const trans_anim = kf_data;
-            if (ru32(trans_anim + AD.keyframe_count) != 0) {
-                interpVec3Track(this, bone_rt_base, trans_anim, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
-                applyTranslation(mat_out, ufloat(ru32(output + 0x0C)), ufloat(ru32(output + 0x10)), ufloat(ru32(output + 0x14)));
-            }
+        // Scale: AnimData at kf_entry+0x38, gate at kf_entry+0x44
+        // Assembly at 0x716052: CMP [ECX+0x44], 0; AnimData at EDX+0x38
+        if (ru32(kf_data + 0x44) != 0) {
+            interpVec3Track(this, bone_rt_base, kf_data + 0x38, output + 0x68, ufloat(ru32(bone_rt_base + BR.blend_weight)));
+            applyTranslation(mat_out, 0.5, 0.5, 0.0);
+            scaleMatrix3x3(mat_out, ufloat(ru32(output + 0x74)), ufloat(ru32(output + 0x78)), ufloat(ru32(output + 0x7C)));
+            applyTranslation(mat_out, -0.5, -0.5, 0.0);
+        }
+
+        // Translation: AnimData at kf_entry+0x00, gate at kf_entry+0x0C
+        // Assembly at 0x716216: CMP [ECX+0x0C], 0; AnimData at kf_entry+0x00
+        if (ru32(kf_data + 0x0C) != 0) {
+            interpVec3Track(this, bone_rt_base, kf_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
+            applyTranslation(mat_out, ufloat(ru32(output + 0x0C)), ufloat(ru32(output + 0x10)), ufloat(ru32(output + 0x14)));
         }
     }
 }
@@ -1731,14 +1735,21 @@ fn particleEmitterLoop(this: u32, model_hdr: u32) void {
         const bone_idx = @as(u32, ru16(entry + 2));
         const bone_rt = bone_rt_base + bone_idx * 0x118;
 
-        // Position track (Vec3 with possible spline interpolation)
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x10)) {
-            interpVec3Track(this, bone_rt, entry + 0x04, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+        // All 3 tracks from assembly (0x716B00-0x717611):
+        // Track 1 (position): gate=entry+0x1C, AnimData=entry+0x10, output=+0x00
+        // Assembly: 0x716B19 CMP [EAX+0x1C]; 0x716B3B LEA ESI,[EDX+0x10]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x1C)) {
+            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
-
-        // Color/alpha/speed/emission/scale tracks — all use same interpFloatTrack pattern
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x2C)) {
-            interpFloatTrack(this, bone_rt, entry + 0x20, output + 0x30);
+        // Track 2: gate=entry+0x44, AnimData=entry+0x38, output=+0x30
+        // Assembly: 0x716F44 MOV EDX,[ECX+0x44]; 0x716F55 LEA ECX,[EAX+0x38]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x44)) {
+            interpVec3Track(this, bone_rt, entry + 0x38, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
+        }
+        // Track 3: gate=entry+0x6C, AnimData=entry+0x60, output=+0x60
+        // Assembly: 0x71739A MOV EDX,[ECX+0x6C]; 0x7173AE LEA EDI,[EAX+0x60]
+        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x6C)) {
+            interpVec3Track(this, bone_rt, entry + 0x60, output + 0x60, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
     }
 }
@@ -1810,7 +1821,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
                     wf32(output + 0x3C, sv * SHORT_TO_FLOAT);
                 } else {
                     const t = ufloat(ru32(output + 0x38));
-                    const short_ranges = ru32(entry + 0x40 + 0x0C);
+                    const short_ranges = ru32(entry + 0x40 + 0x18); // AD.keyframe_base for short values
                     const v0 = @as(f32, @floatFromInt(@as(i32, @intCast(ri16(short_ranges + ru32(output + 0x30) * 2)))));
                     const v1 = @as(f32, @floatFromInt(@as(i32, @intCast(ri16(short_ranges + ru32(output + 0x34) * 2)))));
                     wf32(output + 0x3C, (v1 * SHORT_TO_FLOAT - v0 * SHORT_TO_FLOAT) * t + v0 * SHORT_TO_FLOAT);
