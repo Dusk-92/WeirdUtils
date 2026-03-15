@@ -1529,7 +1529,7 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         // row2 = -cross(row0, row1) — assembly uses negated cross product
                         wf32(om + 0x20, rf32(om + 0x08) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x18));
                         wf32(om + 0x24, rf32(om) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x10));
-                        wf32(om + 0x28, rf32(om) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x10));
+                        wf32(om + 0x28, rf32(om + 0x04) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x14));
                     },
                     0x20 => {
                         // Type 32: normalize row1, set row0={-row1.y, row1.x, 0}, normalize,
@@ -1544,7 +1544,7 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         // row2 = -cross(row0, row1) — assembly uses negated cross product
                         wf32(om + 0x20, rf32(om + 0x08) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x18));
                         wf32(om + 0x24, rf32(om) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x10));
-                        wf32(om + 0x28, rf32(om) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x10));
+                        wf32(om + 0x28, rf32(om + 0x04) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x14));
                     },
                     0x40 => {
                         // Type 64: normalize row2, set row1={row2.y, -row2.x, 0}, normalize,
@@ -1618,6 +1618,11 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
     colorAnimLoop(this, model_hdr);
     if (bisect_stop_section == 9) return;
 
+    // Section 9b: Word animation loop (assembly 0x715E46-0x715F25)
+    // model_hdr+0x6C = count, model_hdr+0x70 = data, output at this+0xAC (SO.scale1)
+    // Data stride 0x1C, output stride 0x20. Word copy with crossfade.
+    wordAnimLoop(this, model_hdr);
+
     // Section 10: Bone keyframe processing
     boneKeyframeLoop(this, model_hdr);
     if (bisect_stop_section == 10) return;
@@ -1660,28 +1665,51 @@ fn texAnimLoop(this: u32, model_hdr: u32) void {
         if (ru32(this + SO.anim_frame_ctr) < ru32(data_base + data_off + 0x0C)) {
             interpVec3Track(this, bone_rt_base, anim_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
         }
-        // Alpha/opacity track
+        // Alpha/opacity track (assembly 0x715AF1-0x715C5E)
+        // Gate: anim_data+0x28 (alpha kf count) > anim_frame_ctr
         if (ru32(this + SO.anim_frame_ctr) < ru32(anim_data + 0x28)) {
-            // Short value interpolation via getIndexOffset/setShortValue pattern
-            // This accesses short values at anim_data + 0x1C
             const alpha_anim = anim_data + 0x1C;
-            const alpha_out = output + 0xC * 4;
-            findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), alpha_anim, alpha_out);
-            // Short value interpolation via game's getIndexOffset/setShortValue
-            // Assembly: CALL 0x71AFF0 (getIndexOffset) + CALL 0x71B010 (setShortValue)
+            // ESI = output + 0x30 in original (alpha output area)
+            const alpha_out = output + 0x30;
+            findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), alpha_anim, alpha_out);
             const mode = ri16(alpha_anim);
-            const table = alpha_anim + AD.nvalues; // ECX = anim_data + 0x14
             if (mode == 0) {
-                const sv = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(alpha_out)))));
-                wf32(output + 0xF * 4, sv * getShortToFloat());
+                // Mode 0: direct short→float copy. Assembly JMPs past crossfade.
+                const kf_data = ru32(alpha_anim + 0x18);
+                const idx = ru32(alpha_out);
+                const sv = @as(f32, @floatFromInt(@as(i32, @as(*align(1) const i16, @ptrFromInt(kf_data + idx * 2)).*)));
+                wf32(alpha_out + 0x0C, sv * getShortToFloat());
             } else {
-                const t = ufloat(ru32(alpha_out + 8));
-                // Assembly reads idx1 first, then idx0 (pairs A1/A2)
-                const v1 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(alpha_out + 4)))));
-                const v0 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(alpha_out)))));
-                wf32(output + 0xF * 4, (v1 * getShortToFloat() - v0 * getShortToFloat()) * t + v0 * getShortToFloat());
+                // Mode != 0: lerp + crossfade
+                const primary = shortInterpToFloat(alpha_anim, alpha_out);
+                wf32(alpha_out + 0x0C, primary);
+
+                // Crossfade (assembly 0x715BAF-0x715C5E)
+                // Only runs for mode != 0 — mode 0 JMPs past this
+                const bw = rf32(bone_rt_base + BR.blend_weight);
+                if (bw > 0.0 and ri16(alpha_anim + 0x02) == -1) {
+                    findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), alpha_anim, alpha_out + 0x10);
+                    const secondary = shortInterpToFloat(alpha_anim, alpha_out + 0x10);
+                    wf32(alpha_out + 0x1C, secondary);
+                    wf32(alpha_out + 0x0C, primary + (secondary - primary) * bw);
+                }
             }
         }
+    }
+}
+
+/// Short-value interpolation: reads indices from output, looks up short values, interpolates.
+/// Shared by texAnimLoop alpha, colorAnimLoop, and word animation crossfade.
+fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
+    const mode = ri16(anim_data);
+    const table = anim_data + AD.nvalues;
+    if (mode == 0) {
+        return @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output))))) * getShortToFloat();
+    } else {
+        const t = ufloat(ru32(output + 8));
+        const v1 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output + 4)))));
+        const v0 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output)))));
+        return (v1 * getShortToFloat() - v0 * getShortToFloat()) * t + v0 * getShortToFloat();
     }
 }
 
@@ -1703,19 +1731,73 @@ fn colorAnimLoop(this: u32, model_hdr: u32) void {
     }) {
         const anim_data = data_base + data_off;
         const output = out_base + out_off;
+        // Gate: anim_data+0x0C (kf count) > anim_frame_ctr
         if (ru32(this + SO.anim_frame_ctr) < ru32(anim_data + 0x0C)) {
             findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), anim_data, output);
-            // Short value interpolation via game's getIndexOffset/setShortValue
             const mode = ri16(anim_data);
-            const table = anim_data + AD.nvalues; // ECX = anim_data + 0x14
             if (mode == 0) {
-                const sv = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output)))));
+                // Mode 0: direct short→float. Assembly JMPs past crossfade (0x715D05).
+                const kf_data = ru32(anim_data + 0x18);
+                const idx = ru32(output);
+                const sv = @as(f32, @floatFromInt(@as(i32, @as(*align(1) const i16, @ptrFromInt(kf_data + idx * 2)).*)));
                 wf32(output + 0x0C, sv * getShortToFloat());
             } else {
-                const t = ufloat(ru32(output + 8));
-                const v1 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output + 4)))));
-                const v0 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, ru32(output)))));
-                wf32(output + 0x0C, (v1 * getShortToFloat() - v0 * getShortToFloat()) * t + v0 * getShortToFloat());
+                // Mode != 0: lerp + crossfade
+                const primary = shortInterpToFloat(anim_data, output);
+                wf32(output + 0x0C, primary);
+
+                // Crossfade (assembly 0x715D6B-0x715E1B)
+                const bw = rf32(bone_rt_base + BR.blend_weight);
+                if (bw > 0.0 and ri16(anim_data + 0x02) == -1) {
+                    findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
+                    const secondary = shortInterpToFloat(anim_data, output + 0x10);
+                    wf32(output + 0x1C, secondary);
+                    wf32(output + 0x0C, primary + (secondary - primary) * bw);
+                }
+            }
+        }
+    }
+}
+
+fn wordAnimLoop(this: u32, model_hdr: u32) void {
+    // Assembly 0x715E46-0x715F25: word/byte animation section
+    // model_hdr+0x6C = count, model_hdr+0x70 = data base
+    // Output at this+0xAC (SO.scale1), data stride 0x1C, output stride 0x20
+    const count = ru32(model_hdr + 0x6C);
+    if (count == 0) return;
+    const data_base = ru32(model_hdr + 0x70);
+    const bone_rt_base = ru32(this + SO.bone_rt_base);
+    const out_base = ru32(this + SO.scale1);
+
+    var i: u32 = 0;
+    var data_off: u32 = 0;
+    var out_off: u32 = 0;
+    while (i < count) : ({
+        i += 1;
+        data_off += 0x1C;
+        out_off += 0x20;
+    }) {
+        const anim_data = data_base + data_off;
+        const output = out_base + out_off;
+        if (ru32(this + SO.anim_frame_ctr) < ru32(anim_data + 0x0C)) {
+            findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), anim_data, output);
+            // Word copy: read word from keyframe data via direct indexing
+            // Assembly (0x715EA3): MOV AX,[kf_data+idx*2]; MOV [output+0x0C],AX
+            const kf_data = ru32(anim_data + 0x18);
+            const idx = ru32(output);
+            wu16(output + 0x0C, ru16(kf_data + idx * 2));
+
+            // Crossfade (assembly 0x715EB4-0x715EFA)
+            // Original: JZ skip if mode==0, then check blend_weight > 0, then time_index == -1
+            if (ri16(anim_data) == 0) {
+                // mode 0: no crossfade, skip
+            } else {
+                const bw = rf32(bone_rt_base + BR.blend_weight);
+                if (bw > 0.0 and ri16(anim_data + 0x02) == -1) {
+                    findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
+                    const sec_idx = ru32(output + 0x10);
+                    wu16(output + 0x1C, ru16(kf_data + sec_idx * 2));
+                }
             }
         }
     }
