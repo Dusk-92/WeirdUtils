@@ -31,6 +31,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
     .{ .name = "filecache", .desc = "Enable MPQ archive file cache", .default = false },
+    .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
 };
 
@@ -73,7 +74,7 @@ pub fn build(b: *std.Build) void {
     const math_sse_obj = b.addObject(.{
         .name = "math_sse",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/transform44/math_sse.zig"),
+            .root_source_file = b.path("src/ssemaths/math_sse.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         }),
@@ -107,7 +108,7 @@ pub fn build(b: *std.Build) void {
         const bench_math_sse = b.addObject(.{
             .name = "bench_math_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/transform44/math_sse.zig"),
+                .root_source_file = b.path("src/ssemaths/math_sse.zig"),
                 .target = bench_target,
                 .optimize = .ReleaseFast,
             }),

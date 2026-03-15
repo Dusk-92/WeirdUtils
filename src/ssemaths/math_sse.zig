@@ -9,6 +9,14 @@
 //!   Silicon: /tmp/TurtleSilicon/winerosetta/libSiliconPatch.dll (closed source, symbols only)
 //!
 //! Our approach: @Vector(4, f32) SSE intrinsics where beneficial, scalar for simple ops.
+//!
+//! PERFORMANCE NOTE: Currently installed via hook detours (CALL/RET overhead ~5-8 cycles).
+//! Benchmarks show small functions (dotProduct, squaredMagnitude, evaluatePolynomial) are
+//! SLOWER than the original x87 when called, but 2-4x FASTER when inlined. The x87
+//! originals are 21-34 bytes with no prologue — the call overhead alone exceeds the
+//! function body cost. To realize actual gains on these, we need to directly patch the
+//! SSE instruction bytes over the original x87 bytes at load time (no function call).
+//! See src/bench/ for the full comparison.
 
 const V4 = @Vector(4, f32);
 

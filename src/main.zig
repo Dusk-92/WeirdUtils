@@ -21,6 +21,8 @@ const build_opts = struct {
     const transform44 = @import("build_options").enable_transform44;
     const addonperf = @import("build_options").enable_addonperf;
     const filecache = @import("build_options").enable_filecache;
+    const ssemaths = @import("build_options").enable_ssemaths;
+    const silicon = @import("build_options").enable_silicon;
 };
 
 // Conditional module imports
@@ -39,6 +41,7 @@ const clickthrough = if (build_opts.clickthrough) @import("clickthrough/clickthr
 const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {};
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
+const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
 const file_cache = if (build_opts.filecache) @import("filecache/filecache.zig") else struct {};
 
 const module_active = @import("module_active.zig");
@@ -685,6 +688,9 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     if (build_opts.transform44) {
         transform44.lateInit();
     }
+    if (build_opts.ssemaths) {
+        ssemaths.lateInit();
+    }
 }
 
 // =============================================================================
@@ -753,6 +759,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.dpslog) .{ .name = dpslog.module_name, .install = dpslog.installHooks, .remove = dpslog.removeHooks, .is_active = dpslog.isActive } else .{},
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
+    if (build_opts.ssemaths) .{ .name = ssemaths.module_name, .install = ssemaths.installHooks, .remove = ssemaths.removeHooks, .is_active = ssemaths.isActive } else .{},
     if (build_opts.filecache) .{ .name = file_cache.module_name, .install = file_cache.installHooks, .remove = file_cache.removeHooks, .is_active = file_cache.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
