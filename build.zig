@@ -71,11 +71,20 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    // REF uses x87-only target to match original game code structure.
+    // The global target has SSE/SSE2 which generates movss/mulss;
+    // the original at 0x714260 uses pure x87 (FLD/FMUL/FSTP).
+    const ref_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86,
+        .os_tag = .windows,
+        .abi = .msvc,
+        .cpu_features_sub = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
+    });
     const bone_sse_ref_obj = b.addObject(.{
         .name = "bone_sse_ref",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/transform44/bone_sse_reference.zig"),
-            .target = target,
+            .target = ref_target,
             .optimize = .ReleaseFast,
         }),
     });

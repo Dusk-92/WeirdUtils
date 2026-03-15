@@ -23,6 +23,7 @@ extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformMatrix4x4_SSE(u32, u32, u32, u32, u32) void;
 extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+extern var bisect_stop_section: u32;
 
 pub const module_name: [*:0]const u8 = "transform44";
 
@@ -257,7 +258,15 @@ fn diagCompare(label: [*:0]const u8, snap: []const u8, live: u32, len: u32) void
     }
 }
 
+// Test A: stripped detour — pure passthrough to REF, no profiling, no dispatch logic.
+// If black → issue is REF code structure. If renders → detour overhead was the problem.
+const DIRECT_REF_TEST = true;
+
 fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(hook.cc.thiscall) void {
+    if (DIRECT_REF_TEST) {
+        transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+        return;
+    }
     const start = rdtsc();
 
     const model_data = hook.readMem(u32, this + 0x10);
@@ -286,7 +295,7 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
 
     if (teardown_active) {
         transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
-    } else if (!is_early and diag_count < DIAG_MAX and t44_depth == 1) {
+    } else if (false and !is_early and diag_count < DIAG_MAX and t44_depth == 1) {
         // --- DIAGNOSTIC (disabled): run original, snapshot, run REF, compare ---
         transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
 
@@ -503,11 +512,12 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
     } else {
         // FPU state comparison: capture full x87 state after original vs REF
         if (diag_count >= DIAG_MAX and diag_count < DIAG_MAX + 3 and t44_depth == 1 and !is_early) {
-            // Run original, capture FPU state
+            // Run original, capture FPU + MXCSR state
             transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
             var fpu_orig: [108]u8 align(16) = undefined;
-            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])"
-                :: [p] "r" (@intFromPtr(&fpu_orig))
+            var mxcsr_orig: u32 = 0;
+            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])\n\tstmxcsr (%[m])"
+                :: [p] "r" (@intFromPtr(&fpu_orig)), [m] "r" (@intFromPtr(&mxcsr_orig))
                 : "memory"
             );
 
@@ -515,8 +525,9 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
             @as(*align(1) u32, @ptrFromInt(this + 0x40)).* = 0;
             transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
             var fpu_ref: [108]u8 align(16) = undefined;
-            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])"
-                :: [p] "r" (@intFromPtr(&fpu_ref))
+            var mxcsr_ref: u32 = 0;
+            asm volatile ("fnsave (%[p])\n\tfrstor (%[p])\n\tstmxcsr (%[m])"
+                :: [p] "r" (@intFromPtr(&fpu_ref)), [m] "r" (@intFromPtr(&mxcsr_ref))
                 : "memory"
             );
 
@@ -530,6 +541,12 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
             const tw_r = @as(*align(1) const u32, @ptrFromInt(@intFromPtr(&fpu_ref) + 8)).*;
             log.fmt("  FPU orig: CW=0x{x:0>4} SW=0x{x:0>4} TW=0x{x:0>4}", .{ cw_o & 0xFFFF, sw_o & 0xFFFF, tw_o & 0xFFFF });
             log.fmt("  FPU ref:  CW=0x{x:0>4} SW=0x{x:0>4} TW=0x{x:0>4}", .{ cw_r & 0xFFFF, sw_r & 0xFFFF, tw_r & 0xFFFF });
+            // MXCSR comparison — SSE control/status, never checked before
+            if (mxcsr_orig != mxcsr_ref) {
+                log.fmt("  *** MXCSR DIFF: orig=0x{x:0>8} ref=0x{x:0>8} (xor=0x{x:0>8})", .{ mxcsr_orig, mxcsr_ref, mxcsr_orig ^ mxcsr_ref });
+            } else {
+                log.fmt("  MXCSR match: 0x{x:0>8}", .{mxcsr_orig});
+            }
             // Dump ST0-ST7 (10 bytes each, starting at offset 28)
             var sti: u32 = 0;
             while (sti < 8) : (sti += 1) {
@@ -546,7 +563,13 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
             }
             diag_count += 1;
         } else {
+            // BISECT MODE: REF runs up to bisect_stop_section, then original provides rest
             transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+            if (bisect_stop_section != 0) {
+                // REF returned early — clear sync so original doesn't early-exit, then run original
+                @as(*align(1) u32, @ptrFromInt(this + 0x40)).* = 0;
+                transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
+            }
         }
     }
 
@@ -1700,17 +1723,59 @@ pub fn installHooks() void {
     if (!g_is_hook_owner) return;
 
     log = logging.Logger.open(module_name, .both);
-    _ = transform_hook.attach(0x714260, &transformDetour);
-    original_trampoline = @intCast(transform_hook.inner.trampoline);
+
+    // BINARY PATCH TEST: copy REF's x87 code directly over original at 0x714260.
+    // No hook — game calls REF's code at the original address. Return addresses
+    // from game function calls will point into game .text, not DLL .text.
+    // If renders → game functions check return addresses (anti-cheat).
+    // If black → issue is something else entirely.
+    const BINARY_PATCH_TEST = false;
+    if (BINARY_PATCH_TEST) {
+        const ref_addr = @intFromPtr(&transformMatrix4x4_REF);
+        const ref_size: u32 = 0x2320; // main function ends at particleLoops start (includes epilogue + FPU stubs)
+        const game_addr: u32 = 0x714260;
+
+        // Copy REF's main function over the original (handles VirtualProtect)
+        const src: [*]const u8 = @ptrFromInt(ref_addr);
+        hook.writeProtected(game_addr, src[0..ref_size]);
+
+        // INT3-fill the remaining original bytes (crash on overrun)
+        var cc_buf: [512]u8 = .{0xCC} ** 512;
+        const remaining = @as(u32, 17703) - ref_size;
+        var filled: u32 = 0;
+        while (filled < remaining) {
+            const chunk = @min(512, remaining - filled);
+            hook.writeProtected(game_addr + ref_size + filled, cc_buf[0..chunk]);
+            filled += chunk;
+        }
+
+        // Fix up 2 relative CALL (E8) instructions to helper functions.
+        // In the DLL, they resolve from ref_addr+site to DLL helper addresses.
+        // After copy to game_addr, we recompute the rel32 to reach the same targets.
+        const e8_sites = [_]u32{ 0x22CE, 0x22E6 };
+        for (e8_sites) |site| {
+            // Read the resolved rel32 from DLL copy to get absolute target
+            const dll_call_addr = ref_addr + site;
+            const target = hook.rel32Target(dll_call_addr);
+            // Write new rel32 for the game-address copy
+            const game_call_addr = game_addr + site;
+            var rel_buf: [4]u8 = undefined;
+            hook.writeRel32(&rel_buf, game_call_addr + 1, target);
+            hook.writeProtected(game_call_addr + 1, &rel_buf);
+        }
+
+        log.fmt("BINARY PATCH: {d} bytes REF@0x{x:0>8} -> 0x{x:0>8}, {d} E8 fixups\n", .{ ref_size, ref_addr, game_addr, e8_sites.len });
+    } else {
+        _ = transform_hook.attach(0x714260, &transformDetour);
+        original_trampoline = @intCast(transform_hook.inner.trampoline);
+    }
+    _ = teardown_hook.attach(0x491180, &teardownDetour);
     _ = render_frame_hook.attach(0x707680, &renderFrameDetour);
     _ = exec_render_pass_hook.attach(0x708900, &execRenderPassDetour);
     _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
-    _ = teardown_hook.attach(0x491180, &teardownDetour);
     _ = render_quads_hook.attach(0x76FB00, &renderQuadsDetour);
     _ = movement_hook.attach(0x616620, &movementDetour);
-    // _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour); // disabled — pure passthrough, REF calls 0x713ea0 directly
-
-    // Perf-identified hotspot hooks
+    // _ = interp_kf_hook.attach(0x713ea0, &interpKfDetour); // disabled: pure passthrough
     _ = clip_hook.attach(0x6318c0, &clipDetour);
     _ = glyph_hook.attach(0x5ca2d0, &glyphDetour);
     _ = particle_hook.attach(0x7b2a50, &particleDetour);
@@ -1731,7 +1796,7 @@ pub fn installHooks() void {
     _ = activep_hook.attach(0x7b5a10, &activepDetour);
     _ = cbiter_hook.attach(0x404130, &cbiterDetour);
     _ = findguid_hook.attach(0x464890, &findguidDetour);
-    _ = raytri2_hook.attach(0x632700, &raytri2Detour);
+    // _ = raytri2_hook.attach(0x632700, &raytri2Detour);
     _ = drawbatch_hook.attach(0x70cb30, &drawbatchDetour);
     _ = findlua_hook.attach(0x702000, &findluaDetour);
     _ = spritequad_hook.attach(0x5a0f50, &spritequadDetour);
@@ -1760,6 +1825,9 @@ pub fn installHooks() void {
 
     // blit_hub installed in lateInit() to clobber UnitXP's hook
     log.print("transform44: 39 profiling hooks installed (blit_hub deferred)\n");
+    if (bisect_stop_section != 0) {
+        log.fmt("  BISECT MODE: REF stops after section {d}, then original trampoline\n", .{bisect_stop_section});
+    }
 }
 
 /// Called from engineInitDetour — after UnitXP has hooked blit_hub.

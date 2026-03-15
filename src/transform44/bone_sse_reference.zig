@@ -15,6 +15,11 @@ const V4 = @Vector(4, f32);
 export var dbg_fpu_logged: u32 = 0;
 export var dbg_fpu_value: u16 = 0;
 
+// BISECT: stop REF after this section (0 = run all, 7 = stop after bone loop, etc.)
+// Detour calls original trampoline after REF to provide any missing side effects.
+// Test sequence: 7 → renders? narrows to 8-13. Black? issue in 1-7 or structural.
+export var bisect_stop_section: u32 = 0;
+
 
 // =============================================================================
 // SceneObject field offsets — assembly-verified from [EBX+N] in transformMatrix4x4
@@ -968,14 +973,16 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
 
     // =========================================================================
     // Section 5: child_objects_padding (len_sq of world transform translation)
+    // Assembly re-reads emitter_ctx from this+0x1CC AFTER matMul (0x7143A0).
     // =========================================================================
-    if (emitter_ctx == 0 or (ru8(emitter_ctx + 4) & 1) != 0) {
+    const emitter_ctx_5 = ru32(this + SO.emitter_ctx);
+    if (emitter_ctx_5 == 0 or (ru8(emitter_ctx_5 + 4) & 1) != 0) {
         const wx = rf32(this + SO.world_xform + 8 * 4); // [8]
         const wy = rf32(this + SO.world_xform + 9 * 4); // [9]
         const wz = rf32(this + SO.world_xform + 10 * 4); // [10]
         wu32(this + SO.child_padding, fbits(wx * wx + wy * wy + wz * wz));
     } else {
-        wu32(this + SO.child_padding, ru32(emitter_ctx + 0x84));
+        wu32(this + SO.child_padding, ru32(emitter_ctx_5 + 0x84));
     }
 
     // =========================================================================
@@ -998,16 +1005,17 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
     };
 
     // Timestamp delta tracking
-    // Assembly guard: if (anim_ctx != 0 AND anim_ctx->timestamp != 0)
-    // NOT guarded on the stored value at this+0x4C — must always write on first frame
+    // Assembly (0x7143EE-0x71451C): outer guard is this+0x4C != 0 (NOT anim_ctx).
+    // If stored value is 0, does NOTHING — never writes, never computes delta.
+    // Something else must initialize this+0x4C; we must NOT seed it ourselves.
     var time_delta_val: u32 = 0;
-    const cur_ts = ru32(anim_ctx + 0x0C);
-    if (cur_ts != 0) {
-        const sdb = ru32(this + SO.search_data_base);
-        if (sdb != 0) {
+    const sdb = ru32(this + SO.search_data_base);
+    if (sdb != 0) {
+        const cur_ts = ru32(anim_ctx + 0x0C);
+        if (cur_ts != 0) {
             time_delta_val = cur_ts -% sdb;
+            wu32(this + SO.search_data_base, cur_ts);
         }
-        wu32(this + SO.search_data_base, cur_ts);
     }
 
     // =========================================================================
@@ -1272,11 +1280,13 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         local_mat[10] = n2[2];
                     } else if (bb_type == 4) {
                         // Spherical billboard — inherit camera rotation with scale preservation
+                        // All sqmag computations MUST call game's vec3SqMag (0x4549F0)
                         const cam0 = [3]f32{ rf32(this + SO.bb_row0), rf32(this + SO.bb_row0 + 4), rf32(this + SO.bb_row0 + 8) };
-                        const cam_len_sq0 = cam0[0] * cam0[0] + cam0[1] * cam0[1] + cam0[2] * cam0[2];
+                        const cam_len_sq0 = callVec3SqMag(this + SO.bb_row0);
                         var s0: f32 = 1.0;
                         if (cam_len_sq0 > rf32(0x0080c5c8)) {
-                            const mat_len_sq0 = local_mat[0] * local_mat[0] + local_mat[1] * local_mat[1] + local_mat[2] * local_mat[2];
+                            var tmp0 = [3]f32{ local_mat[0], local_mat[1], local_mat[2] };
+                            const mat_len_sq0 = callVec3SqMag(@intFromPtr(&tmp0));
                             s0 = @sqrt(mat_len_sq0 / cam_len_sq0);
                         }
                         local_mat[0] = s0 * cam0[0];
@@ -1286,10 +1296,11 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         const wt0 = rf32(this + SO.world_xform + 0 * 4);
                         const wt1 = rf32(this + SO.world_xform + 1 * 4);
                         const wt2 = rf32(this + SO.world_xform + 2 * 4);
-                        const wt_len_sq = wt0 * wt0 + wt1 * wt1 + wt2 * wt2;
+                        const wt_len_sq = callVec3SqMag(this + SO.world_xform);
                         var s1: f32 = 1.0;
                         if (wt_len_sq > rf32(0x0080c5c8)) {
-                            const mat_len_sq1 = local_mat[4] * local_mat[4] + local_mat[5] * local_mat[5] + local_mat[6] * local_mat[6];
+                            var tmp1 = [3]f32{ local_mat[4], local_mat[5], local_mat[6] };
+                            const mat_len_sq1 = callVec3SqMag(@intFromPtr(&tmp1));
                             s1 = @sqrt(mat_len_sq1 / wt_len_sq);
                         }
                         local_mat[4] = s1 * wt0;
@@ -1299,10 +1310,11 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         const wt4 = rf32(this + SO.world_xform + 4 * 4);
                         const wt5 = rf32(this + SO.world_xform + 5 * 4);
                         const wt6 = rf32(this + SO.world_xform + 6 * 4);
-                        const wt_len_sq2 = wt4 * wt4 + wt5 * wt5 + wt6 * wt6;
+                        const wt_len_sq2 = callVec3SqMag(this + SO.world_xform + 16);
                         var s2: f32 = 1.0;
                         if (wt_len_sq2 > rf32(0x0080c5c8)) {
-                            const mat_len_sq2 = local_mat[8] * local_mat[8] + local_mat[9] * local_mat[9] + local_mat[10] * local_mat[10];
+                            var tmp2 = [3]f32{ local_mat[8], local_mat[9], local_mat[10] };
+                            const mat_len_sq2 = callVec3SqMag(@intFromPtr(&tmp2));
                             s2 = @sqrt(mat_len_sq2 / wt_len_sq2);
                         }
                         local_mat[8] = s2 * wt4;
@@ -1437,10 +1449,11 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                 const out_off = bone_idx * 0x40;
                 const om = bone_out_base + out_off; // output matrix
 
-                // Compute scale lengths (sqrt of row length_sq for each row)
-                const scale_len0 = @sqrt(rf32(om + 0x08) * rf32(om + 0x08) + rf32(om + 0x04) * rf32(om + 0x04) + rf32(om) * rf32(om));
-                const scale_len1 = @sqrt(rf32(om + 0x18) * rf32(om + 0x18) + rf32(om + 0x14) * rf32(om + 0x14) + rf32(om + 0x10) * rf32(om + 0x10));
-                const scale_len2 = @sqrt(rf32(om + 0x28) * rf32(om + 0x28) + rf32(om + 0x24) * rf32(om + 0x24) + rf32(om + 0x20) * rf32(om + 0x20));
+                // Compute scale lengths — MUST call game's vec3SqMag (0x4549F0), not inline
+                // Assembly: LEA ECX,[stack_vec3]; CALL 0x4549F0; FSQRT
+                const scale_len0 = @sqrt(callVec3SqMag(om));
+                const scale_len1 = @sqrt(callVec3SqMag(om + 0x10));
+                const scale_len2 = @sqrt(callVec3SqMag(om + 0x20));
 
                 // Compute translated pivot position through the output matrix
                 // local_a8 = pivot * matrix + translation
@@ -1513,14 +1526,14 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         wf32(om + 0x18, 0);
                         const n1 = normalizeVec3InPlace(om + 0x10);
                         _ = n1;
-                        // row2 = cross(row0, row1)
-                        wf32(om + 0x20, rf32(om + 0x04) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x14));
-                        wf32(om + 0x24, rf32(om + 0x08) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x18));
-                        wf32(om + 0x28, rf32(om + 0x04) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x14));
+                        // row2 = -cross(row0, row1) — assembly uses negated cross product
+                        wf32(om + 0x20, rf32(om + 0x08) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x18));
+                        wf32(om + 0x24, rf32(om) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x10));
+                        wf32(om + 0x28, rf32(om) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x10));
                     },
                     0x20 => {
                         // Type 32: normalize row1, set row0={-row1.y, row1.x, 0}, normalize,
-                        // row2 = cross(row0, row1)
+                        // row2 = -cross(row0, row1)
                         const n1 = normalizeVec3InPlace(om + 0x10);
                         _ = n1;
                         wf32(om, -rf32(om + 0x14));
@@ -1528,10 +1541,10 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         wf32(om + 0x08, 0);
                         const n0 = normalizeVec3InPlace(om);
                         _ = n0;
-                        // row2 = cross(row0, row1)
-                        wf32(om + 0x20, rf32(om + 0x04) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x14));
-                        wf32(om + 0x24, rf32(om + 0x08) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x18));
-                        wf32(om + 0x28, rf32(om + 0x04) * rf32(om + 0x10) - rf32(om) * rf32(om + 0x14));
+                        // row2 = -cross(row0, row1) — assembly uses negated cross product
+                        wf32(om + 0x20, rf32(om + 0x08) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x18));
+                        wf32(om + 0x24, rf32(om) * rf32(om + 0x18) - rf32(om + 0x08) * rf32(om + 0x10));
+                        wf32(om + 0x28, rf32(om) * rf32(om + 0x14) - rf32(om + 0x04) * rf32(om + 0x10));
                     },
                     0x40 => {
                         // Type 64: normalize row2, set row1={row2.y, -row2.x, 0}, normalize,
@@ -1594,20 +1607,28 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
     // findInterpIdx + lerp + crossfade blend.
     // =========================================================================
 
+    // BISECT: stop after section 7 (bone loop)
+    if (bisect_stop_section == 7) return;
+
     // Section 8: Texture animation loop
     texAnimLoop(this, model_hdr);
+    if (bisect_stop_section == 8) return;
 
     // Section 9: Color animation loop
     colorAnimLoop(this, model_hdr);
+    if (bisect_stop_section == 9) return;
 
     // Section 10: Bone keyframe processing
     boneKeyframeLoop(this, model_hdr);
+    if (bisect_stop_section == 10) return;
 
     // Section 11: Particle emitter loops
     particleLoops(this, model_hdr);
+    if (bisect_stop_section == 11) return;
 
     // Section 12: Attachment recursion
     attachmentRecursion(this, model_hdr, bone_out_base);
+    if (bisect_stop_section == 12) return;
 
     // =========================================================================
     // Section 13: Sync update
@@ -1665,9 +1686,9 @@ fn texAnimLoop(this: u32, model_hdr: u32) void {
 }
 
 fn colorAnimLoop(this: u32, model_hdr: u32) void {
-    // Assembly: entry gate at model_hdr+0x64, loop bound at model_hdr+0x6C
-    if (ru32(model_hdr + 0x64) == 0) return;
-    const count = ru32(model_hdr + 0x6C); // loop bound from assembly 0x715F0A
+    // Assembly: model_hdr+0x64 is both entry gate AND loop count
+    const count = ru32(model_hdr + 0x64);
+    if (count == 0) return;
     const data_base = ru32(model_hdr + 0x68);
     const bone_rt_base = ru32(this + SO.bone_rt_base);
     const out_base = ru32(this + SO.color_anim_out);
@@ -1682,7 +1703,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32) void {
     }) {
         const anim_data = data_base + data_off;
         const output = out_base + out_off;
-        if (ru32(this + SO.anim_frame_ctr) < ru32(anim_data + 0x04)) {
+        if (ru32(this + SO.anim_frame_ctr) < ru32(anim_data + 0x0C)) {
             findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), anim_data, output);
             // Short value interpolation via game's getIndexOffset/setShortValue
             const mode = ri16(anim_data);
