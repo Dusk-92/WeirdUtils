@@ -109,6 +109,7 @@ const cc_tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
 
 const ITERS: u64 = 2_000_000;
 
+
 // =========================================================================
 // Test data
 // =========================================================================
@@ -171,16 +172,15 @@ pub fn main() void {
     // 5: vec3MulAssign -- thiscall(ECX=self, stack=factor_bits) -> u32
     {
         const fb: u32 = @bitCast(@as(f32, 2.5));
-        var do = tv3();
-        var ds = tv3();
+        const tmpl = tv3();
+        var do = tmpl;
+        var ds = tmpl;
         const of: *const fn (u32, u32) callconv(cc_tc) u32 = @ptrCast(makeExecutable(&originals.vec3MulAssign) orelse unreachable);
         _ = of(a(&do), fb);
         _ = vec3MulAssign(a(&ds), fb);
         const ok = cmpSlice(&do, &ds);
-        do = tv3();
-        ds = tv3();
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&do), fb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = vec3MulAssign(a(&ds), fb); } s = rdtsc() - s;
+        var t = rdtsc(); for (0..ITERS) |_| { do = tmpl; _ = of(a(&do), fb); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { ds = tmpl; _ = vec3MulAssign(a(&ds), fb); } s = rdtsc() - s;
         report("vec3MulAssign", t, s, ok);
     }
 
@@ -193,16 +193,15 @@ pub fn main() void {
     // 8: scaleByScalar -- thiscall(ECX=mat, stack=factor_bits) -> void
     {
         const fb: u32 = @bitCast(@as(f32, 0.5));
-        var mo = tm4();
-        var ms = tm4();
+        const tmpl = tm4();
+        var mo = tmpl;
+        var ms = tmpl;
         const of: *const fn (u32, u32) callconv(cc_tc) void = @ptrCast(makeExecutable(&originals.scaleMatrix3x3ByScalar) orelse unreachable);
         of(a(&mo), fb);
         scaleMatrix3x3ByScalar(a(&ms), fb);
         const ok = cmpSlice(&mo, &ms);
-        mo = tm4();
-        ms = tm4();
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&mo), fb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { scaleMatrix3x3ByScalar(a(&ms), fb); } s = rdtsc() - s;
+        var t = rdtsc(); for (0..ITERS) |_| { mo = tmpl; of(a(&mo), fb); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { ms = tmpl; scaleMatrix3x3ByScalar(a(&ms), fb); } s = rdtsc() - s;
         report("scaleByScalar", t, s, ok);
     }
 
@@ -349,6 +348,7 @@ fn bench_fc3r(
 }
 
 /// thiscall(ECX=self, stack=param) -> u32 (in-place modification)
+/// Fresh data each iteration to avoid overflow/denormal artifacts.
 fn bench_tc2r(
     comptime name: []const u8,
     comptime orig_bytes: anytype,
@@ -357,23 +357,22 @@ fn bench_tc2r(
     param: anytype,
     comptime result_len: usize,
 ) void {
+    const T = @TypeOf(self_init);
     const of: *const fn (u32, u32) callconv(cc_tc) u32 = @ptrCast(makeExecutable(&orig_bytes) orelse {
         print("{s:>30}: FAILED to map\n", .{name});
         return;
     });
-    var so: @TypeOf(self_init) = self_init;
-    var ss: @TypeOf(self_init) = self_init;
+    var so: T = self_init;
+    var ss: T = self_init;
     _ = of(a(&so), a(&param));
     _ = sse_fn(a(&ss), a(&param));
     const ok = cmpSlice(@as([*]const f32, @ptrCast(&so))[0..result_len], @as([*]const f32, @ptrCast(&ss))[0..result_len]);
 
-    so = self_init;
-    ss = self_init;
     var t = rdtsc();
-    for (0..ITERS) |_| { _ = of(a(&so), a(&param)); }
+    for (0..ITERS) |_| { so = self_init; _ = of(a(&so), a(&param)); }
     t = rdtsc() - t;
     var s = rdtsc();
-    for (0..ITERS) |_| { _ = sse_fn(a(&ss), a(&param)); }
+    for (0..ITERS) |_| { ss = self_init; _ = sse_fn(a(&ss), a(&param)); }
     s = rdtsc() - s;
     report(name, t, s, ok);
 }
