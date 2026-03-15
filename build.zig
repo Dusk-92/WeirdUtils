@@ -31,6 +31,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API" },
     .{ .name = "filecache", .desc = "Enable MPQ archive file cache", .default = false },
+    .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
