@@ -58,11 +58,32 @@ Track notable changes here between releases. Clear this file when cutting a new 
   for ClipPolygonToSinglePlane (4x), BuildTrianglePlanes (10x), rotateMatrixByAxisAngle
   (4.3x), RayTriangleIntersection (1.3x), multiplyMatrix4x4 (4.3x).
 
-- **VanillaFixes Math Polyfill** (WIP) - incorporating x87 FPU replacements from UnitXP
-  and libSiliconPatch into our SSE pipeline. Replaces ~20 game math functions (matrix
-  multiply, vector ops, collision geometry, animation interpolation) with SSE or modern
-  scalar equivalents. Compiled ReleaseFast as a separate compilation unit (math_sse.zig).
-  Not yet wired into hooks -- will be its own module with independent mutex.
+- **VanillaFixes Math Polyfill** - 17 UnitXP x87 FPU replacement hooks verified via
+  Ghidra prologue/epilogue disassembly and benchmarked against original WoW.exe bytes.
+  Hooks install in lateInit() to clobber UnitXP's hooks with correct calling conventions
+  (thiscall vs fastcall verified from assembly). A/B tested via bitmask toggle.
+
+  Micro-benchmark results (x86 Linux harness, original x87 bytes mmap'd executable):
+  ```
+  Winners (SSE faster):          Neutral (~1.0x):            Losers (x87 faster):
+  rotMat3x3:       2.1x (158->72)   matMulVec3:  1.0x         dotProduct:       0.4x (5->11)
+  rotMat4x4:       2.1x (162->76)   multiply3x3: 1.0x         evaluatePolynomial: 0.6x (11->16)
+  planeNormal:     1.7x (58->33)    crossProduct: 1.0x        squaredMagnitude:  0.7x (7->9)
+  transformAABox:  1.2x (89->69)    applyTranslation: 0.9x    vec3MulScalar:     0.8x
+  vecMulMat4:      1.1x             scaleByVec:  0.9x         vec3MulAssign:     0.8x
+  scaleByScalar:   1.1x (some runs)                            quatMulMat4:       0.8x
+  ```
+  Losers are at function call overhead floor (original x87 is 5-11 cycles, close to
+  bare CALL/RET cost). Future direction: patch original bytes in-place at load time
+  to eliminate call overhead entirely.
+
+  Also includes CriticalSection SpinCount=4000 optimization (from UnitXP) and
+  blit_hub memcpy fast paths for matching pixel formats.
+
+- **Math SSE Benchmark Harness** (`zig build bench` / `zig build run-bench`) - standalone
+  x86 Linux micro-benchmark that extracts original x87 function bytes from WoW.exe via
+  Ghidra, mmaps them executable, and profiles against our SSE replacements. Fresh data
+  each iteration to avoid overflow/denormal artifacts. Correctness validation included.
 
 - **Glyph Shadow Cache** - direct-mapped O(1) bypass for the game's 4-bucket hash table
   in GetOrCreateCharacterGlyph. Reduces glyph lookup from ~3.65% frame time.
@@ -94,6 +115,13 @@ Track notable changes here between releases. Clear this file when cutting a new 
 
 - **Build System** - default optimize changed from Debug to ReleaseFast (works around
   Zig fastcall inreg LLVM bug). Logging available in all modes except ReleaseSmall.
+
+## To Explore
+
+- **Driver env vars on load** - set environment variables like `RADV_TEX_ANISO=16` from
+  the DLL at load time, allowing driver-level anisotropic filtering while setting the
+  in-game option to off/low. Avoids the double-filtering performance hit of game AF
+  stacked on top of driver AF. Same approach could apply to other Mesa/RADV/DXVK knobs.
 
 ## DLL_README Gaps
 

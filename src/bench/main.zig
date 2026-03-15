@@ -312,11 +312,88 @@ pub fn main() void {
         report("transformAABox", t, s, ok);
     }
 
+    // =====================================================================
+    // INLINED benchmarks — no CALL/RET on either side.
+    // x87 via inline asm, SSE via direct Zig. Simulates in-place patching.
+    // =====================================================================
+    print("\n{s}\n", .{"--- INLINED (no call overhead, simulates in-place patching) ---"});
+
+    // dotProduct inlined
+    {
+        const va2 = tv3();
+        const vb2 = tv3b();
+        var rx: f32 = undefined;
+        var rs: f32 = undefined;
+        inline_x87_dot(&va2, &vb2, &rx);
+        inline_sse_dot(&va2, &vb2, &rs);
+        const ok = compareF32(rx, rs);
+        var t = rdtsc();
+        for (0..ITERS) |_| inline_x87_dot(&va2, &vb2, &rx);
+        t = rdtsc() - t;
+        var s = rdtsc();
+        for (0..ITERS) |_| inline_sse_dot(&va2, &vb2, &rs);
+        s = rdtsc() - s;
+        report("dotProduct(inlined)", t, s, ok);
+    }
+
+    // squaredMagnitude inlined
+    {
+        const v = tv3();
+        var rx: f32 = undefined;
+        var rs: f32 = undefined;
+        inline_x87_sqmag(&v, &rx);
+        inline_sse_sqmag(&v, &rs);
+        const ok = compareF32(rx, rs);
+        var t = rdtsc();
+        for (0..ITERS) |_| inline_x87_sqmag(&v, &rx);
+        t = rdtsc() - t;
+        var s = rdtsc();
+        for (0..ITERS) |_| inline_sse_sqmag(&v, &rs);
+        s = rdtsc() - s;
+        report("squaredMag(inlined)", t, s, ok);
+    }
+
+    // vec3MulScalar inlined
+    {
+        const vec = tv3();
+        const factor: f32 = 2.5;
+        var ro: Vec3 = undefined;
+        var rs2: Vec3 = undefined;
+        inline_x87_v3scale(&vec, &factor, &ro);
+        inline_sse_v3scale(&vec, factor, &rs2);
+        const ok = cmpSlice(&ro, &rs2);
+        var t = rdtsc();
+        for (0..ITERS) |_| inline_x87_v3scale(&vec, &factor, &ro);
+        t = rdtsc() - t;
+        var s = rdtsc();
+        for (0..ITERS) |_| inline_sse_v3scale(&vec, factor, &rs2);
+        s = rdtsc() - s;
+        report("vec3MulScalar(inlined)", t, s, ok);
+    }
+
+    // evaluatePolynomial inlined (degree=3)
+    {
+        const coeffs = [4]f32{ 3.0, -2.0, 1.0, 0.5 };
+        const factor: f32 = 1.5;
+        var rx: f32 = undefined;
+        var rs: f32 = undefined;
+        inline_x87_horner(&coeffs, &factor, &rx);
+        inline_sse_horner(&coeffs, factor, &rs);
+        const ok = compareF32(rx, rs);
+        var t = rdtsc();
+        for (0..ITERS) |_| inline_x87_horner(&coeffs, &factor, &rx);
+        t = rdtsc() - t;
+        var s = rdtsc();
+        for (0..ITERS) |_| inline_sse_horner(&coeffs, factor, &rs);
+        s = rdtsc() - s;
+        report("evalPoly(inlined)", t, s, ok);
+    }
+
     print("\n", .{});
 }
 
 // =========================================================================
-// Generic benchmarks for common signatures
+// Generic benchmarks for common signatures (called versions)
 // =========================================================================
 
 /// fastcall(ECX=result, EDX=paramA, stack=paramB) -> u32
@@ -375,4 +452,111 @@ fn bench_tc2r(
     for (0..ITERS) |_| { ss = self_init; _ = sse_fn(a(&ss), a(&param)); }
     s = rdtsc() - s;
     report(name, t, s, ok);
+}
+
+// =========================================================================
+// Inlined x87 / SSE implementations (AT&T syntax for x87 inline asm)
+// =========================================================================
+
+const V4 = @Vector(4, f32);
+
+inline fn inline_x87_dot(va: *const Vec3, vb: *const Vec3, out: *f32) void {
+    asm volatile (
+        \\ flds 8(%[a])
+        \\ fmuls 8(%[b])
+        \\ flds 4(%[a])
+        \\ fmuls 4(%[b])
+        \\ faddp
+        \\ flds (%[a])
+        \\ fmuls (%[b])
+        \\ faddp
+        \\ fstps (%[out])
+        :
+        : [a] "r" (va),
+          [b] "r" (vb),
+          [out] "r" (out),
+        : "memory"
+    );
+}
+
+inline fn inline_sse_dot(va: *const Vec3, vb: *const Vec3, out: *volatile f32) void {
+    const aa: V4 = .{ va[0], va[1], va[2], 0 };
+    const bb: V4 = .{ vb[0], vb[1], vb[2], 0 };
+    const p = aa * bb;
+    out.* = p[0] + p[1] + p[2];
+}
+
+inline fn inline_x87_sqmag(v: *const Vec3, out: *f32) void {
+    asm volatile (
+        \\ flds (%[v])
+        \\ fmuls (%[v])
+        \\ flds 4(%[v])
+        \\ fmuls 4(%[v])
+        \\ faddp
+        \\ flds 8(%[v])
+        \\ fmuls 8(%[v])
+        \\ faddp
+        \\ fstps (%[out])
+        :
+        : [v] "r" (v),
+          [out] "r" (out),
+        : "memory"
+    );
+}
+
+inline fn inline_sse_sqmag(v: *const Vec3, out: *volatile f32) void {
+    const vv: V4 = .{ v.*[0], v.*[1], v.*[2], 0 };
+    const sq = vv * vv;
+    out.* = sq[0] + sq[1] + sq[2];
+}
+
+inline fn inline_x87_v3scale(v: *const Vec3, f: *const f32, out: *Vec3) void {
+    asm volatile (
+        \\ flds (%[f])
+        \\ fmuls 8(%[v])
+        \\ flds (%[f])
+        \\ fmuls 4(%[v])
+        \\ flds (%[f])
+        \\ fmuls (%[v])
+        \\ fstps (%[out])
+        \\ fstps 4(%[out])
+        \\ fstps 8(%[out])
+        :
+        : [v] "r" (v),
+          [f] "r" (f),
+          [out] "r" (out),
+        : "memory"
+    );
+}
+
+inline fn inline_sse_v3scale(v: *const Vec3, f: f32, out: *volatile Vec3) void {
+    const vv: V4 = .{ v.*[0], v.*[1], v.*[2], 0 };
+    const r = vv * @as(V4, @splat(f));
+    out.* = .{ r[0], r[1], r[2] };
+}
+
+inline fn inline_x87_horner(c: *const [4]f32, f: *const f32, out: *f32) void {
+    asm volatile (
+        \\ flds (%[c])
+        \\ fmuls (%[f])
+        \\ fadds 4(%[c])
+        \\ fmuls (%[f])
+        \\ fadds 8(%[c])
+        \\ fmuls (%[f])
+        \\ fadds 12(%[c])
+        \\ fstps (%[out])
+        :
+        : [c] "r" (c),
+          [f] "r" (f),
+          [out] "r" (out),
+        : "memory"
+    );
+}
+
+inline fn inline_sse_horner(c: *const [4]f32, f: f32, out: *volatile f32) void {
+    var r: f32 = c.*[0];
+    r = r * f + c.*[1];
+    r = r * f + c.*[2];
+    r = r * f + c.*[3];
+    out.* = r;
 }
