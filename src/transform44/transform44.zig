@@ -1621,7 +1621,7 @@ pub fn lateInit() void {
     // math_sse replacements -- restore original prologues (clobber UnitXP), then hook
     // A/B tested: CUSTOM=our SSE, BASELINE=original x87
     // Set MATH_TEST_HOOK to 0 to disable all, 1-18 to enable only that one, 99 for all
-    const MATH_TEST_HOOK: u32 = 99;
+    const MATH_TEST_HOOK: u32 = 14;
     const MathHook = struct { addr: u32, prologue: []const u8 };
     const math_hooks = [_]MathHook{
         .{ .addr = 0x7BCA80, .prologue = &.{ 0x55, 0x8b, 0xec, 0x56, 0x8b, 0x75, 0x08 } },  //  1: vecMulMat4
@@ -1643,48 +1643,7 @@ pub fn lateInit() void {
         .{ .addr = 0x637480, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x18 } },         // 17: planeNormal
         .{ .addr = 0x6DC470, .prologue = &.{ 0x55, 0x8b, 0xec, 0x83, 0xec, 0x0c } },         // 18: transformAABox
     };
-    const math_detours = .{
-        abDetour3r(&vecMulMat4_ColMajor, &math_vecMulMat4_hook),
-        abDetour3r(&matMulVec3_RowMajor, &math_matMulVec3_hook),
-        abDetour3r(&quatMulMat4, &math_quatMulMat4_hook),
-        abDetour3r(&vec3MulScalar, &math_vec3MulScalar_hook),
-        abDetour2r(&vec3MulAssign, &math_vec3MulAssign_hook),
-        abDetour2r(&applyTranslationMatrix, &math_applyTranslation_hook),
-        abDetour2r(&scaleMatrix3x3ByVector, &math_scaleByVec_hook),
-        abDetour2v(&scaleMatrix3x3ByScalar, &math_scaleByScalar_hook),
-        abDetour3r(&multiply3x3Matrix, &math_mul3x3_hook),
-        abDetour4r(&createAxisAngleRotMat3x3, &math_rotMat3x3_hook),
-        abDetour4r(&createAxisAngleRotMat4x4, &math_rotMat4x4_hook),
-        abDetour3r(&crossProduct, &math_cross_hook),
-        abDetour2d(&dotProduct, &math_dot_hook),
-        abDetour1d(&squaredMagnitude, &math_sqmag_hook),
-        abDetour2v(&vectorNormalize, &math_normalize_hook),
-        abDetour3d(&evaluatePolynomial, &math_evalPoly_hook),
-        abDetour4v(&calculatePlaneNormal, &math_planeNormal_hook),
-        abDetour5v(&transformAABox, &math_transformAABox_hook),
-    };
-    _ = math_detours; // used below via indexed access
-    const math_hook_ptrs = .{
-        &math_vecMulMat4_hook, &math_matMulVec3_hook, &math_quatMulMat4_hook,
-        &math_vec3MulScalar_hook, &math_vec3MulAssign_hook, &math_applyTranslation_hook,
-        &math_scaleByVec_hook, &math_scaleByScalar_hook, &math_mul3x3_hook,
-        &math_rotMat3x3_hook, &math_rotMat4x4_hook, &math_cross_hook,
-        &math_dot_hook, &math_sqmag_hook, &math_normalize_hook,
-        &math_evalPoly_hook, &math_planeNormal_hook, &math_transformAABox_hook,
-    };
-    _ = math_hook_ptrs; // used conceptually
     var math_count: u32 = 0;
-    inline for (math_hooks, 0..) |mh, i| {
-        const idx = i + 1;
-        if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == idx) {
-            hook.writeProtected(mh.addr, mh.prologue);
-            _ = comptime blk: {
-                _ = i;
-                break :blk {};
-            };
-        }
-    }
-    // Can't do heterogeneous attach in inline for, so do them individually gated by MATH_TEST_HOOK
     if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 1) { hook.writeProtected(0x7BCA80, math_hooks[0].prologue); _ = math_vecMulMat4_hook.attach(0x7BCA80, abDetour3r(&vecMulMat4_ColMajor, &math_vecMulMat4_hook)); math_count += 1; }
     if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 2) { hook.writeProtected(0x7BCAE0, math_hooks[1].prologue); _ = math_matMulVec3_hook.attach(0x7BCAE0, abDetour3r(&matMulVec3_RowMajor, &math_matMulVec3_hook)); math_count += 1; }
     if (MATH_TEST_HOOK == 99 or MATH_TEST_HOOK == 3) { hook.writeProtected(0x7BCB40, math_hooks[2].prologue); _ = math_quatMulMat4_hook.attach(0x7BCB40, abDetour3r(&quatMulMat4, &math_quatMulMat4_hook)); math_count += 1; }
