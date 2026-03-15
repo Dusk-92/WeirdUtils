@@ -30,6 +30,26 @@ extern fn evaluatePolynomial(u32, u32, u32) f64;
 extern fn calculatePlaneNormal(u32, u32, u32, u32) void;
 extern fn transformAABox(u32, u32, u32, u32, u32) void;
 
+// silicon_sse.zig exports
+extern fn si_normalizeVec3(u32, u32) void;
+extern fn si_mulMat3x4(u32, u32, u32) u32;
+extern fn si_rotateMatByQuat(u32, u32) u32;
+extern fn si_createRotMat3x4(u32, u32, u32, u32) u32;
+extern fn si_distanceToPlane(u32, u32, u32) f64;
+extern fn si_classifyPointFrustum(u32, u32, u32) u32;
+extern fn si_checkBoxLineIntersect(u32, u32, u32) u32;
+extern fn si_testOBBFrustum(u32, u32, u32, u32) u32;
+extern fn si_testSphereFrustum(u32, u32) u32;
+extern fn si_quatSlerp(u32, u32, u32, u32) u32;
+extern fn si_isPointInsideBounds(u32, u32) u32;
+extern fn si_calculateSinCos(u32, u32, u32) void;
+extern fn si_createZRotMat3x3(u32, u32) u32;
+extern fn si_transposeMat4x4(u32, u32) u32;
+extern fn si_mulMat3x4InPlace(u32, u32) u32;
+extern fn si_normalizeVec3InPlace(u32) void;
+extern fn si_vec3Dot(u32, u32) f64;
+extern fn si_translateBoundingVol(u32, u32) void;
+
 // =========================================================================
 // Infrastructure
 // =========================================================================
@@ -51,16 +71,39 @@ fn makeExecutable(comptime bytes: []const u8) ?[*]const u8 {
     return mem.ptr;
 }
 
-fn mapGameConstants() bool {
+/// Map WoW PE sections at their original virtual addresses.
+/// .text (code) at 0x401000 + .rdata (constants) at 0x7FF000.
+/// Resolves all intra-code CALL targets and float constant references.
+const TEXT_START: usize = 0x401000;
+const TEXT_SIZE: usize = 4186112;
+const RDATA_START: usize = 0x7FF000;
+const RDATA_SIZE: usize = 163840;
+const wow_text_data = @embedFile("wow_text.bin");
+const wow_rdata_data = @embedFile("wow_rdata.bin");
+
+var sections_mapped: bool = false;
+
+fn mapFixedSection(addr: usize, size: usize, data: []const u8, exec: bool) bool {
+    const prot: linux.PROT = if (exec) .{ .READ = true, .WRITE = true, .EXEC = true } else .{ .READ = true, .WRITE = true };
     const mem = posix.mmap(
-        @ptrFromInt(0x007ff000), 4096,
-        .{ .READ = true, .WRITE = true },
+        @ptrFromInt(addr), size, prot,
         .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .FIXED = true },
         -1, 0,
     ) catch return false;
-    const p: *f32 = @ptrCast(@alignCast(&mem[0x9d8]));
-    p.* = 1.0;
+    @memcpy(mem[0..data.len], data);
     return true;
+}
+
+fn mapWowSections() bool {
+    if (sections_mapped) return true;
+    if (!mapFixedSection(TEXT_START, TEXT_SIZE, wow_text_data, true)) return false;
+    if (!mapFixedSection(RDATA_START, RDATA_SIZE, wow_rdata_data, false)) return false;
+    sections_mapped = true;
+    return true;
+}
+
+fn origFn(comptime T: type, addr: usize) *const T {
+    return @ptrFromInt(addr);
 }
 
 inline fn rdtsc() u64 {
@@ -134,8 +177,9 @@ fn tm3b() Mat3 { return .{ 0.5, -0.1, 0.3, 0.2, 1.0, -0.2, -0.1, 0.4, 0.8 }; }
 // =========================================================================
 
 pub fn main() void {
-    if (!mapGameConstants()) {
-        print("WARNING: could not map game constants at 0x7ff000\n", .{});
+    if (!mapWowSections()) {
+        print("FATAL: could not map WoW PE sections\n", .{});
+        return;
     }
 
     print("\nmath_sse benchmark -- {d}M iterations per function\n", .{ITERS / 1_000_000});
@@ -245,7 +289,7 @@ pub fn main() void {
     {
         const va = tv3();
         const vb = tv3b();
-        const of: *const fn (u32, u32) callconv(cc_fc) f64 = @ptrCast(makeExecutable(&originals.dotProduct) orelse unreachable);
+        const of: *const fn (u32, u32) callconv(cc_fc) f64 = origFn(fn (u32, u32) callconv(cc_fc) f64, 0x602630);
         const ov = of(a(&va), a(&vb));
         const sv = dotProduct(a(&va), a(&vb));
         const ok = @abs(ov - sv) < 1e-4;
@@ -387,6 +431,215 @@ pub fn main() void {
         for (0..ITERS) |_| inline_sse_horner(&coeffs, factor, &rs);
         s = rdtsc() - s;
         report("evalPoly(inlined)", t, s, ok);
+    }
+
+    // =====================================================================
+    // Silicon SSE functions (src/silicon/silicon_sse.zig)
+    // =====================================================================
+    print("\n{s}\n", .{"--- SILICON SSE functions ---"});
+
+    // si_isPointInsideBounds (1.7M/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> u32
+    {
+        const va2 = tv3();
+        const vb2 = Vec3{ 1.0, -3.0, 0.5 }; // all <= va
+        const of: *const fn (u32, u32) callconv(cc_fc) u32 = origFn(fn (u32, u32) callconv(cc_fc) u32, 0x699330);
+        const ov = of(a(&va2), a(&vb2));
+        const sv = si_isPointInsideBounds(a(&va2), a(&vb2));
+        const ok = ov == sv;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_isPointInsideBounds(a(&va2), a(&vb2)); } s = rdtsc() - s;
+        report("isPointInsideBounds", t, s, ok);
+    }
+
+    // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> f64
+    {
+        const va2 = tv3();
+        const vb2 = tv3b();
+        const of = origFn(fn (u32, u32) callconv(cc_fc) f64, 0x602630);
+        const ov = of(a(&va2), a(&vb2));
+        const sv = si_vec3Dot(a(&va2), a(&vb2));
+        const ok = @abs(ov - sv) < 1e-4;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_vec3Dot(a(&va2), a(&vb2)); } s = rdtsc() - s;
+        report("si_vec3Dot", t, s, ok);
+    }
+
+    // si_normalizeVec3InPlace -- fastcall(vec3_ECX) -> void
+    {
+        var vo = tv3();
+        var vs = tv3();
+        const of: *const fn (u32) callconv(cc_fc) void = origFn(fn (u32) callconv(cc_fc) void, 0x6720F0);
+        of(a(&vo));
+        si_normalizeVec3InPlace(a(&vs));
+        const ok = cmpSlice(&vo, &vs);
+        var t = rdtsc(); for (0..ITERS) |_| { vo = tv3(); of(a(&vo)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { vs = tv3(); si_normalizeVec3InPlace(a(&vs)); } s = rdtsc() - s;
+        report("normalizeVec3InPlace", t, s, ok);
+    }
+
+    // si_distanceToPlane (525K/7.5s) -- fastcall(point_ECX, plane_EDX, dir_stack) -> f64
+    {
+        const pt = tv3();
+        const plane = [4]f32{ 0.0, 1.0, 0.0, -5.0 }; // y=5 plane
+        const dir = Vec3{ 0.0, -1.0, 0.0 }; // pointing down
+        const of: *const fn (u32, u32, u32) callconv(cc_fc) f64 = origFn(fn (u32, u32, u32) callconv(cc_fc) f64, 0x6329E0);
+        const ov = of(a(&pt), a(&plane), a(&dir));
+        const sv = si_distanceToPlane(a(&pt), a(&plane), a(&dir));
+        const ok = @abs(ov - sv) < 1e-2;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&pt), a(&plane), a(&dir)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_distanceToPlane(a(&pt), a(&plane), a(&dir)); } s = rdtsc() - s;
+        report("distanceToPlane", t, s, ok);
+    }
+
+    // si_checkBoxLineIntersect (2.7M/7.5s) -- fastcall(box_ECX, start_EDX, end_stack) -> u32
+    {
+        const box = [6]f32{ -1, -1, -1, 1, 1, 1 }; // unit cube
+        const ls = Vec3{ -2, 0, 0 };
+        const le = Vec3{ 2, 0, 0 }; // line through center
+        const of: *const fn (u32, u32, u32) callconv(cc_fc) u32 = origFn(fn (u32, u32, u32) callconv(cc_fc) u32, 0x6DC5A0);
+        const ov = of(a(&box), a(&ls), a(&le));
+        const sv = si_checkBoxLineIntersect(a(&box), a(&ls), a(&le));
+        const ok = ov == sv;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&box), a(&ls), a(&le)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_checkBoxLineIntersect(a(&box), a(&ls), a(&le)); } s = rdtsc() - s;
+        report("checkBoxLineIntersect", t, s, ok);
+    }
+
+    // si_classifyPointFrustum (3.2M/7.5s) -- thiscall(planes_ECX, point_stack, mask_stack) -> u32
+    {
+        // 6 planes forming a unit cube frustum
+        var planes: [24]f32 = undefined;
+        const normals = [6][3]f32{ .{1,0,0}, .{-1,0,0}, .{0,1,0}, .{0,-1,0}, .{0,0,1}, .{0,0,-1} };
+        for (0..6) |i| { planes[i*4] = normals[i][0]; planes[i*4+1] = normals[i][1]; planes[i*4+2] = normals[i][2]; planes[i*4+3] = -5; }
+        const pt = Vec3{ 0, 0, 0 }; // inside
+        var mask_o: u32 = 0;
+        var mask_s: u32 = 0;
+        const of: *const fn (u32, u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32, u32) callconv(cc_tc) u32, 0x686C20);
+        _ = of(a(&planes), a(&pt), a(&mask_o));
+        _ = si_classifyPointFrustum(a(&planes), a(&pt), a(&mask_s));
+        const ok = mask_o == mask_s;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&pt), a(&mask_o)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_classifyPointFrustum(a(&planes), a(&pt), a(&mask_s)); } s = rdtsc() - s;
+        report("classifyPointFrustum", t, s, ok);
+    }
+
+    // si_testSphereFrustum (375K/7.5s) -- thiscall(planes_ECX, sphere_stack) -> u32
+    {
+        var planes: [24]f32 = undefined;
+        const normals = [6][3]f32{ .{1,0,0}, .{-1,0,0}, .{0,1,0}, .{0,-1,0}, .{0,0,1}, .{0,0,-1} };
+        for (0..6) |i| { planes[i*4] = normals[i][0]; planes[i*4+1] = normals[i][1]; planes[i*4+2] = normals[i][2]; planes[i*4+3] = -5; }
+        const sphere = [4]f32{ 0, 0, 0, 1 }; // center origin, radius 1
+        const of: *const fn (u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32) callconv(cc_tc) u32, 0x686B80);
+        const ov = of(a(&planes), a(&sphere));
+        const sv = si_testSphereFrustum(a(&planes), a(&sphere));
+        const ok = ov == sv;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&sphere)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_testSphereFrustum(a(&planes), a(&sphere)); } s = rdtsc() - s;
+        report("testSphereFrustum", t, s, ok);
+    }
+
+    // si_transposeMat4x4 -- thiscall(src_ECX, dst_stack) -> u32
+    {
+        const src = tm4();
+        var dst_o: Mat4 = undefined;
+        var dst_s: Mat4 = undefined;
+        const of: *const fn (u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32) callconv(cc_tc) u32, 0x7BCEF0);
+        _ = of(a(&src), a(&dst_o));
+        _ = si_transposeMat4x4(a(&src), a(&dst_s));
+        const ok = cmpSlice(&dst_o, &dst_s);
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&src), a(&dst_o)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_transposeMat4x4(a(&src), a(&dst_s)); } s = rdtsc() - s;
+        report("transposeMat4x4", t, s, ok);
+    }
+
+    // si_quatSlerp -- fastcall(out_ECX, quatA_EDX, t_stack, quatB_stack) -> u32
+    {
+        const qa = [4]f32{ 1, 0, 0, 0 };
+        const qb = [4]f32{ 0.707, 0, 0.707, 0 };
+        const tb: u32 = @bitCast(@as(f32, 0.5));
+        var ro: [4]f32 = undefined;
+        var rs: [4]f32 = undefined;
+        const of = origFn(fn (u32, u32, u32, u32) callconv(cc_fc) u32, 0x7C0570);
+        _ = of(a(&ro), a(&qa), tb, a(&qb));
+        _ = si_quatSlerp(a(&rs), a(&qa), tb, a(&qb));
+        const ok = cmpSlice(&ro, &rs);
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&qa), tb, a(&qb)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_quatSlerp(a(&rs), a(&qa), tb, a(&qb)); } s = rdtsc() - s;
+        report("quatSlerp", t, s, ok);
+    }
+
+    // si_createZRotMat3x3 -- thiscall(out_ECX, angle_stack) -> u32
+    {
+        const ab2: u32 = @bitCast(@as(f32, 0.7854));
+        var ro: Mat3 = undefined;
+        var rs: Mat3 = undefined;
+        const of: *const fn (u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32) callconv(cc_tc) u32, 0x7BE5B0);
+        _ = of(a(&ro), ab2);
+        _ = si_createZRotMat3x3(a(&rs), ab2);
+        const ok = cmpSlice(&ro, &rs);
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), ab2); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_createZRotMat3x3(a(&rs), ab2); } s = rdtsc() - s;
+        report("createZRotMat3x3", t, s, ok);
+    }
+
+    // si_mulMat3x4 -- fastcall(out_ECX, matA_EDX, matB_stack) -> u32
+    {
+        const ma = [12]f32{ 1,0,0, 0,1,0, 0,0,1, 1,2,3 };
+        const mb = [12]f32{ 0,1,0, -1,0,0, 0,0,1, 4,5,6 };
+        var ro: [12]f32 = undefined;
+        var rs: [12]f32 = undefined;
+        const of: *const fn (u32, u32, u32) callconv(cc_fc) u32 = origFn(fn (u32, u32, u32) callconv(cc_fc) u32, 0x7BAE60);
+        _ = of(a(&ro), a(&ma), a(&mb));
+        _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb));
+        const ok = cmpSlice(&ro, &rs);
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&ma), a(&mb)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb)); } s = rdtsc() - s;
+        report("mulMat3x4", t, s, ok);
+    }
+
+    // si_rotateMatByQuat -- thiscall(mat_ECX, quat_stack) -> u32
+    {
+        const quat2 = [4]f32{ 0.0, 0.383, 0.0, 0.924 }; // ~45 deg Y
+        var mo = tm4();
+        var ms = tm4();
+        const of: *const fn (u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32) callconv(cc_tc) u32, 0x7BDDB0);
+        _ = of(a(&mo), a(&quat2));
+        _ = si_rotateMatByQuat(a(&ms), a(&quat2));
+        const ok = cmpSlice(&mo, &ms);
+        mo = tm4(); ms = tm4();
+        var t = rdtsc(); for (0..ITERS) |_| { mo = tm4(); _ = of(a(&mo), a(&quat2)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { ms = tm4(); _ = si_rotateMatByQuat(a(&ms), a(&quat2)); } s = rdtsc() - s;
+        report("rotateMatByQuat", t, s, ok);
+    }
+
+    // si_createRotMat3x4 -- fastcall(out_ECX, axis_EDX, angle_stack, isNorm_stack) -> u32
+    {
+        const axis2 = Vec3{ 0, 1, 0 };
+        const ab2: u32 = @bitCast(@as(f32, 0.7854));
+        var ro: [12]f32 = undefined;
+        var rs: [12]f32 = undefined;
+        const of: *const fn (u32, u32, u32, u32) callconv(cc_fc) u32 = origFn(fn (u32, u32, u32, u32) callconv(cc_fc) u32, 0x7BB860);
+        _ = of(a(&ro), a(&axis2), ab2, 1);
+        _ = si_createRotMat3x4(a(&rs), a(&axis2), ab2, 1);
+        const ok = cmpSlice(&ro, &rs);
+        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis2), ab2, 1); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = si_createRotMat3x4(a(&rs), a(&axis2), ab2, 1); } s = rdtsc() - s;
+        report("createRotMat3x4", t, s, ok);
+    }
+
+    // si_mulMat3x4InPlace -- thiscall(matA_ECX, matB_stack) -> u32
+    {
+        const mb2 = [12]f32{ 0,1,0, -1,0,0, 0,0,1, 4,5,6 };
+        const tmpl2 = [12]f32{ 1,0,0, 0,1,0, 0,0,1, 1,2,3 };
+        var mo2 = tmpl2;
+        var ms2 = tmpl2;
+        const of: *const fn (u32, u32) callconv(cc_tc) u32 = origFn(fn (u32, u32) callconv(cc_tc) u32, 0x7BB420);
+        _ = of(a(&mo2), a(&mb2));
+        _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2));
+        const ok = cmpSlice(&mo2, &ms2);
+        var t = rdtsc(); for (0..ITERS) |_| { mo2 = tmpl2; _ = of(a(&mo2), a(&mb2)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { ms2 = tmpl2; _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2)); } s = rdtsc() - s;
+        report("mulMat3x4InPlace", t, s, ok);
     }
 
     print("\n", .{});

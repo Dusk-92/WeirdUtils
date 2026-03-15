@@ -87,6 +87,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    const silicon_sse_obj = b.addObject(.{
+        .name = "silicon_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/silicon/silicon_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
 
     const lib = b.addLibrary(.{
         .name = "weirdutils",
@@ -105,6 +113,7 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(bone_sse_obj);
     lib.root_module.addObject(bone_sse_ref_obj);
     lib.root_module.addObject(math_sse_obj);
+    lib.root_module.addObject(silicon_sse_obj);
     b.installArtifact(lib);
 
     // Benchmark harness — native x86 Linux executable for profiling SSE replacements
@@ -131,7 +140,19 @@ pub fn build(b: *std.Build) void {
                 .optimize = bench_optimize,
             }),
         });
+        // Link at high address so WoW PE sections (0x400000-0xD00000) can be
+        // mapped at their original virtual addresses for benchmarking.
+        bench.image_base = 0x10000000;
+        const bench_silicon_sse = b.addObject(.{
+            .name = "bench_silicon_sse",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/silicon/silicon_sse.zig"),
+                .target = bench_target,
+                .optimize = .ReleaseFast,
+            }),
+        });
         bench.root_module.addObject(bench_math_sse);
+        bench.root_module.addObject(bench_silicon_sse);
         bench.root_module.linkSystemLibrary("m", .{});
         const install_bench = b.addInstallArtifact(bench, .{});
         const bench_step = b.step("bench", "Build math_sse benchmark harness (x86 Linux)");
