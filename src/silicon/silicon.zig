@@ -28,12 +28,24 @@ var log_state: logging.Logger = .{};
 // =============================================================================
 
 // 0x749280: calculateSinCos
+//   __stdcall(float angle, float* outSin, float* outCos), RET 0xC
+//   Uses x87 FSINCOS to compute sin/cos, stores to output pointers.
 //   Silicon: does not hook directly, uses SSE internally
 //   Status: stub
 
-// 0x40CF81: ftol (float-to-long truncation)
-//   Silicon: hook_ftol -- replaces x87 FISTP with SSE2 CVTTSS2SI
-//   Status: stub
+// 0x40CF81: GetFPUControlWord (NOT ftol — silicon mislabel)
+//   __stdcall(uint mask, uint newBits), RET (callee cleanup)
+//   Reads/modifies FPU control word via FSTCW/FLDCW. Returns old CW as int.
+//   24 callers — FP error handling and rounding support routines.
+//   Silicon: hook_ftol (misleading name — this is the CW helper, not ftol itself)
+//   Status: probed
+//
+// 0x40A2B0: __ftol (the REAL float-to-long truncation)
+//   __cdecl(), RET (no stack cleanup). Input: x87 ST(0). Output: EAX:EDX (int64).
+//   Classic MSVC CRT: FSTCW/OR AH,0x0C/FLDCW/FISTP/FLDCW restore. 51+ callers
+//   across Lua, text rendering, camera, terrain, animation, coordinates.
+//   SSE2 replacement: single CVTTSS2SI eliminates the rounding mode dance.
+//   Status: probed
 
 // 0x4183D0: WritePointerToStream
 //   __thiscall(this_ECX, pointer_stack), RET 0x4
@@ -54,22 +66,37 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x602630: Vector3_DotProduct
+//   __fastcall(vecA_ECX, vecB_EDX), RET (no stack cleanup)
+//   Classic dot product: a.z*b.z + a.y*b.y + a.x*b.x. Returns f64 via x87 ST(0).
+//   14 bytes, 9 instructions. Tiny leaf function.
 //   Silicon: not hooked (different from NTempest Dot)
 //   Status: stub
 
-// 0x686640: SetVector3
+// 0x686640: ComputeFrustumPlanesFromVertices (misnamed SetVector3 in Ghidra)
+//   __fastcall(this_ECX), RET (no stack cleanup)
+//   Computes 4 clipping plane equations (normal+distance) from 8 corner vertices
+//   using cross products + NormalizeVector3_InPlace + DotProduct. Also computes negated 5th plane.
 //   Silicon: hook_sub_686640, sub_686640_sse2
-//   Status: stub -- we already profile this in transform44
+//   Status: stub
 
-// 0x686820: NormalizeVector3
+// 0x686820: TranslateBoundingVolume (misnamed NormalizeVector3 in Ghidra)
+//   __thiscall(this_ECX, offsetVec3_stack), RET 0x4
+//   Translates all 8 corner vertices (+0x60..+0xB4) by offset, recomputes 6 plane
+//   distances, translates min/max bounds (+0xC0, +0xCC).
 //   Silicon: not directly hooked
 //   Status: stub
 
-// 0x6868E0: DotProductVector3
+// 0x6868E0: TransformBoundingVolume (misnamed DotProductVector3 in Ghidra)
+//   __thiscall(this_ECX, matrix3x3_stack), RET 0x4
+//   Transforms all 8 corners via transformVector3InPlace, calls ComputeFrustumPlanes
+//   (0x686640), transforms min/max bounds.
 //   Silicon: not directly hooked
 //   Status: stub
 
 // 0x6720F0: NormalizeVector3_InPlace
+//   __fastcall(vec3_ECX), RET (no stack cleanup)
+//   In-place normalize: sqrt(x²+y²+z²), scale = 1/len, xyz *= scale.
+//   58 bytes, pure FPU, no div-by-zero guard.
 //   Silicon: not directly hooked
 //   Status: stub
 
@@ -126,6 +153,8 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x7BB420: MultiplyMatrix3x4InPlace
+//   __thiscall(matrixA_ECX, matrixB_stack), RET 0x4. Returns this.
+//   Calls MultiplyMatrix3x4 (0x7BAE60) into stack temp, copies 48 bytes back to this.
 //   Silicon: hook_MatrixMultiply (shared hook)
 //   Status: stub
 
@@ -137,6 +166,8 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x7BCEF0: getTransposedMatrix4x4
+//   __thiscall(srcMatrix_ECX, dstMatrix_stack), RET 0x4
+//   Transposes 4x4 matrix from this to dst. Uses x87 loads + integer register shuffling.
 //   Silicon: not directly hooked
 //   Status: stub
 
@@ -238,6 +269,9 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x69BFF0: CMap::VectorIntersect
+//   __fastcall(p0_ECX, p1_EDX, hitPoint_stack, dist_stack, flags_stack), RET 0xC
+//   Ray intersection from p0→p1 against world map. Dispatches to terrain LOS (flags & 0xF000FF)
+//   and/or ADT rasterization (flags & 0xF00F0F). Interpolates hit as p0+(p1-p0)*dist.
 //   Silicon: hook_CWorldMath_VectorIntersectAABox2
 //   Status: stub
 
@@ -437,6 +471,10 @@ var log_state: logging.Logger = .{};
 // =============================================================================
 
 // 0x7B2A50: RenderParticleSprites (profiled in transform44)
+//   __thiscall(this_ECX, particleData_stack, vertexBuffers_stack), RET 0x8
+//   Core particle sprite renderer. Per-particle: depth culling, color/scale calc,
+//   world matrix transform, texture atlas UV, rotation via sin/cos, builds 4 corner
+//   vertices with pos/color/UV. Large function (~400+ lines).
 //   Silicon: sub_7B2A50_sse2 (via hook_sub_7B4BF0?)
 //   Status: stub
 
@@ -471,15 +509,16 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // 0x7B7A80: packParticleColorToBytes
-//   __fastcall(targetObj_ECX), RET 0xC
-//   Converts 4 x87 FPU stack color channels to bytes, packs into u32 at targetObj+0x12C.
-//   NOTE: floats come from FPU stack, not regular stack (despite RET 0xC).
+//   __fastcall(obj_ECX, floatR_stack, floatG_stack, floatB_stack), RET 0xC
+//   Reads alpha byte at obj+0x12F, multiplies by 255. Packs ARGB into u32 at obj+0x12C.
+//   NOTE: floats are normal stack params (FLD [EBP+0x8] etc), NOT FPU register params.
 //   Silicon: hook_sub_7B7A80
 //   Status: stub
 
 // 0x7B7B10: setParticleAlphaFromFloat
-//   __fastcall(targetObj_ECX), RET 0x4
-//   Converts FPU float to int via __ftol, stores low byte as alpha at targetObj+0x12F.
+//   __fastcall(obj_ECX, floatAlpha_stack), RET 0x4
+//   Multiplies float by 255.0, rounds, stores as byte at obj+0x12F.
+//   Normal stack float param, not FPU register.
 //   Silicon: hook_sub_7B7B10
 //   Status: stub
 
@@ -561,9 +600,14 @@ var log_state: logging.Logger = .{};
 //   Silicon: hook_sub_7BE490
 //   Status: stub
 
-// 0x7BE5B0-7BF7B0: series of related math functions
+// 0x7BE5B0: createZRotationMatrix3x3
+//   __thiscall(outMat3x3_ECX, angle_stack), RET 0x4. Returns this.
+//   Builds 3x3 Z-axis rotation matrix via FSINCOS: [cos,sin,0,-sin,cos,0,0,0,1].
+//   Status: stub
+//
+// 0x7BE5B0-7BF7B0: series of related axis rotation matrices
 //   Silicon hooks all of these individually
-//   Status: all stubs
+//   Status: remaining in series need decompilation
 
 // 0x7C0570: quaternion_slerp
 //   __fastcall(outQuat_ECX, quatA_EDX, t_stack, quatB_stack), RET 0x8
@@ -605,12 +649,18 @@ var log_state: logging.Logger = .{};
 // =============================================================================
 
 // 0x76D680: SetupModelLighting
+//   __fastcall(ptr_ECX, lightingCtx_EDX, sceneObj_stack), RET 0x4
+//   Configures lighting on model. If flag bit 0 at sceneObj+0x3A4, converts RGB byte
+//   color to float, clamps, calls setupCameraParameters with light direction.
 //   Silicon: hook_CM2Lighting_SetupSunlight, etc.
-//   Status: stub -- complex, many sub-functions
+//   Status: stub
 
-// 0x7786A0: SetModelLighting
+// 0x7786A0: SetModelLighting (actually UI model constructor/initializer)
+//   __thiscall(this_ECX, initParam_stack), RET 0x4. Returns this.
+//   Constructor for ~0x4D8 byte UI model object. Sets up vtables (0x81C7F8, 0x81C7C8),
+//   initializes sub-objects at +0x33C/+0x3B8/+0x434, sets LOD=2. Ghidra mislabel.
 //   Silicon: hook_CM2Lighting_AddLight, AddDiffuse, SetupGxLights
-//   Status: stub -- complex
+//   Status: stub
 
 // =============================================================================
 // Category 11: Movement / spline
@@ -927,6 +977,362 @@ var log_state: logging.Logger = .{};
 //   Status: stub
 
 // =============================================================================
+// Probe hooks — call-counting detours to verify functions are actually called
+// =============================================================================
+
+// Calling convention shorthands
+const FC = hook.cc.fastcall;
+const TC = hook.cc.thiscall;
+const SC = hook.cc.stdcall;
+
+// Function type aliases — {CC}{paramCount}{return}: r=u32, v=void, d=f64(x87)
+const FC1v = fn (u32) callconv(FC) void;
+const FC1r = fn (u32) callconv(FC) u32;
+const FC2v = fn (u32, u32) callconv(FC) void;
+const FC2r = fn (u32, u32) callconv(FC) u32;
+const FC3r = fn (u32, u32, u32) callconv(FC) u32;
+const FC2d = fn (u32, u32) callconv(FC) f64;
+const FC3d = fn (u32, u32, u32) callconv(FC) f64;
+const FC4r = fn (u32, u32, u32, u32) callconv(FC) u32;
+const FC4d = fn (u32, u32, u32, u32) callconv(FC) f64;
+const FC5r = fn (u32, u32, u32, u32, u32) callconv(FC) u32;
+const FC6r = fn (u32, u32, u32, u32, u32, u32) callconv(FC) u32;
+const TC1v = fn (u32) callconv(TC) void;
+const TC1r = fn (u32) callconv(TC) u32;
+const TC2v = fn (u32, u32) callconv(TC) void;
+const TC2r = fn (u32, u32) callconv(TC) u32;
+const TC2d = fn (u32, u32) callconv(TC) f64;
+const TC3v = fn (u32, u32, u32) callconv(TC) void;
+const TC3r = fn (u32, u32, u32) callconv(TC) u32;
+const TC4v = fn (u32, u32, u32, u32) callconv(TC) void;
+const TC4r = fn (u32, u32, u32, u32) callconv(TC) u32;
+const TC5v = fn (u32, u32, u32, u32, u32) callconv(TC) void;
+const TC6v = fn (u32, u32, u32, u32, u32, u32) callconv(TC) void;
+const SC0v = fn () callconv(SC) void;
+const SC1d = fn (u32) callconv(SC) f64;
+const SC2r = fn (u32, u32) callconv(SC) u32;
+const SC3v = fn (u32, u32, u32) callconv(SC) void;
+const FC4v = fn (u32, u32, u32, u32) callconv(FC) void;
+// __cdecl for CRT functions (caller cleanup)
+const CD0r = fn () callconv(hook.cc.cdecl) u32; // ftol: no params, returns EAX (ST(0) implicit)
+
+/// Generates a probe detour that atomically increments a counter, then calls
+/// through to the original function via callOriginal.
+fn probeDetour(
+    comptime FnType: type,
+    comptime detour_hook: *hook.Detour(FnType),
+    comptime counter: *u32,
+) *const FnType {
+    const info = @typeInfo(FnType).@"fn";
+    const Ret = info.return_type.?;
+    const nparams = info.params.len;
+    const cc = info.calling_convention;
+    const S = struct {
+        fn d0() callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{});
+        }
+        fn d1(a: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{a});
+        }
+        fn d2(a: u32, b: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b });
+        }
+        fn d3(a: u32, b: u32, c: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b, c });
+        }
+        fn d4(a: u32, b: u32, c: u32, d: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b, c, d });
+        }
+        fn d5(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b, c, d, e });
+        }
+        fn d6(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b, c, d, e, f });
+        }
+        fn d10(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, i: u32, j: u32, k: u32) callconv(cc) Ret {
+            _ = @atomicRmw(u32, counter, .Add, 1, .monotonic);
+            return detour_hook.callOriginal(.{ a, b, c, d, e, f, g, i, j, k });
+        }
+    };
+    return switch (nparams) {
+        0 => @ptrCast(&S.d0),
+        1 => @ptrCast(&S.d1),
+        2 => @ptrCast(&S.d2),
+        3 => @ptrCast(&S.d3),
+        4 => @ptrCast(&S.d4),
+        5 => @ptrCast(&S.d5),
+        6 => @ptrCast(&S.d6),
+        10 => @ptrCast(&S.d10),
+        else => @compileError("unsupported param count for probe"),
+    };
+}
+
+// --- Probe table: { index, name, address, hook_var, fn_type } ---
+// Grouped by calling convention type for readability.
+// Total: 60 probes covering all explored functions (minus non-math and 7+ param outliers).
+
+const NUM_PROBES = 116;
+var cnt = [1]u32{0} ** NUM_PROBES;
+
+// Hook variables — one per probed function
+// Cat 1: Scalar math
+var h00: hook.Detour(TC2v) = .{}; // 0x4549C0 normalizeVector3
+var h01: hook.Detour(SC1d) = .{}; // 0x41AE40 ScaleCoord div0.8
+var h02: hook.Detour(SC1d) = .{}; // 0x41AE50 ScaleCoord div0.6
+var h03: hook.Detour(SC1d) = .{}; // 0x41AE60 ScaleCoord mul0.8
+var h04: hook.Detour(SC1d) = .{}; // 0x41AE70 ScaleCoord mul0.6
+// Cat 4: Matrix multiply
+var h05: hook.Detour(FC3r) = .{}; // 0x7BCA80 transformVector3ByMatrix4x4
+var h06: hook.Detour(FC3r) = .{}; // 0x7BCB40 transformVector4ByMatrix4x4
+var h07: hook.Detour(FC3r) = .{}; // 0x7BAE60 MultiplyMatrix3x4
+var h08: hook.Detour(FC3r) = .{}; // 0x7BDFC0 multiplyMatrix3x3
+var h09: hook.Detour(FC4r) = .{}; // 0x7BDB00 createAxisAngleRotationMatrix
+var h10: hook.Detour(TC2r) = .{}; // 0x7BDC40 ApplyTranslationMatrix
+var h11: hook.Detour(TC2r) = .{}; // 0x7BDCA0 scaleMatrix3x3ByVector
+var h12: hook.Detour(TC2r) = .{}; // 0x7BDDB0 rotateMatrixByQuaternion
+var h13: hook.Detour(FC4r) = .{}; // 0x7BE490 createAxisAngleRotMat3x3
+var h14: hook.Detour(FC4r) = .{}; // 0x7BB860 CreateRotationMatrix 3x4
+// Cat 5: Collision/spatial
+var h15: hook.Detour(FC5r) = .{}; // 0x632830 RayPolygonIntersectionTest
+var h16: hook.Detour(FC3d) = .{}; // 0x6329E0 CalculateDistanceToPlane
+var h17: hook.Detour(FC5r) = .{}; // 0x632F80 CalcTrianglePlanesFromVerts
+var h18: hook.Detour(FC2r) = .{}; // 0x6335D0 testPointTriangleCollision
+var h19: hook.Detour(FC5r) = .{}; // 0x681B50 ProjectVerticesAndUpdateDepth
+var h20: hook.Detour(TC3r) = .{}; // 0x686C20 ClassifyPointAgainstFrustum
+var h21: hook.Detour(FC2r) = .{}; // 0x6856C0 ValidateGameObject
+var h22: hook.Detour(FC3r) = .{}; // 0x686000 FrustumCullBoundingBox_0
+var h23: hook.Detour(FC2r) = .{}; // 0x686180 FrustumCullBoundingBox_1
+var h24: hook.Detour(FC3r) = .{}; // 0x6DC5A0 CheckBoxLineIntersection
+var h25: hook.Detour(FC4r) = .{}; // 0x50A840 CalcOrthonormalBasis
+var h26: hook.Detour(FC4r) = .{}; // 0x509220 CheckBoundingBoxCollision
+var h27: hook.Detour(TC4r) = .{}; // 0x6869C0 TestOBBAgainstFrustum
+var h28: hook.Detour(TC2r) = .{}; // 0x686B80 TestSphereAgainstFrustum
+// Cat 6: Rendering pipeline
+var h29: hook.Detour(FC4r) = .{}; // 0x6ABC40 processLinkedListCollision
+var h30: hook.Detour(FC4r) = .{}; // 0x6ABE60 processSpecialObjCollision
+var h31: hook.Detour(FC4r) = .{}; // 0x6AD7E0 frustumCullGeometry
+var h32: hook.Detour(FC1v) = .{}; // 0x6AFAD0 UpdateEntityAndChunksPos
+var h33: hook.Detour(FC3r) = .{}; // 0x6B7070 calculateWaterHeight
+var h34: hook.Detour(FC4r) = .{}; // 0x6B8B70 checkBoundingBoxIntersect
+var h35: hook.Detour(TC3r) = .{}; // 0x6B88E0 performCollisionDetection
+var h36: hook.Detour(TC3r) = .{}; // 0x6B8C60 PerformSpatialCulling
+var h37: hook.Detour(TC4v) = .{}; // 0x6BC370 SetupCylinderFrustum
+var h38: hook.Detour(FC1v) = .{}; // 0x6C15D0 executeRenderCommands
+// Cat 7: Bone/model
+var h39: hook.Detour(FC4r) = .{}; // 0x71AE90 extractAnimByteFromKeyframes
+var h40: hook.Detour(FC4r) = .{}; // 0x71AF20 getInterpolatedFloat
+var h41: hook.Detour(TC2v) = .{}; // 0x71B6A0 normalizeVector3 (bone)
+var h42: hook.Detour(TC2v) = .{}; // 0x71BC70 addVector3ToAccumulator
+var h43: hook.Detour(TC2v) = .{}; // 0x71BF60 addToColorAccumulator
+var h44: hook.Detour(FC1v) = .{}; // 0x71C160 transformLightsAndPlanes
+var h45: hook.Detour(FC1v) = .{}; // 0x71C2F0 calculateFrustumPlanes
+var h46: hook.Detour(TC2r) = .{}; // 0x71C4E0 calcSphericalHarmonics
+var h47: hook.Detour(TC1v) = .{}; // 0x718960 renderSceneNode
+var h48: hook.Detour(TC2v) = .{}; // 0x719370 updateAnimationSystem
+var h49: hook.Detour(TC3r) = .{}; // 0x712D50 GetTransformedAnimPos
+var h50: hook.Detour(TC2r) = .{}; // 0x713680 GetBoundingSphere
+// Cat 8: Particle
+var h51: hook.Detour(TC2r) = .{}; // 0x7B3A10 RenderParticleSystemSorted
+var h52: hook.Detour(TC3v) = .{}; // 0x7B5A10 ProcessActiveParticles
+var h53: hook.Detour(TC3v) = .{}; // 0x7B7E60 AdvanceParticles
+// Cat 9: Geometry math
+var h54: hook.Detour(FC4r) = .{}; // 0x7C0570 quaternion_slerp
+var h55: hook.Detour(FC3r) = .{}; // 0x7C2040 point_sphere_collision_test
+var h56: hook.Detour(FC5r) = .{}; // 0x7C22B0 ray_plane_intersection
+var h57: hook.Detour(FC1v) = .{}; // 0x7C5880 calc_animation_orientation
+// Misc
+var h58: hook.Detour(FC3r) = .{}; // 0x70A060 compareRayHitData
+var h59: hook.Detour(FC3r) = .{}; // 0x70AE10 compareRenderItemsExtended
+// --- Batch 2: remaining explored functions ---
+var h60: hook.Detour(TC2r) = .{}; // 0x4183D0 WritePointerToStream
+var h61: hook.Detour(TC4r) = .{}; // 0x453480 AudioCallback_SetVolume
+var h62: hook.Detour(TC5v) = .{}; // 0x453580 Vector3_InterpolateWeighted
+var h63: hook.Detour(TC4r) = .{}; // 0x4541B0 interpolateVector3
+var h64: hook.Detour(FC5r) = .{}; // 0x483340 UpdateLightingData
+var h65: hook.Detour(FC6r) = .{}; // 0x509BF0 ClampBounds
+var h66: hook.Detour(TC2r) = .{}; // 0x593040 VertexData_UpdateRenderState
+var h67: hook.Detour(TC2r) = .{}; // 0x5C7010 ConvertPixelsToScreenAlt
+var h68: hook.Detour(FC2r) = .{}; // 0x5E22D0 CheckPlayerInTriggerZone
+var h69: hook.Detour(TC3r) = .{}; // 0x5F6280 InterpolateSpellPosition
+var h70: hook.Detour(TC6v) = .{}; // 0x5F8DC0 CalculateRenderingBounds
+var h71: hook.Detour(FC2r) = .{}; // 0x614CD0 UpdateObjectTransform
+var h72: hook.Detour(TC4r) = .{}; // 0x616AF0 ValidatePositionUpdate
+var h73: hook.Detour(FC1r) = .{}; // 0x616BF0 ValidateCoordinateBounds
+var h74: hook.Detour(FC1r) = .{}; // 0x618920 GetUnitPositionBufIfValid
+var h75: hook.Detour(FC1v) = .{}; // 0x675AC0 Weather_ProcessEnvironment
+var h76: hook.Detour(TC2d) = .{}; // 0x67C820 GetCachedHeightValue
+var h77: hook.Detour(TC2d) = .{}; // 0x67CA00 GetHeightFromCachedMap
+var h78: hook.Detour(TC3v) = .{}; // 0x67CA90 SampleAndCacheHeightData
+var h79: hook.Detour(TC4r) = .{}; // 0x67CB60 RaycastLineWithHeightCheck
+var h80: hook.Detour(FC2v) = .{}; // 0x6818B0 AddObjectToSpatialList
+var h81: hook.Detour(SC0v) = .{}; // 0x683F80 AllocateGameObject
+var h82: hook.Detour(TC6v) = .{}; // 0x68B0D0 CalculateDetailDistances
+var h83: hook.Detour(FC1v) = .{}; // 0x68D540 CalculateChunkVertices
+var h84: hook.Detour(FC2r) = .{}; // 0x699330 IsPointInsideBounds
+var h85: hook.Detour(FC2r) = .{}; // 0x69B1C0 GetTerrainDataAtPosition
+var h86: hook.Detour(FC5r) = .{}; // 0x69B6D0 GetWaterSurfaceData
+var h87: hook.Detour(TC2r) = .{}; // 0x6A8050 SetupRenderingTransforms
+var h88: hook.Detour(FC6r) = .{}; // 0x6AADC0 procTerrainChunkMeshGen
+var h89: hook.Detour(FC4d) = .{}; // 0x6CF6C0 interpolateKeyframes
+var h90: hook.Detour(FC2r) = .{}; // 0x6FA1A0 lua_table_hash_index
+var h91: hook.Detour(FC2r) = .{}; // 0x6FA700 lua_table_get_array_elem
+var h92: hook.Detour(FC2r) = .{}; // 0x6FA7A0 lua_table_lookup_key
+var h93: hook.Detour(TC2r) = .{}; // 0x7B4BF0 SetParticleLifetime
+var h94: hook.Detour(TC4v) = .{}; // 0x7B76C0 applyParticleWorldTransform
+var h95: hook.Detour(TC4v) = .{}; // 0x7B8890 GenerateSphereParticle
+var h96: hook.Detour(TC4v) = .{}; // 0x7B8D70 updateRibbonParticle
+var h97: hook.Detour(TC4v) = .{}; // 0x7BA200 generateRandomParticle
+// --- Batch 3: newly explored + previously skipped ---
+var h98: hook.Detour(SC3v) = .{};  // 0x749280 calculateSinCos
+var h99: hook.Detour(TC2r) = .{};  // 0x7BE5B0 createZRotationMatrix3x3
+var h100: hook.Detour(FC3r) = .{}; // 0x76D680 SetupModelLighting
+var h101: hook.Detour(TC2r) = .{}; // 0x7786A0 SetModelLighting (UI model ctor)
+var h102: hook.Detour(FC5r) = .{}; // 0x69BFF0 CMap::VectorIntersect
+var h103: hook.Detour(TC2r) = .{}; // 0x7BCEF0 getTransposedMatrix4x4
+var h104: hook.Detour(TC2r) = .{}; // 0x7BB420 MultiplyMatrix3x4InPlace
+var h105: hook.Detour(TC3r) = .{}; // 0x7B2A50 RenderParticleSprites
+var h106: hook.Detour(FC4v) = .{}; // 0x7B7A80 packParticleColorToBytes
+var h107: hook.Detour(FC2v) = .{}; // 0x7B7B10 setParticleAlphaFromFloat
+var h108: hook.Detour(FC2d) = .{}; // 0x602630 Vector3_DotProduct
+var h109: hook.Detour(FC1v) = .{}; // 0x686640 ComputeFrustumPlanesFromVerts
+var h110: hook.Detour(TC2v) = .{}; // 0x686820 TranslateBoundingVolume
+var h111: hook.Detour(TC2r) = .{}; // 0x6868E0 TransformBoundingVolume
+var h112: hook.Detour(FC1v) = .{}; // 0x6720F0 NormalizeVector3_InPlace
+// RenderTextToVertexBuffer: __thiscall, 10 params total (ECX + 9 stack)
+const TC10r = fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(TC) u32;
+var h113: hook.Detour(TC10r) = .{}; // 0x5C8710 RenderTextToVertexBuffer
+var h114: hook.Detour(SC2r) = .{};  // 0x40CF81 GetFPUControlWord
+var h115: hook.Detour(CD0r) = .{};  // 0x40A2B0 __ftol (real)
+
+const ProbeInfo = struct { name: [*:0]const u8, idx: u32 };
+
+const probe_infos = [NUM_PROBES]ProbeInfo{
+    .{ .name = "normalizeVector3", .idx = 0 },
+    .{ .name = "ScaleCoord_div0.8", .idx = 1 },
+    .{ .name = "ScaleCoord_div0.6", .idx = 2 },
+    .{ .name = "ScaleCoord_mul0.8", .idx = 3 },
+    .{ .name = "ScaleCoord_mul0.6", .idx = 4 },
+    .{ .name = "transformVec3ByMat4", .idx = 5 },
+    .{ .name = "transformVec4ByMat4", .idx = 6 },
+    .{ .name = "MultiplyMatrix3x4", .idx = 7 },
+    .{ .name = "multiplyMatrix3x3", .idx = 8 },
+    .{ .name = "createAxisAngleRotMat4", .idx = 9 },
+    .{ .name = "ApplyTranslationMatrix", .idx = 10 },
+    .{ .name = "scaleMatrix3x3ByVec", .idx = 11 },
+    .{ .name = "rotateMatByQuaternion", .idx = 12 },
+    .{ .name = "createAxisAngleRotMat3", .idx = 13 },
+    .{ .name = "CreateRotationMat3x4", .idx = 14 },
+    .{ .name = "RayPolygonIntersect", .idx = 15 },
+    .{ .name = "DistanceToPlane", .idx = 16 },
+    .{ .name = "CalcTriPlanes", .idx = 17 },
+    .{ .name = "testPointTriCollision", .idx = 18 },
+    .{ .name = "ProjectVertsUpdateDepth", .idx = 19 },
+    .{ .name = "ClassifyPointFrustum", .idx = 20 },
+    .{ .name = "ValidateGameObject", .idx = 21 },
+    .{ .name = "FrustumCullBBox_0", .idx = 22 },
+    .{ .name = "FrustumCullBBox_1", .idx = 23 },
+    .{ .name = "CheckBoxLineIntersect", .idx = 24 },
+    .{ .name = "CalcOrthonormalBasis", .idx = 25 },
+    .{ .name = "CheckBBoxCollision", .idx = 26 },
+    .{ .name = "TestOBBFrustum", .idx = 27 },
+    .{ .name = "TestSphereFrustum", .idx = 28 },
+    .{ .name = "procLinkedListColl", .idx = 29 },
+    .{ .name = "procSpecialObjColl", .idx = 30 },
+    .{ .name = "frustumCullGeometry", .idx = 31 },
+    .{ .name = "UpdateEntityChunksPos", .idx = 32 },
+    .{ .name = "calcWaterHeight", .idx = 33 },
+    .{ .name = "checkBBoxIntersect", .idx = 34 },
+    .{ .name = "performCollisionDetect", .idx = 35 },
+    .{ .name = "PerformSpatialCulling", .idx = 36 },
+    .{ .name = "SetupCylinderFrustum", .idx = 37 },
+    .{ .name = "executeRenderCommands", .idx = 38 },
+    .{ .name = "extractAnimByte", .idx = 39 },
+    .{ .name = "getInterpolatedFloat", .idx = 40 },
+    .{ .name = "normalizeVec3_bone", .idx = 41 },
+    .{ .name = "addVec3ToAccumulator", .idx = 42 },
+    .{ .name = "addToColorAccumulator", .idx = 43 },
+    .{ .name = "transformLightsPlanes", .idx = 44 },
+    .{ .name = "calcFrustumPlanes", .idx = 45 },
+    .{ .name = "calcSphericalHarmonics", .idx = 46 },
+    .{ .name = "renderSceneNode", .idx = 47 },
+    .{ .name = "updateAnimationSystem", .idx = 48 },
+    .{ .name = "GetTransformedAnimPos", .idx = 49 },
+    .{ .name = "GetBoundingSphere", .idx = 50 },
+    .{ .name = "RenderParticleSorted", .idx = 51 },
+    .{ .name = "ProcessActiveParticles", .idx = 52 },
+    .{ .name = "AdvanceParticles", .idx = 53 },
+    .{ .name = "quaternion_slerp", .idx = 54 },
+    .{ .name = "pointSphereCollision", .idx = 55 },
+    .{ .name = "rayPlaneIntersection", .idx = 56 },
+    .{ .name = "calcAnimOrientation", .idx = 57 },
+    .{ .name = "compareRayHitData", .idx = 58 },
+    .{ .name = "compareRenderItems", .idx = 59 },
+    .{ .name = "WritePointerToStream", .idx = 60 },
+    .{ .name = "AudioCB_SetVolume", .idx = 61 },
+    .{ .name = "Vec3_InterpWeighted", .idx = 62 },
+    .{ .name = "interpolateVector3", .idx = 63 },
+    .{ .name = "UpdateLightingData", .idx = 64 },
+    .{ .name = "ClampBounds", .idx = 65 },
+    .{ .name = "VtxData_UpdateRender", .idx = 66 },
+    .{ .name = "ConvertPixelsToScreen", .idx = 67 },
+    .{ .name = "CheckPlayerInTrigger", .idx = 68 },
+    .{ .name = "InterpSpellPosition", .idx = 69 },
+    .{ .name = "CalcRenderingBounds", .idx = 70 },
+    .{ .name = "UpdateObjTransform", .idx = 71 },
+    .{ .name = "ValidatePositionUpd", .idx = 72 },
+    .{ .name = "ValidateCoordBounds", .idx = 73 },
+    .{ .name = "GetUnitPosBufIfValid", .idx = 74 },
+    .{ .name = "Weather_ProcessEnv", .idx = 75 },
+    .{ .name = "GetCachedHeightValue", .idx = 76 },
+    .{ .name = "GetHeightFromCached", .idx = 77 },
+    .{ .name = "SampleCacheHeightData", .idx = 78 },
+    .{ .name = "RaycastLineHeight", .idx = 79 },
+    .{ .name = "AddObjToSpatialList", .idx = 80 },
+    .{ .name = "AllocateGameObject", .idx = 81 },
+    .{ .name = "CalcDetailDistances", .idx = 82 },
+    .{ .name = "CalcChunkVertices", .idx = 83 },
+    .{ .name = "IsPointInsideBounds", .idx = 84 },
+    .{ .name = "GetTerrainDataAtPos", .idx = 85 },
+    .{ .name = "GetWaterSurfaceData", .idx = 86 },
+    .{ .name = "SetupRenderTransforms", .idx = 87 },
+    .{ .name = "procTerrainChunkMesh", .idx = 88 },
+    .{ .name = "interpolateKeyframes", .idx = 89 },
+    .{ .name = "lua_table_hash_index", .idx = 90 },
+    .{ .name = "lua_table_get_array", .idx = 91 },
+    .{ .name = "lua_table_lookup_key", .idx = 92 },
+    .{ .name = "SetParticleLifetime", .idx = 93 },
+    .{ .name = "applyParticleWorldTx", .idx = 94 },
+    .{ .name = "GenerateSphereParticle", .idx = 95 },
+    .{ .name = "updateRibbonParticle", .idx = 96 },
+    .{ .name = "generateRandomParticle", .idx = 97 },
+    .{ .name = "calculateSinCos", .idx = 98 },
+    .{ .name = "createZRotMat3x3", .idx = 99 },
+    .{ .name = "SetupModelLighting", .idx = 100 },
+    .{ .name = "SetModelLighting_ctor", .idx = 101 },
+    .{ .name = "CMap_VectorIntersect", .idx = 102 },
+    .{ .name = "getTransposedMat4x4", .idx = 103 },
+    .{ .name = "MulMatrix3x4InPlace", .idx = 104 },
+    .{ .name = "RenderParticleSprites", .idx = 105 },
+    .{ .name = "packParticleColor", .idx = 106 },
+    .{ .name = "setParticleAlpha", .idx = 107 },
+    .{ .name = "Vector3_DotProduct", .idx = 108 },
+    .{ .name = "ComputeFrustumPlanes", .idx = 109 },
+    .{ .name = "TranslateBoundingVol", .idx = 110 },
+    .{ .name = "TransformBoundingVol", .idx = 111 },
+    .{ .name = "NormalizeVec3_InPlace", .idx = 112 },
+    .{ .name = "RenderTextToVtxBuf", .idx = 113 },
+    .{ .name = "GetFPUControlWord", .idx = 114 },
+    .{ .name = "__ftol", .idx = 115 },
+};
+
+// =============================================================================
 // Module lifecycle
 // =============================================================================
 
@@ -938,11 +1344,160 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
     log_state = logging.Logger.open(module_name, .console);
-    log_state.print("silicon: module loaded (no hooks active yet -- stub catalog)\n");
+    log_state.print("silicon: module loaded (probe hooks deferred to lateInit)\n");
+}
+
+/// Called from engineInitDetour after engine is fully initialized.
+pub fn lateInit() void {
+    if (!g_is_hook_owner) return;
+
+    var installed: u32 = 0;
+
+    // Cat 1: Scalar math
+    if (h00.attach(0x4549C0, probeDetour(TC2v, &h00, &cnt[0])) == .ok) installed += 1;
+    if (h01.attach(0x41AE40, probeDetour(SC1d, &h01, &cnt[1])) == .ok) installed += 1;
+    if (h02.attach(0x41AE50, probeDetour(SC1d, &h02, &cnt[2])) == .ok) installed += 1;
+    if (h03.attach(0x41AE60, probeDetour(SC1d, &h03, &cnt[3])) == .ok) installed += 1;
+    if (h04.attach(0x41AE70, probeDetour(SC1d, &h04, &cnt[4])) == .ok) installed += 1;
+    // Cat 4: Matrix
+    if (h05.attach(0x7BCA80, probeDetour(FC3r, &h05, &cnt[5])) == .ok) installed += 1;
+    if (h06.attach(0x7BCB40, probeDetour(FC3r, &h06, &cnt[6])) == .ok) installed += 1;
+    if (h07.attach(0x7BAE60, probeDetour(FC3r, &h07, &cnt[7])) == .ok) installed += 1;
+    if (h08.attach(0x7BDFC0, probeDetour(FC3r, &h08, &cnt[8])) == .ok) installed += 1;
+    if (h09.attach(0x7BDB00, probeDetour(FC4r, &h09, &cnt[9])) == .ok) installed += 1;
+    if (h10.attach(0x7BDC40, probeDetour(TC2r, &h10, &cnt[10])) == .ok) installed += 1;
+    if (h11.attach(0x7BDCA0, probeDetour(TC2r, &h11, &cnt[11])) == .ok) installed += 1;
+    if (h12.attach(0x7BDDB0, probeDetour(TC2r, &h12, &cnt[12])) == .ok) installed += 1;
+    if (h13.attach(0x7BE490, probeDetour(FC4r, &h13, &cnt[13])) == .ok) installed += 1;
+    if (h14.attach(0x7BB860, probeDetour(FC4r, &h14, &cnt[14])) == .ok) installed += 1;
+    // Cat 5: Collision/spatial
+    if (h15.attach(0x632830, probeDetour(FC5r, &h15, &cnt[15])) == .ok) installed += 1;
+    if (h16.attach(0x6329E0, probeDetour(FC3d, &h16, &cnt[16])) == .ok) installed += 1;
+    if (h17.attach(0x632F80, probeDetour(FC5r, &h17, &cnt[17])) == .ok) installed += 1;
+    if (h18.attach(0x6335D0, probeDetour(FC2r, &h18, &cnt[18])) == .ok) installed += 1;
+    if (h19.attach(0x681B50, probeDetour(FC5r, &h19, &cnt[19])) == .ok) installed += 1;
+    if (h20.attach(0x686C20, probeDetour(TC3r, &h20, &cnt[20])) == .ok) installed += 1;
+    if (h21.attach(0x6856C0, probeDetour(FC2r, &h21, &cnt[21])) == .ok) installed += 1;
+    if (h22.attach(0x686000, probeDetour(FC3r, &h22, &cnt[22])) == .ok) installed += 1;
+    if (h23.attach(0x686180, probeDetour(FC2r, &h23, &cnt[23])) == .ok) installed += 1;
+    if (h24.attach(0x6DC5A0, probeDetour(FC3r, &h24, &cnt[24])) == .ok) installed += 1;
+    if (h25.attach(0x50A840, probeDetour(FC4r, &h25, &cnt[25])) == .ok) installed += 1;
+    if (h26.attach(0x509220, probeDetour(FC4r, &h26, &cnt[26])) == .ok) installed += 1;
+    if (h27.attach(0x6869C0, probeDetour(TC4r, &h27, &cnt[27])) == .ok) installed += 1;
+    if (h28.attach(0x686B80, probeDetour(TC2r, &h28, &cnt[28])) == .ok) installed += 1;
+    // Cat 6: Rendering
+    if (h29.attach(0x6ABC40, probeDetour(FC4r, &h29, &cnt[29])) == .ok) installed += 1;
+    if (h30.attach(0x6ABE60, probeDetour(FC4r, &h30, &cnt[30])) == .ok) installed += 1;
+    if (h31.attach(0x6AD7E0, probeDetour(FC4r, &h31, &cnt[31])) == .ok) installed += 1;
+    if (h32.attach(0x6AFAD0, probeDetour(FC1v, &h32, &cnt[32])) == .ok) installed += 1;
+    if (h33.attach(0x6B7070, probeDetour(FC3r, &h33, &cnt[33])) == .ok) installed += 1;
+    if (h34.attach(0x6B8B70, probeDetour(FC4r, &h34, &cnt[34])) == .ok) installed += 1;
+    if (h35.attach(0x6B88E0, probeDetour(TC3r, &h35, &cnt[35])) == .ok) installed += 1;
+    if (h36.attach(0x6B8C60, probeDetour(TC3r, &h36, &cnt[36])) == .ok) installed += 1;
+    if (h37.attach(0x6BC370, probeDetour(TC4v, &h37, &cnt[37])) == .ok) installed += 1;
+    if (h38.attach(0x6C15D0, probeDetour(FC1v, &h38, &cnt[38])) == .ok) installed += 1;
+    // Cat 7: Bone/model
+    if (h39.attach(0x71AE90, probeDetour(FC4r, &h39, &cnt[39])) == .ok) installed += 1;
+    if (h40.attach(0x71AF20, probeDetour(FC4r, &h40, &cnt[40])) == .ok) installed += 1;
+    if (h41.attach(0x71B6A0, probeDetour(TC2v, &h41, &cnt[41])) == .ok) installed += 1;
+    if (h42.attach(0x71BC70, probeDetour(TC2v, &h42, &cnt[42])) == .ok) installed += 1;
+    if (h43.attach(0x71BF60, probeDetour(TC2v, &h43, &cnt[43])) == .ok) installed += 1;
+    if (h44.attach(0x71C160, probeDetour(FC1v, &h44, &cnt[44])) == .ok) installed += 1;
+    if (h45.attach(0x71C2F0, probeDetour(FC1v, &h45, &cnt[45])) == .ok) installed += 1;
+    if (h46.attach(0x71C4E0, probeDetour(TC2r, &h46, &cnt[46])) == .ok) installed += 1;
+    if (h47.attach(0x718960, probeDetour(TC1v, &h47, &cnt[47])) == .ok) installed += 1;
+    if (h48.attach(0x719370, probeDetour(TC2v, &h48, &cnt[48])) == .ok) installed += 1;
+    if (h49.attach(0x712D50, probeDetour(TC3r, &h49, &cnt[49])) == .ok) installed += 1;
+    if (h50.attach(0x713680, probeDetour(TC2r, &h50, &cnt[50])) == .ok) installed += 1;
+    // Cat 8: Particle
+    if (h51.attach(0x7B3A10, probeDetour(TC2r, &h51, &cnt[51])) == .ok) installed += 1;
+    if (h52.attach(0x7B5A10, probeDetour(TC3v, &h52, &cnt[52])) == .ok) installed += 1;
+    if (h53.attach(0x7B7E60, probeDetour(TC3v, &h53, &cnt[53])) == .ok) installed += 1;
+    // Cat 9: Geometry
+    if (h54.attach(0x7C0570, probeDetour(FC4r, &h54, &cnt[54])) == .ok) installed += 1;
+    if (h55.attach(0x7C2040, probeDetour(FC3r, &h55, &cnt[55])) == .ok) installed += 1;
+    if (h56.attach(0x7C22B0, probeDetour(FC5r, &h56, &cnt[56])) == .ok) installed += 1;
+    if (h57.attach(0x7C5880, probeDetour(FC1v, &h57, &cnt[57])) == .ok) installed += 1;
+    // Misc
+    if (h58.attach(0x70A060, probeDetour(FC3r, &h58, &cnt[58])) == .ok) installed += 1;
+    if (h59.attach(0x70AE10, probeDetour(FC3r, &h59, &cnt[59])) == .ok) installed += 1;
+    // Batch 2: remaining explored functions
+    if (h60.attach(0x4183D0, probeDetour(TC2r, &h60, &cnt[60])) == .ok) installed += 1;
+    if (h61.attach(0x453480, probeDetour(TC4r, &h61, &cnt[61])) == .ok) installed += 1;
+    if (h62.attach(0x453580, probeDetour(TC5v, &h62, &cnt[62])) == .ok) installed += 1;
+    if (h63.attach(0x4541B0, probeDetour(TC4r, &h63, &cnt[63])) == .ok) installed += 1;
+    if (h64.attach(0x483340, probeDetour(FC5r, &h64, &cnt[64])) == .ok) installed += 1;
+    if (h65.attach(0x509BF0, probeDetour(FC6r, &h65, &cnt[65])) == .ok) installed += 1;
+    if (h66.attach(0x593040, probeDetour(TC2r, &h66, &cnt[66])) == .ok) installed += 1;
+    if (h67.attach(0x5C7010, probeDetour(TC2r, &h67, &cnt[67])) == .ok) installed += 1;
+    if (h68.attach(0x5E22D0, probeDetour(FC2r, &h68, &cnt[68])) == .ok) installed += 1;
+    if (h69.attach(0x5F6280, probeDetour(TC3r, &h69, &cnt[69])) == .ok) installed += 1;
+    if (h70.attach(0x5F8DC0, probeDetour(TC6v, &h70, &cnt[70])) == .ok) installed += 1;
+    if (h71.attach(0x614CD0, probeDetour(FC2r, &h71, &cnt[71])) == .ok) installed += 1;
+    if (h72.attach(0x616AF0, probeDetour(TC4r, &h72, &cnt[72])) == .ok) installed += 1;
+    if (h73.attach(0x616BF0, probeDetour(FC1r, &h73, &cnt[73])) == .ok) installed += 1;
+    if (h74.attach(0x618920, probeDetour(FC1r, &h74, &cnt[74])) == .ok) installed += 1;
+    if (h75.attach(0x675AC0, probeDetour(FC1v, &h75, &cnt[75])) == .ok) installed += 1;
+    if (h76.attach(0x67C820, probeDetour(TC2d, &h76, &cnt[76])) == .ok) installed += 1;
+    if (h77.attach(0x67CA00, probeDetour(TC2d, &h77, &cnt[77])) == .ok) installed += 1;
+    if (h78.attach(0x67CA90, probeDetour(TC3v, &h78, &cnt[78])) == .ok) installed += 1;
+    if (h79.attach(0x67CB60, probeDetour(TC4r, &h79, &cnt[79])) == .ok) installed += 1;
+    if (h80.attach(0x6818B0, probeDetour(FC2v, &h80, &cnt[80])) == .ok) installed += 1;
+    if (h81.attach(0x683F80, probeDetour(SC0v, &h81, &cnt[81])) == .ok) installed += 1;
+    if (h82.attach(0x68B0D0, probeDetour(TC6v, &h82, &cnt[82])) == .ok) installed += 1;
+    if (h83.attach(0x68D540, probeDetour(FC1v, &h83, &cnt[83])) == .ok) installed += 1;
+    if (h84.attach(0x699330, probeDetour(FC2r, &h84, &cnt[84])) == .ok) installed += 1;
+    if (h85.attach(0x69B1C0, probeDetour(FC2r, &h85, &cnt[85])) == .ok) installed += 1;
+    if (h86.attach(0x69B6D0, probeDetour(FC5r, &h86, &cnt[86])) == .ok) installed += 1;
+    if (h87.attach(0x6A8050, probeDetour(TC2r, &h87, &cnt[87])) == .ok) installed += 1;
+    if (h88.attach(0x6AADC0, probeDetour(FC6r, &h88, &cnt[88])) == .ok) installed += 1;
+    if (h89.attach(0x6CF6C0, probeDetour(FC4d, &h89, &cnt[89])) == .ok) installed += 1;
+    if (h90.attach(0x6FA1A0, probeDetour(FC2r, &h90, &cnt[90])) == .ok) installed += 1;
+    if (h91.attach(0x6FA700, probeDetour(FC2r, &h91, &cnt[91])) == .ok) installed += 1;
+    if (h92.attach(0x6FA7A0, probeDetour(FC2r, &h92, &cnt[92])) == .ok) installed += 1;
+    if (h93.attach(0x7B4BF0, probeDetour(TC2r, &h93, &cnt[93])) == .ok) installed += 1;
+    if (h94.attach(0x7B76C0, probeDetour(TC4v, &h94, &cnt[94])) == .ok) installed += 1;
+    if (h95.attach(0x7B8890, probeDetour(TC4v, &h95, &cnt[95])) == .ok) installed += 1;
+    if (h96.attach(0x7B8D70, probeDetour(TC4v, &h96, &cnt[96])) == .ok) installed += 1;
+    if (h97.attach(0x7BA200, probeDetour(TC4v, &h97, &cnt[97])) == .ok) installed += 1;
+
+    // Batch 3: newly explored + previously skipped
+    if (h98.attach(0x749280, probeDetour(SC3v, &h98, &cnt[98])) == .ok) installed += 1;
+    if (h99.attach(0x7BE5B0, probeDetour(TC2r, &h99, &cnt[99])) == .ok) installed += 1;
+    if (h100.attach(0x76D680, probeDetour(FC3r, &h100, &cnt[100])) == .ok) installed += 1;
+    if (h101.attach(0x7786A0, probeDetour(TC2r, &h101, &cnt[101])) == .ok) installed += 1;
+    if (h102.attach(0x69BFF0, probeDetour(FC5r, &h102, &cnt[102])) == .ok) installed += 1;
+    if (h103.attach(0x7BCEF0, probeDetour(TC2r, &h103, &cnt[103])) == .ok) installed += 1;
+    if (h104.attach(0x7BB420, probeDetour(TC2r, &h104, &cnt[104])) == .ok) installed += 1;
+    if (h105.attach(0x7B2A50, probeDetour(TC3r, &h105, &cnt[105])) == .ok) installed += 1;
+    if (h106.attach(0x7B7A80, probeDetour(FC4v, &h106, &cnt[106])) == .ok) installed += 1;
+    if (h107.attach(0x7B7B10, probeDetour(FC2v, &h107, &cnt[107])) == .ok) installed += 1;
+    if (h108.attach(0x602630, probeDetour(FC2d, &h108, &cnt[108])) == .ok) installed += 1;
+    if (h109.attach(0x686640, probeDetour(FC1v, &h109, &cnt[109])) == .ok) installed += 1;
+    if (h110.attach(0x686820, probeDetour(TC2v, &h110, &cnt[110])) == .ok) installed += 1;
+    if (h111.attach(0x6868E0, probeDetour(TC2r, &h111, &cnt[111])) == .ok) installed += 1;
+    if (h112.attach(0x6720F0, probeDetour(FC1v, &h112, &cnt[112])) == .ok) installed += 1;
+    if (h113.attach(0x5C8710, probeDetour(TC10r, &h113, &cnt[113])) == .ok) installed += 1;
+    if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
+    if (h115.attach(0x40A2B0, probeDetour(CD0r, &h115, &cnt[115])) == .ok) installed += 1;
+
+    log_state.fmt("silicon: {d}/{d} probe hooks installed\n", .{ installed, @as(u32, NUM_PROBES) });
+}
+
+/// Dump probe hit counts to console. Called from removeHooks on shutdown.
+fn reportProbes() void {
+    log_state.print("silicon: probe hit counts:\n");
+    for (&probe_infos) |*info| {
+        const c = @atomicLoad(u32, &cnt[info.idx], .monotonic);
+        if (c > 0) {
+            log_state.fmt("  {s}: {d}\n", .{ info.name, c });
+        }
+    }
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        reportProbes();
         log_state.close();
         mod_mutex.release(&g_mutex);
     }

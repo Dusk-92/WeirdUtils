@@ -43,6 +43,7 @@ const transform44 = if (build_opts.transform44) @import("transform44/transform44
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
 const file_cache = if (build_opts.filecache) @import("filecache/filecache.zig") else struct {};
+const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -691,6 +692,9 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     if (build_opts.ssemaths) {
         ssemaths.lateInit();
     }
+    if (build_opts.silicon) {
+        silicon.lateInit();
+    }
 }
 
 // =============================================================================
@@ -765,6 +769,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
     if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
+    if (build_opts.silicon) .{ .name = silicon.module_name, .install = silicon.installHooks, .remove = silicon.removeHooks, .is_active = silicon.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
