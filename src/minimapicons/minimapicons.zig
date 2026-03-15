@@ -39,7 +39,6 @@ const ADDR = struct {
     const EnumVisibleObjects: usize = 0x468380;
 
     // Called functions
-    const CheckQuestAvailability: usize = 0x5ED210;
     const WorldPosToMinimapCoords: usize = 0x4EAA30;
     const TextureCreate: usize = 0x449D90;
     const TextureGetGxTex: usize = 0x44ACF0;
