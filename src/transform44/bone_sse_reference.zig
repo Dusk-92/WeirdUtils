@@ -598,6 +598,7 @@ inline fn interpFloatTrack(
     bone_rt: u32,
     anim_data: u32,
     output: u32,
+    blend_weight: f32,
 ) void {
     findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
 
@@ -614,9 +615,8 @@ inline fn interpFloatTrack(
     const b = rf32(kf_base + ru32(output + 4) * 4);
     wf32(output + 0x0C, (b - a) * t + a);
 
-    // Crossfade
-    const blend = ufloat(ru32(bone_rt + BR.blend_weight));
-    if (blend != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+    // Crossfade — only for bone loop callers (particles pass 0.0)
+    if (blend_weight != 0.0 and ri16(anim_data + AD.time_index) == -1) {
         findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x10);
         const st = ufloat(ru32(output + 0x18));
         const sa = rf32(kf_base + ru32(output + 0x10) * 4);
@@ -624,7 +624,7 @@ inline fn interpFloatTrack(
         const sec = (sb - sa) * st + sa;
         wu32(output + 0x1C, fbits(sec));
         const pri = ufloat(ru32(output + 0x0C));
-        wf32(output + 0x0C, (sec - pri) * blend + pri);
+        wf32(output + 0x0C, (sec - pri) * blend_weight + pri);
     }
 }
 
@@ -1941,12 +1941,12 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
 
         // ---- Track A (float): gate=entry+0x38, AD=entry+0x2C, output+0x30 ----
         if (frame_ctr < ru32(entry + 0x38)) {
-            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30);
+            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30, 0.0);
         }
 
         // ---- Track B (Vec3): gate=entry+0x1C, AD=entry+0x10, output+0x00 ----
         if (frame_ctr < ru32(entry + 0x1C)) {
-            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+            interpVec3Track(this, bone_rt, entry + 0x10, output, 0.0); // no crossfade for particles
             // Post-processing 1 (asm 0x71678A-0x7167CE)
             const scale1 = rf32(output + 0x3C) * rf32(this + SO.render_scale_z);
             wf32(output + 0x134, rf32(output + 0x0C) * scale1);
@@ -1956,12 +1956,12 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
 
         // ---- Track C (float): gate=entry+0x70, AD=entry+0x64, output+0x80 ----
         if (frame_ctr < ru32(entry + 0x70)) {
-            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80);
+            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80, 0.0);
         }
 
         // ---- Track D (Vec3): gate=entry+0x54, AD=entry+0x48, output+0x50 ----
         if (frame_ctr < ru32(entry + 0x54)) {
-            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
+            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, 0.0); // no crossfade for particles
             // Post-processing 2 (asm 0x716A67-0x716AA6)
             const scale2 = rf32(output + 0x8C) * rf32(this + SO.render_scale_z);
             wf32(output + 0x140, rf32(output + 0x5C) * scale2);
@@ -2055,7 +2055,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x30)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpVec3Track(this, bone_rt, entry + 0x24, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+                interpVec3Track(this, bone_rt, entry + 0x24, output, 0.0); // no crossfade for particles
             }
 
             // Alpha track: entry+0x40 vs entry+0x4C
@@ -2081,14 +2081,14 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x68)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50);
+                interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50, 0.0);
             }
 
             // Emission rate: entry+0x78 vs entry+0x84
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x84)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70);
+                interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70, 0.0);
             }
 
             // Scale track: entry+0xA4 vs entry+0xB0
@@ -2184,27 +2184,27 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (vis_byte != 0 or ru32(this + SO.anim_frame_ctr) == 0) {
                 // Track 1: emission rate — gate=+0x40, AnimData=+0x34, output=+0x00
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x40)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x34, output);
+                    interpFloatTrack(this, bone_rt, entry + 0x34, output, 0.0);
                 }
                 // Track 2: speed — gate=+0x5C, AnimData=+0x50, output=+0x20
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x5C)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20);
+                    interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20, 0.0);
                 }
                 // Track 3: color — gate=+0x78, AnimData=+0x6C, output=+0x40
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x78)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40);
+                    interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40, 0.0);
                 }
                 // Track 4 — gate=+0x94, AnimData=+0x88, output=+0x60
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x94)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60);
+                    interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60, 0.0);
                 }
                 // Track 5 (Vec3 spline) — gate=+0xB0, AnimData=+0xA4, output=+0x80
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xB0)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80);
+                    interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80, 0.0);
                 }
                 // Track 6 — gate=+0xCC, AnimData=+0xC0, output=+0xA0
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xCC)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0);
+                    interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, 0.0);
                 }
                 // Track 7 — gate=+0xE8, AnimData=+0xDC, output=+0xC0
                 // Uses getInterpolatedFloat (0x71AF20)
