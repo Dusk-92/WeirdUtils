@@ -487,11 +487,53 @@ fn findInterpIdx(
 // Output buffer layout: [idx0, idx1, t, x, y, z, w, sec_idx0, sec_idx1, sec_t, sx, sy, sz, sw]
 // =============================================================================
 
-/// Calls game's interpolateAnimationKeyframes at 0x713EA0.
-/// __fastcall(ECX=this, EDX=bone_rt, stack: anim_data, output)
+/// Quaternion keyframe interpolation — replaces game's 0x713EA0.
+/// Assembly-verified: stride 16 (SHL EAX,4), values are 4×float, not CompQuat.
 inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) void {
-    const gameFn: *const fn (u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x713EA0);
-    gameFn(this, bone_rt, anim_data, output);
+    findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
+    const mode = ri16(anim_data + AD.interp_mode);
+    const kf_base = ru32(anim_data + AD.keyframe_base);
+
+    if (mode == 0) {
+        const src = kf_base + ru32(output) * 16;
+        wu32(output + 0x0C, ru32(src));
+        wu32(output + 0x10, ru32(src + 4));
+        wu32(output + 0x14, ru32(src + 8));
+        wu32(output + 0x18, ru32(src + 12));
+        return;
+    }
+
+    const t = ufloat(ru32(output + 8));
+    const src0 = kf_base + ru32(output) * 16;
+    const src1 = kf_base + ru32(output + 4) * 16;
+    inline for (0..4) |i| {
+        const off: u32 = @intCast(i * 4);
+        const a = rf32(src0 + off);
+        const b = rf32(src1 + off);
+        wf32(output + 0x0C + off, (b - a) * t + a);
+    }
+
+    // Crossfade
+    if (rf32(bone_rt + BR.blend_weight) != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+        findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x1C);
+        const st = ufloat(ru32(output + 0x24));
+        const ssrc0 = kf_base + ru32(output + 0x1C) * 16;
+        const ssrc1 = kf_base + ru32(output + 0x20) * 16;
+        inline for (0..4) |i| {
+            const off: u32 = @intCast(i * 4);
+            const a = rf32(ssrc0 + off);
+            const b = rf32(ssrc1 + off);
+            wf32(output + 0x28 + off, (b - a) * st + a);
+        }
+        // Blend: primary = primary + (secondary - primary) * weight
+        const bw = rf32(bone_rt + BR.blend_weight);
+        inline for (0..4) |i| {
+            const off: u32 = @intCast(i * 4);
+            const pri = rf32(output + 0x0C + off);
+            const sec = rf32(output + 0x28 + off);
+            wf32(output + 0x0C + off, (sec - pri) * bw + pri);
+        }
+    }
 }
 
 // =============================================================================
@@ -1352,13 +1394,9 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 // (pivot - matrix * pivot) uses the correctly rotated matrix.
                 if (rot_kf_count != 0) {
                     if (ru32(this + SO.anim_frame_ctr) < rot_kf_count) {
-                        // Assembly: CALL 0x713EA0 — __fastcall(ECX=this, EDX=bone_rt, stack: anim_data, output)
-                        const interpAnimKFFn: *const fn (u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x713EA0);
-                        interpAnimKFFn(this, brt, rot_anim, brt + BR.rot_idx0);
+                        interpAnimKF(this, brt, rot_anim, brt + BR.rot_idx0);
                     }
-                    // Assembly: CALL 0x74B6B5 — JMP table, __stdcall(mat_ptr, quat_ptr), RET 0x8
-                    const buildRotFn: *const fn (u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x74B6B5);
-                    buildRotFn(lm2_addr, brt + BR.rot_x);
+                    buildRotationMatrix(lm2_addr, rf32(brt + BR.rot_x), rf32(brt + BR.rot_y), rf32(brt + BR.rot_z), rf32(brt + BR.rot_w));
                 }
 
                 // Step 2: Scale interpolation — applied after rotation
@@ -1368,10 +1406,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                     if (ru32(this + SO.anim_frame_ctr) < scale_kf_count) {
                         interpVec3Track(this, brt, scale_anim, brt + BR.scale_idx0, ufloat(ru32(brt + BR.blend_weight)));
                     }
-                    // Assembly: CALL 0x7BDCA0 — scaleMatrix3x3ByVector
-                    // __thiscall(ECX=mat, stack=vec3_ptr)
-                    const scaleMat: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDCA0);
-                    scaleMat(lm2_addr, 0, brt + BR.scale_x);
+                    scaleMatrix3x3(lm2_addr, rf32(brt + BR.scale_x), rf32(brt + BR.scale_y), rf32(brt + BR.scale_z));
                 }
 
                 // Conditional multiply: if flag bit 0x80 set AND bone_rt[0xF0] != 0,
@@ -1383,11 +1418,8 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 //   CALL 0x74A7C0 (multiplyMatrix4x4: output = left * right)
                 // This is bone_local *= *(bone_rt+0xF0)
                 if ((@as(i8, @bitCast(@as(u8, @truncate(combined_flags)))) < 0) and ru32(brt + BR.bone_flag_cache) != 0) {
-                    const extra_mat = ru32(brt + BR.bone_flag_cache); // pointer to additional matrix
-                    // In-place multiply: bone_local = bone_local * extra_mat
-                    // Assembly: CALL 0x74A7C0 (JMP table → SSE matmul)
-                    const matMul: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x74A7C0);
-                    matMul(lm2_addr, lm2_addr, extra_mat);
+                    const extra_mat = ru32(brt + BR.bone_flag_cache);
+                    matMul4x4(lm2_addr, lm2_addr, extra_mat);
                 }
 
                 // Step 3: Translation interpolation
@@ -1417,11 +1449,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
 
                 // Write final composed matrix to output: dst = bone_local * parent
                 // Assembly: CALL 0x74A7C0 (JMP table → SSE matmul) at 0x7151BA
-                const dst = bone_out_base + bone_idx * 0x40;
-                {
-                    const matMul: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x74A7C0);
-                    matMul(dst, lm2_addr, src_mat);
-                }
+                matMul4x4(bone_out_base + bone_idx * 0x40, lm2_addr, src_mat);
             }
 
             // --- Billboard post-processing (flags & 0x78) ---
