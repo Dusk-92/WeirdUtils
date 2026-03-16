@@ -514,29 +514,11 @@ inline fn callVec3SqMag(vec3_ptr: u32) f32 {
     return x * x + y * y + z * z;
 }
 
-/// Call game's getIndexOffset at 0x71AFF0.
-/// __thiscall(ECX=table_ptr, stack: index) → u32 pointer to value
-/// table_ptr = anim_data + AD.nvalues (0x14), pointing to {nValues, ofsValues}
-inline fn callGetIndexOffset(table: u32, index: u32) u32 {
-    const func: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32 = @ptrFromInt(0x71AFF0);
-    return func(table, 0, index);
-}
-
-/// Call game's setShortValue at 0x71B010.
-/// __thiscall(ECX=output_ptr, stack: source_ptr) → void
-/// Copies a short value from source to output.
-inline fn callSetShortValue(output: u32, source: u32) void {
-    const func: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x71B010);
-    func(output, 0, source);
-}
-
-/// Read a short value at keyframe index via game functions.
-/// Matches assembly pattern: getIndexOffset → setShortValue → MOVSX.
+/// Read i16 at keyframe index. Replaces game's getIndexOffset (0x71AFF0) + setShortValue (0x71B010).
+/// getIndexOffset returns table[4] + index*2, setShortValue copies a word. Direct read is equivalent.
 inline fn readShortViaGame(table: u32, index: u32) i16 {
-    var result: i16 align(2) = undefined;
-    const ptr = callGetIndexOffset(table, index);
-    callSetShortValue(@intFromPtr(&result), ptr);
-    return result;
+    const values_ptr = ru32(table + 4);
+    return ri16(values_ptr + index * 2);
 }
 
 /// Interpolate a Vec3 track (12 bytes per keyframe) with crossfade support.
@@ -2093,17 +2075,12 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
                 findInterpIdx(this, ru32(bone_rt + 0x98), ru32(bone_rt + 0x9C), entry + 0xA4, output + 0x90);
-                const scale_table = entry + 0xA4 + AD.nvalues;
-                // Mode 0: copy short value at idx0
-                // Mode != 0: also copy idx0 short (this track uses raw short output, not float lerp)
-                const ptr0 = callGetIndexOffset(scale_table, ru32(output + 0x90));
-                callSetShortValue(output + 0x9C, ptr0);
+                const scale_values = ru32(entry + 0xA4 + AD.keyframe_base);
+                wu16(output + 0x9C, ru16(scale_values + ru32(output + 0x90) * 2));
                 if (ri16(entry + 0xA4) != 0) {
-                    // Crossfade
                     if (rf32(bone_rt + 0x10C) != 0.0 and ri16(entry + 0xA6) == -1) {
                         findInterpIdx(this, ru32(bone_rt + 0xC4), ru32(bone_rt + 0xC8), entry + 0xA4, output + 0xA0);
-                        const ptr_sec = callGetIndexOffset(scale_table, ru32(output + 0xA0));
-                        callSetShortValue(output + 0xAC, ptr_sec);
+                        wu16(output + 0xAC, ru16(scale_values + ru32(output + 0xA0) * 2));
                     }
                 }
             }
