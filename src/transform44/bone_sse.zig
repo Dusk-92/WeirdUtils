@@ -255,18 +255,12 @@ inline fn splat(v: f32) V4 {
     return @splat(v);
 }
 
-/// 3-component lerp: a + (b - a) * t. Keyframes are 12 bytes (3 floats) apart.
+/// 3-component lerp: a + (b - a) * t. Uses @mulAdd → vfmadd.
 inline fn lerpVec3(a_addr: u32, b_addr: u32, t: f32) [3]f32 {
-    const ax = rf32(a_addr);
-    const ay = rf32(a_addr + 4);
-    const az = rf32(a_addr + 8);
-    const bx = rf32(b_addr);
-    const by = rf32(b_addr + 4);
-    const bz = rf32(b_addr + 8);
     return .{
-        (bx - ax) * t + ax,
-        (by - ay) * t + ay,
-        (bz - az) * t + az,
+        @mulAdd(f32, rf32(b_addr) - rf32(a_addr), t, rf32(a_addr)),
+        @mulAdd(f32, rf32(b_addr + 4) - rf32(a_addr + 4), t, rf32(a_addr + 4)),
+        @mulAdd(f32, rf32(b_addr + 8) - rf32(a_addr + 8), t, rf32(a_addr + 8)),
     };
 }
 
@@ -300,10 +294,11 @@ inline fn scaleMatrix3x3(mat: u32, sx: f32, sy: f32, sz: f32) void {
 ///   mat[3][0] += dot(mat[0], t)
 ///   mat[3][1] += dot(mat[1], t)
 ///   mat[3][2] += dot(mat[2], t)
+/// Uses @mulAdd chain → vfmadd for each dot product component.
 inline fn applyTranslation(mat: u32, tx: f32, ty: f32, tz: f32) void {
-    wf32(mat + 0x30, tx * rf32(mat + 0x00) + ty * rf32(mat + 0x10) + tz * rf32(mat + 0x20) + rf32(mat + 0x30));
-    wf32(mat + 0x34, tx * rf32(mat + 0x04) + ty * rf32(mat + 0x14) + tz * rf32(mat + 0x24) + rf32(mat + 0x34));
-    wf32(mat + 0x38, tx * rf32(mat + 0x08) + ty * rf32(mat + 0x18) + tz * rf32(mat + 0x28) + rf32(mat + 0x38));
+    wf32(mat + 0x30, @mulAdd(f32, tz, rf32(mat + 0x20), @mulAdd(f32, ty, rf32(mat + 0x10), @mulAdd(f32, tx, rf32(mat + 0x00), rf32(mat + 0x30)))));
+    wf32(mat + 0x34, @mulAdd(f32, tz, rf32(mat + 0x24), @mulAdd(f32, ty, rf32(mat + 0x14), @mulAdd(f32, tx, rf32(mat + 0x04), rf32(mat + 0x34)))));
+    wf32(mat + 0x38, @mulAdd(f32, tz, rf32(mat + 0x28), @mulAdd(f32, ty, rf32(mat + 0x18), @mulAdd(f32, tx, rf32(mat + 0x08), rf32(mat + 0x38)))));
 }
 
 /// Quaternion → rotation matrix: OVERWRITES mat with the rotation matrix.
@@ -641,12 +636,12 @@ inline fn callFtol(delta: i32, scale_addr: u32) i32 {
     return @intFromFloat(f);
 }
 
-/// Vec3 squared magnitude — replaces game's 0x4549F0.
+/// Vec3 squared magnitude — replaces game's 0x4549F0. Uses @mulAdd → vfmadd.
 inline fn callVec3SqMag(vec3_ptr: u32) f32 {
     const x = rf32(vec3_ptr);
     const y = rf32(vec3_ptr + 4);
     const z = rf32(vec3_ptr + 8);
-    return x * x + y * y + z * z;
+    return @mulAdd(f32, z, z, @mulAdd(f32, y, y, x * x));
 }
 
 /// Read i16 at keyframe index. Replaces game's getIndexOffset (0x71AFF0) + setShortValue (0x71B010).
