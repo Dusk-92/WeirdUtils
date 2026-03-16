@@ -21,7 +21,13 @@ extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
 extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
 extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
-extern fn transformMatrix4x4_SSE(u32, u32, u32, u32, u32) void;
+extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
+
+/// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
+/// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
+fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
+    transformImpl_SSE(this, mat1, mat2, mat3, mat4);
+}
 extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var bisect_stop_section: u32;
 
@@ -39,7 +45,8 @@ pub fn isActive() bool {
 // Profiling state — unified dump every DUMP_FRAMES render passes
 // =============================================================================
 
-const DUMP_FRAMES: u64 = 450; // ~7.5s at 60fps
+const DUMP_FRAMES: u64 = 450; // ~7.5s at 60fps (frame-count fallback)
+const DUMP_CYCLES: u64 = 3_000_000_000 * 8; // ~8s at ~3GHz (time-based primary)
 
 var prof = ProfState{};
 var t44_depth: u64 = 0; // recursion depth — survives resets
@@ -51,6 +58,10 @@ var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 // A/B testing: alternate between baseline (original) and custom (optimized) code paths.
 // Flips every DUMP_FRAMES so each dump period is purely one mode.
 pub var ab_use_custom: bool = false;
+
+// Gate for non-transform A/B hooks. Set false to isolate transform44 SSE testing.
+const AB_OTHER_HOOKS = false;
+var diag_cmp_count: u32 = 0;
 export var original_trampoline: u32 = 0; // DEBUG: expose trampoline for REF passthrough test
 
 // Teardown guard: set true when CleanupWorldAndEntities fires.
@@ -288,7 +299,92 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
     if (teardown_active) {
         transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
     } else if (ab_use_custom) {
-        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+        // DIAG: run REF first, snapshot bone output, run SSE, compare
+        if (diag_cmp_count < 20 and !is_early and bone_count > 0 and t44_depth == 1) {
+            const model_ctr = hook.readMem(u32, this + 0x30);
+            const model_hdr = if (model_ctr != 0) hook.readMem(u32, model_ctr + 0x130) else 0;
+            const bc = if (model_hdr != 0) hook.readMem(u32, model_hdr + 0x34) else 0;
+            const bout = hook.readMem(u32, this + 0x94);
+            const brt_base = hook.readMem(u32, this + 0x90);
+            if (bc > 0 and bout != 0 and brt_base != 0) {
+                // Run REF
+                transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+                // Snapshot bone output + bone runtime (up to 8 bones)
+                const snap_bones = @min(bc, 8);
+                const snap_len = snap_bones * @as(u32, 0x40);
+                var snap: [8 * 0x40]u8 = undefined;
+                for (0..snap_len) |i| {
+                    snap[i] = @as(*const u8, @ptrFromInt(bout + @as(u32, @intCast(i)))).*;
+                }
+                // Snapshot bone runtime
+                const brt_snap_len = snap_bones * @as(u32, 0x118);
+                var brt_snap: [8 * 0x118]u8 = undefined;
+                for (0..brt_snap_len) |i| {
+                    brt_snap[i] = @as(*const u8, @ptrFromInt(brt_base + @as(u32, @intCast(i)))).*;
+                }
+                // Clear sync so SSE doesn't early-exit
+                @as(*align(1) u32, @ptrFromInt(this + 0x40)).* = 0;
+                // Run SSE
+                transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+                // Compare
+                var first_diff: ?u32 = null;
+                var diff_count: u32 = 0;
+                var bi: u32 = 0;
+                while (bi < snap_bones) : (bi += 1) {
+                    var fi: u32 = 0;
+                    while (fi < 16) : (fi += 1) {
+                        const off = bi * 0x40 + fi * 4;
+                        const ref_val = @as(u32, snap[off]) | (@as(u32, snap[off + 1]) << 8) | (@as(u32, snap[off + 2]) << 16) | (@as(u32, snap[off + 3]) << 24);
+                        const sse_val = hook.readMem(u32, bout + off);
+                        if (ref_val != sse_val) {
+                            diff_count += 1;
+                            if (first_diff == null and diff_count <= 3) {
+                                first_diff = off;
+                                log.fmt("DIFF bone[{d}][{d}]: REF=0x{x:0>8} SSE=0x{x:0>8}\n", .{ bi, fi, ref_val, sse_val });
+                            }
+                        }
+                    }
+                }
+                // Compare bone runtime state
+                var brt_diffs: u32 = 0;
+                var first_brt_off: u32 = 0;
+                var first_brt_ref: u32 = 0;
+                var first_brt_sse: u32 = 0;
+                {
+                    var bi2: u32 = 0;
+                    while (bi2 < snap_bones) : (bi2 += 1) {
+                        var off: u32 = 0;
+                        while (off < 0x118) : (off += 4) {
+                            const snap_off = bi2 * 0x118 + off;
+                            const ref_v = @as(u32, brt_snap[snap_off]) | (@as(u32, brt_snap[snap_off + 1]) << 8) | (@as(u32, brt_snap[snap_off + 2]) << 16) | (@as(u32, brt_snap[snap_off + 3]) << 24);
+                            const sse_v = hook.readMem(u32, brt_base + bi2 * 0x118 + off);
+                            if (ref_v != sse_v) {
+                                brt_diffs += 1;
+                                if (brt_diffs <= 3) {
+                                    if (brt_diffs == 1) {
+                                        first_brt_off = off;
+                                        first_brt_ref = ref_v;
+                                        first_brt_sse = sse_v;
+                                    }
+                                    log.fmt("  BRT bone[{d}]+0x{x:0>3}: REF=0x{x:0>8} SSE=0x{x:0>8}\n", .{ bi2, off, ref_v, sse_v });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (diff_count > 0 or brt_diffs > 0) {
+                    log.fmt("  out diffs: {d}, brt diffs: {d} in {d} bones\n", .{ diff_count, brt_diffs, snap_bones });
+                } else {
+                    log.fmt("MATCH: {d} bones (out+brt) identical\n", .{snap_bones});
+                }
+                diag_cmp_count += 1;
+            } else {
+                transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+            }
+        } else {
+            transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
+        }
     } else {
         transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
     }
@@ -366,7 +462,7 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     world_update_hook.callOriginal(.{frame_count});
 
     prof.frames +|= 1;
-    if (prof.frames >= DUMP_FRAMES) {
+    if (prof.frames >= DUMP_FRAMES or prof.wall_cycles >= DUMP_CYCLES) {
         dumpStats();
     }
 }
@@ -853,7 +949,7 @@ var textline_hook: hook.Detour(Fn6) = .{}; // renderTextLine: thiscall RET 0x10
 fn clipDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         clipPolygonToSinglePlane(a, b, c);
         prof.clip_cycles +|= rdtsc() - s;
         prof.clip_calls +|= 1;
@@ -971,7 +1067,7 @@ fn spatialDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
 fn raytriDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         const ret = rayTriangleIntersection(a, b, c, d, e, f);
         prof.raytri_cycles +|= rdtsc() - s;
         prof.raytri_calls +|= 1;
@@ -1097,7 +1193,7 @@ fn bboxchkDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*an
 fn rotmatDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         // thiscall: a=ECX=matrix, b=EDX=unused, c=angle, d=axis_ptr, e=is_unit
         rotateMatrixByAxisAngle(a, c, d, e);
         prof.rotmat_cycles +|= rdtsc() - s;
@@ -1112,7 +1208,7 @@ fn rotmatDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcal
 fn triplaneDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         const ret = buildTrianglePlanes(a, b, c, d, e);
         prof.triplane_cycles +|= rdtsc() - s;
         prof.triplane_calls +|= 1;
@@ -1133,7 +1229,7 @@ fn partsetupDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaqu
 fn matmulDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         // fastcall: a=ECX=result, b=EDX=left, c=right
         const ret = multiplyMatrix4x4(a, b, c);
         prof.matmul_cycles +|= rdtsc() - s;
@@ -1234,7 +1330,7 @@ fn blitHubDetour(vec2size: u32, func_index: u32, src_addr: u32, src_step: u32, s
         blit_hub_hook.callOriginal(.{ vec2size, func_index, src_addr, src_step, src_fmt, dst_addr, dst_step, dst_fmt });
     }
     const elapsed = rdtsc() - start;
-    if (ab_use_custom) {
+    if (AB_OTHER_HOOKS and ab_use_custom) {
         blit_total_custom.cycles +|= elapsed;
         blit_total_custom.calls +|= 1;
     } else {
@@ -1311,7 +1407,6 @@ fn dumpStats() void {
     const t44_avg_us = if (t44_real > 0) prof.t44_cycles / t44_real / 3000 else 0;
 
     const mode: [*:0]const u8 = if (ab_use_custom) "CUSTOM" else "BASELINE";
-
     // Frame jitter: convert min/max/avg from cycles to tenths-of-ms for one decimal place
     const US10_DIV = 300; // cycles / 300 = tenths of us... no, cycles / 300_000 = tenths of ms
     const TENTH_MS_DIV: u64 = 300_000; // @3GHz: cycles / 300_000 = tenths of ms
@@ -1429,6 +1524,7 @@ fn dumpStats() void {
 
     // Flip A/B mode
     ab_use_custom = !ab_use_custom;
+    diag_cmp_count = 0;
     prof = ProfState{};
 }
 
