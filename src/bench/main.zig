@@ -839,6 +839,9 @@ pub fn main() void {
         const WORD_ANIM_COUNT = 1;
         const BKF_COUNT = 1;
         const GS_COUNT = 2;
+        const RIBBON_COUNT = 1;
+        const PARTICLE_124_COUNT = 1;
+        const ATTACH_COUNT = 1;
 
         // Allocate all memory blocks
         var scene_obj: [0x400]u8 align(16) = std.mem.zeroes([0x400]u8);
@@ -859,6 +862,23 @@ pub fn main() void {
         var bkf_data: [BKF_COUNT * 0x54]u8 = std.mem.zeroes([BKF_COUNT * 0x54]u8);
         var bkf_out1: [BKF_COUNT * 0x98]u8 = std.mem.zeroes([BKF_COUNT * 0x98]u8);
         var bkf_out2: [BKF_COUNT * 0x40]u8 align(16) = std.mem.zeroes([BKF_COUNT * 0x40]u8);
+        // Ribbon emitter: data stride 0xD4, output stride 0x170
+        var ribbon_data: [RIBBON_COUNT * 0xD4]u8 = std.mem.zeroes([RIBBON_COUNT * 0xD4]u8);
+        var ribbon_out: [RIBBON_COUNT * 0x170]u8 = std.mem.zeroes([RIBBON_COUNT * 0x170]u8);
+        // Particle 0x124: data stride 0x7C, output stride 0x84
+        var p124_data: [PARTICLE_124_COUNT * 0x7C]u8 = std.mem.zeroes([PARTICLE_124_COUNT * 0x7C]u8);
+        var p124_out: [PARTICLE_124_COUNT * 0x84]u8 = std.mem.zeroes([PARTICLE_124_COUNT * 0x84]u8);
+        // Attachments: data stride 0x30, hierarchy entry 0x20
+        var attach_data: [ATTACH_COUNT * 0x30]u8 = std.mem.zeroes([ATTACH_COUNT * 0x30]u8);
+        var hierarchy: [ATTACH_COUNT * 0x20]u8 = std.mem.zeroes([ATTACH_COUNT * 0x20]u8);
+        // Vec3Track36 keyframes (36 bytes per kf: pos+in_tangent+out_tangent)
+        var v3t36_ts = [2]u32{ 0, 1000 };
+        var v3t36_vals: [18]f32 = .{ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }; // 2 kf * 9 floats
+        // FloatTrack12 keyframes (12 bytes per kf: value+in_tangent+out_tangent)
+        var ft12_ts = [2]u32{ 0, 1000 };
+        var ft12_vals = [6]f32{ 1.0, 0, 0, 0.5, 0, 0 };
+        // Byte keyframe values for attachment/visibility
+        var byte_vals = [2]u8{ 1, 0 };
         var parent_mat: [64]u8 align(16) = undefined;
 
         const ident = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
@@ -888,6 +908,7 @@ pub fn main() void {
         wu(u32, scene_obj[0x10..0x14], 1, .little);
         wu(u32, scene_obj[0x2C..0x30], @intFromPtr(&anim_ctx_mem), .little);
         wu(u32, scene_obj[0x30..0x34], @intFromPtr(&model_ctr_mem), .little);
+        wu(u32, scene_obj[0x4C..0x50], 100, .little); // search_data_base != 0 (exercises time delta path)
         wu(u32, scene_obj[0x64..0x68], @intFromPtr(&gs_values), .little);
         wu(u32, scene_obj[0x8C..0x90], 999, .little); // anim_frame_ctr (large = all gates pass)
         wu(u32, scene_obj[0x90..0x94], @intFromPtr(&bone_rt), .little);
@@ -897,6 +918,9 @@ pub fn main() void {
         wu(u32, scene_obj[0xAC..0xB0], @intFromPtr(&word_out), .little);
         wu(u32, scene_obj[0xB0..0xB4], @intFromPtr(&bkf_out1), .little);
         wu(u32, scene_obj[0xB4..0xB8], @intFromPtr(&bkf_out2), .little);
+        wu(u32, scene_obj[0x1C8..0x1CC], @intFromPtr(&hierarchy), .little); // hierarchy_ptr (for attachments)
+        wu(u32, scene_obj[0x200..0x204], @intFromPtr(&ribbon_out), .little); // ribbon output (SO.field_200)
+        wu(u32, scene_obj[0x3C4..0x3C8], @intFromPtr(&p124_out), .little); // particle 0x124 output
         for ([_]u32{ 0x180, 0x184, 0x188, 0x18C }) |off| {
             wu(u32, scene_obj[off..][0..4], fb, .little);
         }
@@ -922,6 +946,12 @@ pub fn main() void {
         wu(u32, mh[0x70..0x74], @intFromPtr(&word_data), .little);
         wu(u32, mh[0x74..0x78], BKF_COUNT, .little);
         wu(u32, mh[0x78..0x7C], @intFromPtr(&bkf_data), .little);
+        wu(u32, mh[0x104..0x108], ATTACH_COUNT, .little); // attachment count
+        wu(u32, mh[0x108..0x10C], @intFromPtr(&attach_data), .little);
+        wu(u32, mh[0x11C..0x120], RIBBON_COUNT, .little); // ribbon count
+        wu(u32, mh[0x120..0x124], @intFromPtr(&ribbon_data), .little);
+        wu(u32, mh[0x124..0x128], PARTICLE_124_COUNT, .little); // particle 0x124 count
+        wu(u32, mh[0x128..0x12C], @intFromPtr(&p124_data), .little);
 
         // --- Bone defs: 12 bones ---
         // Bone 0: root, rot(8kf)+trans(2kf), anim_slot=-1 (inherit)
@@ -1105,6 +1135,69 @@ pub fn main() void {
         wu(u32, bkf_data[0x1C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
         wu(u32, bkf_data[0x1C + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
 
+        // --- Ribbon emitter data (1 entry, stride 0xD4) ---
+        // bone_idx at +0x02, visibility gate at +0xC4, Track A float at +0x2C, Track B vec3 at +0x10
+        wu(u16, ribbon_data[0x02..0x04], 0, .little); // bone_idx = 0
+        // Track B (Vec3): gate at +0x1C, AnimData at +0x10
+        wu(u32, ribbon_data[0x1C..0x20], 2, .little); // gate kf_count
+        wu(u16, ribbon_data[0x10..0x12], 1, .little); // mode=lerp
+        wu(u16, ribbon_data[0x12..0x14], 0xFFFF, .little);
+        wu(u32, ribbon_data[0x10 + 0x0C ..][0..4], 2, .little);
+        wu(u32, ribbon_data[0x10 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, ribbon_data[0x10 + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+        // Track A (float): gate at +0x38, AnimData at +0x2C
+        wu(u32, ribbon_data[0x38..0x3C], 2, .little);
+        wu(u16, ribbon_data[0x2C..0x2E], 1, .little);
+        wu(u16, ribbon_data[0x2E..0x30], 0xFFFF, .little);
+        wu(u32, ribbon_data[0x2C + 0x0C ..][0..4], 2, .little);
+        wu(u32, ribbon_data[0x2C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, ribbon_data[0x2C + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
+        // Set output+0x100 = 1 (visibility active) so tracks get processed
+        wu(u32, ribbon_out[0x100..0x104], 1, .little);
+        wu(u8, ribbon_out[0xEC..0xED], 1, .little); // visibility byte = 1
+
+        // --- Particle 0x124 data (1 entry, stride 0x7C) ---
+        // Track 1 (Vec3Track36): gate at +0x1C, AnimData at +0x10
+        wu(u32, p124_data[0x1C..0x20], 2, .little);
+        wu(u16, p124_data[0x10..0x12], 1, .little); // mode=lerp
+        wu(u16, p124_data[0x12..0x14], 0xFFFF, .little);
+        wu(u32, p124_data[0x10 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p124_data[0x10 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
+        wu(u32, p124_data[0x10 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
+        // Track 3 (FloatTrack12): gate at +0x6C, AnimData at +0x60
+        wu(u32, p124_data[0x6C..0x70], 2, .little);
+        wu(u16, p124_data[0x60..0x62], 1, .little);
+        wu(u16, p124_data[0x62..0x64], 0xFFFF, .little);
+        wu(u32, p124_data[0x60 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p124_data[0x60 + 0x10 ..][0..4], @intFromPtr(&ft12_ts), .little);
+        wu(u32, p124_data[0x60 + 0x18 ..][0..4], @intFromPtr(&ft12_vals), .little);
+
+        // --- Attachment data (1 entry, stride 0x30) ---
+        // bone_idx at +0x04, gate at +0x20, AnimData at +0x14
+        wu(u16, attach_data[0x04..0x06], 0, .little); // bone_idx = 0
+        wu(u32, attach_data[0x20..0x24], 1000, .little); // gate kf_count
+        wu(u16, attach_data[0x14..0x16], 0, .little); // mode=step
+        wu(u16, attach_data[0x16..0x18], 0xFFFF, .little);
+        wu(u32, attach_data[0x14 + 0x0C ..][0..4], 2, .little); // kf_count
+        wu(u32, attach_data[0x14 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, attach_data[0x14 + 0x18 ..][0..4], @intFromPtr(&byte_vals), .little);
+
+        // --- Billboard bone: bone 6 gets billboard type 2 (cylindrical) ---
+        {
+            const bd6 = 6 * 0x6C;
+            // flags = 0x282 (rotation animation + billboard type 2 + billboard post 0x08)
+            wu(u32, bone_defs[bd6 + 0x04 ..][0..4], 0x28A, .little); // flags: 0x280 (rot anim) | 0x08 (bb post) | 0x02 (bb pre cylindrical)
+            // Give it rotation
+            wu(u16, bone_defs[bd6 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd6 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd6 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd6 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd6 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+
+        // --- Clamped animation path: make bone 5's anim_entry flag bit 0x10 & 1 set ---
+        anim_entry[0x10] = 1; // looping flag = 1 (clamped path)
+
         const pos = [3]f32{ 0, 0, 0 };
         const ofs = [3]f32{ 0, 0, 0 };
         const sb: u32 = @bitCast(@as(f32, 1.0));
@@ -1142,7 +1235,7 @@ pub fn main() void {
         }
 
         const avg = best / T44_ITERS;
-        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT });
+        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF, {d} ribbon, {d} particle, {d} attach\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT, RIBBON_COUNT, PARTICLE_124_COUNT, ATTACH_COUNT });
         print("  {d} cycles/call (best of 5 runs, {d}K iterations)\n", .{ avg, T44_ITERS / 1000 });
     }
 
