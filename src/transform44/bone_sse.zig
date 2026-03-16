@@ -190,12 +190,6 @@ fn getBillboardEpsilon() f32 {
 fn getShortToFloat() f32 {
     return rf32(0x00811610);
 }
-const HERMITE_3: f32 = 3.0; // DAT_0080297c
-// getHermite5(): runtime value is 0x40c00000 (6.0), NOT static 0x40a00000 (5.0) from Ghidra
-fn getHermite5() f32 {
-    return rf32(0x00802990);
-}
-
 // MSVC CRT sin/cos — linked from the WoW process
 extern fn sinf(f32) f32;
 extern fn cosf(f32) f32;
@@ -264,15 +258,6 @@ inline fn lerpVec3(a_addr: u32, b_addr: u32, t: f32) [3]f32 {
     };
 }
 
-/// Blend primary and secondary results: primary + (secondary - primary) * weight
-inline fn blendVec3(primary: [3]f32, secondary: [3]f32, weight: f32) [3]f32 {
-    return .{
-        (secondary[0] - primary[0]) * weight + primary[0],
-        (secondary[1] - primary[1]) * weight + primary[1],
-        (secondary[2] - primary[2]) * weight + primary[2],
-    };
-}
-
 /// Scale 3x3 rotation portion of a row-major 4x4 matrix by per-axis scale.
 /// Row 0 *= scale.x, Row 1 *= scale.y, Row 2 *= scale.z
 inline fn scaleMatrix3x3(mat: u32, sx: f32, sy: f32, sz: f32) void {
@@ -301,11 +286,8 @@ inline fn applyTranslation(mat: u32, tx: f32, ty: f32, tz: f32) void {
     wf32(mat + 0x38, @mulAdd(f32, tz, rf32(mat + 0x28), @mulAdd(f32, ty, rf32(mat + 0x18), @mulAdd(f32, tx, rf32(mat + 0x08), rf32(mat + 0x38)))));
 }
 
-/// Quaternion → rotation matrix: OVERWRITES mat with the rotation matrix.
-/// Matches the original game function at 0x74B6BB which writes directly
-/// without multiplying by existing matrix contents.
-/// Used in the bone loop where the matrix starts as identity.
-inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
+/// Quaternion → rotation matrix as value. No memory writes.
+inline fn buildRotationMatrixVal(qx: f32, qy: f32, qz: f32, qw: f32) [16]f32 {
     const xx2 = qx * (qx + qx);
     const xy2 = qx * (qy + qy);
     const xz2 = qx * (qz + qz);
@@ -316,13 +298,21 @@ inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void
     const wy2 = qw * (qy + qy);
     const wz2 = qw * (qz + qz);
 
-    const r0 = V4{ 1.0 - (yy2 + zz2), xy2 + wz2, xz2 - wy2, 0 };
-    const r1 = V4{ xy2 - wz2, 1.0 - (xx2 + zz2), yz2 + wx2, 0 };
-    const r2 = V4{ xz2 + wy2, yz2 - wx2, 1.0 - (xx2 + yy2), 0 };
-    wf32(mat, r0[0]); wf32(mat + 4, r0[1]); wf32(mat + 8, r0[2]); wf32(mat + 12, r0[3]);
-    wf32(mat + 16, r1[0]); wf32(mat + 20, r1[1]); wf32(mat + 24, r1[2]); wf32(mat + 28, r1[3]);
-    wf32(mat + 32, r2[0]); wf32(mat + 36, r2[1]); wf32(mat + 40, r2[2]); wf32(mat + 44, r2[3]);
-    wf32(mat + 48, 0); wf32(mat + 52, 0); wf32(mat + 56, 0); wf32(mat + 60, 1);
+    return .{
+        1.0 - (yy2 + zz2), xy2 + wz2,         xz2 - wy2,         0,
+        xy2 - wz2,         1.0 - (xx2 + zz2),  yz2 + wx2,         0,
+        xz2 + wy2,         yz2 - wx2,          1.0 - (xx2 + yy2), 0,
+        0,                  0,                   0,                  1,
+    };
+}
+
+/// Quaternion → rotation matrix: writes to game memory via u32 address.
+/// Used by boneKeyframeLoop where the matrix is in game memory.
+inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
+    const m = buildRotationMatrixVal(qx, qy, qz, qw);
+    inline for (0..16) |i| {
+        wf32(mat + @as(u32, @intCast(i * 4)), m[i]);
+    }
 }
 
 /// Quaternion → rotation matrix × mat. Fused: builds quat rows as V4, multiplies in-register.
@@ -402,6 +392,59 @@ inline fn matMul4x4(dst: u32, a: u32, b: u32) void {
         wf32(dst + off + 8, row[2]);
         wf32(dst + off + 12, row[3]);
     }
+}
+
+/// 4x4 matrix multiply: dst = a * b. Left operand is a local array, right is game memory.
+inline fn matMul4x4Local(dst: u32, a: [16]f32, b: u32) void {
+    const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
+    const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
+    const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
+    const b3 = V4{ rf32(b + 48), rf32(b + 52), rf32(b + 56), rf32(b + 60) };
+    const rows = [4]V4{
+        V4{ a[0], a[1], a[2], a[3] },
+        V4{ a[4], a[5], a[6], a[7] },
+        V4{ a[8], a[9], a[10], a[11] },
+        V4{ a[12], a[13], a[14], a[15] },
+    };
+    inline for (0..4) |i| {
+        const s0: V4 = @splat(rows[i][0]);
+        const s1: V4 = @splat(rows[i][1]);
+        const s2: V4 = @splat(rows[i][2]);
+        const s3: V4 = @splat(rows[i][3]);
+        const row = @mulAdd(V4, s3, b3, @mulAdd(V4, s2, b2, @mulAdd(V4, s1, b1, s0 * b0)));
+        const off: u32 = @intCast(i * 16);
+        wf32(dst + off, row[0]);
+        wf32(dst + off + 4, row[1]);
+        wf32(dst + off + 8, row[2]);
+        wf32(dst + off + 12, row[3]);
+    }
+}
+
+/// In-place multiply: a = a * b (b from game memory). Returns new array.
+inline fn matMul4x4InPlace(a: [16]f32, b: u32) [16]f32 {
+    const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
+    const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
+    const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
+    const b3 = V4{ rf32(b + 48), rf32(b + 52), rf32(b + 56), rf32(b + 60) };
+    const rows = [4]V4{
+        V4{ a[0], a[1], a[2], a[3] },
+        V4{ a[4], a[5], a[6], a[7] },
+        V4{ a[8], a[9], a[10], a[11] },
+        V4{ a[12], a[13], a[14], a[15] },
+    };
+    var result: [16]f32 = undefined;
+    inline for (0..4) |i| {
+        const s0: V4 = @splat(rows[i][0]);
+        const s1: V4 = @splat(rows[i][1]);
+        const s2: V4 = @splat(rows[i][2]);
+        const s3: V4 = @splat(rows[i][3]);
+        const row = @mulAdd(V4, s3, b3, @mulAdd(V4, s2, b2, @mulAdd(V4, s1, b1, s0 * b0)));
+        result[i * 4] = row[0];
+        result[i * 4 + 1] = row[1];
+        result[i * 4 + 2] = row[2];
+        result[i * 4 + 3] = row[3];
+    }
+    return result;
 }
 
 /// Set identity matrix (16 floats)
@@ -599,49 +642,46 @@ inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_dat
 
 /// Quaternion keyframe interpolation — replaces game's 0x713EA0.
 /// Assembly-verified: stride 16 (SHL EAX,4), values are 4×float, not CompQuat.
-inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) void {
+inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) [4]f32 {
     const r = findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
     const mode = ri16(anim_data + AD.interp_mode);
     const kf_base = ru32(anim_data + AD.keyframe_base);
 
+    var result: [4]f32 = undefined;
+
     if (mode == 0) {
         const src = kf_base + r.idx0 * 16;
-        wu32(output + 0x0C, ru32(src));
-        wu32(output + 0x10, ru32(src + 4));
-        wu32(output + 0x14, ru32(src + 8));
-        wu32(output + 0x18, ru32(src + 12));
-        return;
+        inline for (0..4) |i| {
+            result[i] = rf32(src + @as(u32, @intCast(i * 4)));
+        }
+    } else {
+        const src0 = kf_base + r.idx0 * 16;
+        const src1 = kf_base + r.idx1 * 16;
+        inline for (0..4) |i| {
+            const off: u32 = @intCast(i * 4);
+            result[i] = @mulAdd(f32, rf32(src1 + off) - rf32(src0 + off), r.t, rf32(src0 + off));
+        }
+
+        // Crossfade — blend in registers, no re-read from output buffer
+        if (rf32(bone_rt + BR.blend_weight) != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+            const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x1C);
+            const ssrc0 = kf_base + sr.idx0 * 16;
+            const ssrc1 = kf_base + sr.idx1 * 16;
+            const bw = rf32(bone_rt + BR.blend_weight);
+            inline for (0..4) |i| {
+                const off: u32 = @intCast(i * 4);
+                const sec = @mulAdd(f32, rf32(ssrc1 + off) - rf32(ssrc0 + off), sr.t, rf32(ssrc0 + off));
+                wf32(output + 0x28 + off, sec);
+                result[i] = @mulAdd(f32, sec - result[i], bw, result[i]);
+            }
+        }
     }
 
-    const src0 = kf_base + r.idx0 * 16;
-    const src1 = kf_base + r.idx1 * 16;
+    // Write final result to memory for persistence (read on frames where gate is false)
     inline for (0..4) |i| {
-        const off: u32 = @intCast(i * 4);
-        const a = rf32(src0 + off);
-        const b = rf32(src1 + off);
-        wf32(output + 0x0C + off, @mulAdd(f32, b - a, r.t, a));
+        wf32(output + 0x0C + @as(u32, @intCast(i * 4)), result[i]);
     }
-
-    // Crossfade
-    if (rf32(bone_rt + BR.blend_weight) != 0.0 and ri16(anim_data + AD.time_index) == -1) {
-        const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x1C);
-        const ssrc0 = kf_base + sr.idx0 * 16;
-        const ssrc1 = kf_base + sr.idx1 * 16;
-        inline for (0..4) |i| {
-            const off: u32 = @intCast(i * 4);
-            const a = rf32(ssrc0 + off);
-            const b = rf32(ssrc1 + off);
-            wf32(output + 0x28 + off, @mulAdd(f32, b - a, sr.t, a));
-        }
-        // Blend: primary = primary + (secondary - primary) * weight
-        const bw = rf32(bone_rt + BR.blend_weight);
-        inline for (0..4) |i| {
-            const off: u32 = @intCast(i * 4);
-            const pri = rf32(output + 0x0C + off);
-            const sec = rf32(output + 0x28 + off);
-            wf32(output + 0x0C + off, @mulAdd(f32, sec - pri, bw, pri));
-        }
-    }
+    return result;
 }
 
 // =============================================================================
@@ -680,46 +720,38 @@ inline fn interpVec3Track(
     anim_data: u32,
     output: u32,
     blend_weight: f32,
-) void {
+) [3]f32 {
     const r = findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
 
     const interp_mode = ri16(anim_data + AD.interp_mode);
     const kf_base = ru32(anim_data + AD.keyframe_base);
 
+    var result: [3]f32 = undefined;
+
     if (interp_mode == 0) {
-        // No interpolation — copy keyframe directly
         const src = kf_base + r.idx0 * 0xC;
-        wu32(output + 0x0C, ru32(src));
-        wu32(output + 0x10, ru32(src + 4));
-        wu32(output + 0x14, ru32(src + 8));
-        return;
+        result = .{ rf32(src), rf32(src + 4), rf32(src + 8) };
+    } else {
+        result = lerpVec3(kf_base + r.idx0 * 0xC, kf_base + r.idx1 * 0xC, r.t);
+
+        // Crossfade — blend in registers
+        if (blend_weight != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+            const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x18);
+            const sec = lerpVec3(kf_base + sr.idx0 * 0xC, kf_base + sr.idx1 * 0xC, sr.t);
+            wu32(output + 0x24, fbits(sec[0]));
+            wu32(output + 0x28, fbits(sec[1]));
+            wu32(output + 0x2C, fbits(sec[2]));
+            inline for (0..3) |i| {
+                result[i] = @mulAdd(f32, sec[i] - result[i], blend_weight, result[i]);
+            }
+        }
     }
 
-    const a = kf_base + r.idx0 * 0xC;
-    const b = kf_base + r.idx1 * 0xC;
-    const result = lerpVec3(a, b, r.t);
+    // Write final result to memory for persistence
     wu32(output + 0x0C, fbits(result[0]));
     wu32(output + 0x10, fbits(result[1]));
     wu32(output + 0x14, fbits(result[2]));
-
-    // Crossfade blend
-    if (blend_weight != 0.0 and ri16(anim_data + AD.time_index) == -1) {
-        const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x18);
-        const sa = kf_base + sr.idx0 * 0xC;
-        const sb = kf_base + sr.idx1 * 0xC;
-        const sec = lerpVec3(sa, sb, sr.t);
-        wu32(output + 0x24, fbits(sec[0]));
-        wu32(output + 0x28, fbits(sec[1]));
-        wu32(output + 0x2C, fbits(sec[2]));
-
-        // Blend
-        const pri_x = ufloat(ru32(output + 0x0C));
-        const pri_y = ufloat(ru32(output + 0x10));
-        const pri_z = ufloat(ru32(output + 0x14));
-        wu32(output + 0x0C, fbits(@mulAdd(f32, sec[0] - pri_x, blend_weight, pri_x)));
-        wu32(output + 0x10, fbits(@mulAdd(f32, sec[1] - pri_y, blend_weight, pri_y)));
-        wu32(output + 0x14, fbits(@mulAdd(f32, sec[2] - pri_z, blend_weight, pri_z)));
-    }
+    return result;
 }
 
 /// Interpolate a single float track (4 bytes per keyframe) with crossfade.
@@ -730,31 +762,34 @@ inline fn interpFloatTrack(
     anim_data: u32,
     output: u32,
     blend_weight: f32,
-) void {
+) f32 {
     const r = findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
 
     const interp_mode = ri16(anim_data + AD.interp_mode);
     const kf_base = ru32(anim_data + AD.keyframe_base);
 
+    var result: f32 = undefined;
+
     if (interp_mode == 0) {
-        wu32(output + 0x0C, ru32(kf_base + r.idx0 * 4));
-        return;
+        result = rf32(kf_base + r.idx0 * 4);
+    } else {
+        const a = rf32(kf_base + r.idx0 * 4);
+        const b = rf32(kf_base + r.idx1 * 4);
+        result = @mulAdd(f32, b - a, r.t, a);
+
+        // Crossfade — blend in registers
+        if (blend_weight != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+            const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x10);
+            const sa = rf32(kf_base + sr.idx0 * 4);
+            const sb = rf32(kf_base + sr.idx1 * 4);
+            const sec = (sb - sa) * sr.t + sa;
+            wu32(output + 0x1C, fbits(sec));
+            result = @mulAdd(f32, sec - result, blend_weight, result);
+        }
     }
 
-    const a = rf32(kf_base + r.idx0 * 4);
-    const b = rf32(kf_base + r.idx1 * 4);
-    wf32(output + 0x0C, @mulAdd(f32, b - a, r.t, a));
-
-    // Crossfade — only for bone loop callers (particles pass 0.0)
-    if (blend_weight != 0.0 and ri16(anim_data + AD.time_index) == -1) {
-        const sr = findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x10);
-        const sa = rf32(kf_base + sr.idx0 * 4);
-        const sb = rf32(kf_base + sr.idx1 * 4);
-        const sec = (sb - sa) * sr.t + sa;
-        wu32(output + 0x1C, fbits(sec));
-        const pri = ufloat(ru32(output + 0x0C));
-        wf32(output + 0x0C, @mulAdd(f32, sec - pri, blend_weight, pri));
-    }
+    wf32(output + 0x0C, result);
+    return result;
 }
 
 // =============================================================================
@@ -1483,41 +1518,42 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 const dst = bone_out_base + bone_idx * 0x40;
                 copyMat4(dst, src_mat);
             } else {
-                const lm2_addr = @intFromPtr(&local_mat2);
                 const rot_anim = bdef + BD.rot_anim;
                 const rot_kf_count = ru32(bdef + BD.rot_nts);
 
                 // Rotation overwrites all 16 floats — skip identity init when present
                 if (rot_kf_count != 0) {
                     if (frame_ctr < rot_kf_count) {
-                        interpAnimKF(this, brt, rot_anim, brt + BR.rot_idx0);
+                        const q = interpAnimKF(this, brt, rot_anim, brt + BR.rot_idx0);
+                        local_mat2 = buildRotationMatrixVal(q[0], q[1], q[2], q[3]);
+                    } else {
+                        local_mat2 = buildRotationMatrixVal(rf32(brt + BR.rot_x), rf32(brt + BR.rot_y), rf32(brt + BR.rot_z), rf32(brt + BR.rot_w));
                     }
-                    buildRotationMatrix(lm2_addr, rf32(brt + BR.rot_x), rf32(brt + BR.rot_y), rf32(brt + BR.rot_z), rf32(brt + BR.rot_w));
                 } else {
                     local_mat2 = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
                 }
 
-                // Step 2: Scale interpolation — applied after rotation
+                // Step 2: Scale interpolation — applied after rotation (inline array ops)
                 const scale_anim = bdef + BD.scale_anim;
                 const scale_kf_count = ru32(bdef + BD.scale_nts);
                 if (scale_kf_count != 0) {
+                    var sx: f32 = undefined;
+                    var sy: f32 = undefined;
+                    var sz: f32 = undefined;
                     if (frame_ctr < scale_kf_count) {
-                        interpVec3Track(this, brt, scale_anim, brt + BR.scale_idx0, ufloat(ru32(brt + BR.blend_weight)));
+                        const s = interpVec3Track(this, brt, scale_anim, brt + BR.scale_idx0, ufloat(ru32(brt + BR.blend_weight)));
+                        sx = s[0]; sy = s[1]; sz = s[2];
+                    } else {
+                        sx = rf32(brt + BR.scale_x); sy = rf32(brt + BR.scale_y); sz = rf32(brt + BR.scale_z);
                     }
-                    scaleMatrix3x3(lm2_addr, rf32(brt + BR.scale_x), rf32(brt + BR.scale_y), rf32(brt + BR.scale_z));
+                    local_mat2[0] *= sx; local_mat2[1] *= sx; local_mat2[2] *= sx;
+                    local_mat2[4] *= sy; local_mat2[5] *= sy; local_mat2[6] *= sy;
+                    local_mat2[8] *= sz; local_mat2[9] *= sz; local_mat2[10] *= sz;
                 }
 
-                // Conditional multiply: if flag bit 0x80 set AND bone_rt[0xF0] != 0,
-                // multiply bone_local by the matrix pointed to by bone_rt[0xF0].
-                // Assembly at 0x714F7F-0x714F9C:
-                //   TEST CL, CL / JNS skip
-                //   MOV EAX, [ESI+0xF0] / TEST EAX, EAX / JZ skip
-                //   PUSH EAX (right), PUSH &bone_local (left), PUSH &bone_local (output)
-                //   CALL 0x74A7C0 (multiplyMatrix4x4: output = left * right)
-                // This is bone_local *= *(bone_rt+0xF0)
+                // Conditional multiply: bone_local *= *(bone_rt+0xF0)
                 if ((@as(i8, @bitCast(@as(u8, @truncate(combined_flags)))) < 0) and ru32(brt + BR.bone_flag_cache) != 0) {
-                    const extra_mat = ru32(brt + BR.bone_flag_cache);
-                    matMul4x4(lm2_addr, lm2_addr, extra_mat);
+                    local_mat2 = matMul4x4InPlace(local_mat2, ru32(brt + BR.bone_flag_cache));
                 }
 
                 // Step 3: Translation interpolation
@@ -1529,15 +1565,18 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 const trans_kf_count = ru32(bdef + BD.trans_nts);
                 if (trans_kf_count != 0) {
                     if (frame_ctr < trans_kf_count) {
-                        interpVec3Track(this, brt, trans_anim, brt + BR.trans_idx0, ufloat(ru32(brt + BR.blend_weight)));
+                        const t = interpVec3Track(this, brt, trans_anim, brt + BR.trans_idx0, ufloat(ru32(brt + BR.blend_weight)));
+                        tx_val += t[0];
+                        ty_val += t[1];
+                        tz_val += t[2];
+                    } else {
+                        tx_val += rf32(brt + BR.trans_x);
+                        ty_val += rf32(brt + BR.trans_y);
+                        tz_val += rf32(brt + BR.trans_z);
                     }
-                    tx_val += ufloat(ru32(brt + BR.trans_x));
-                    ty_val += ufloat(ru32(brt + BR.trans_y));
-                    tz_val += ufloat(ru32(brt + BR.trans_z));
                 }
 
                 // Step 4: Compute translation offset using the ROTATED+SCALED matrix.
-                // translation = (pivot + interp_trans) - bone_local_matrix * pivot
                 const piv_x = rf32(bdef + BD.pivot_x);
                 const piv_y = rf32(bdef + BD.pivot_y);
                 const piv_z = rf32(bdef + BD.pivot_z);
@@ -1546,8 +1585,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 local_mat2[14] = tz_val - (local_mat2[2] * piv_x + local_mat2[6] * piv_y + local_mat2[10] * piv_z);
 
                 // Write final composed matrix to output: dst = bone_local * parent
-                // Assembly: CALL 0x74A7C0 (JMP table → SSE matmul) at 0x7151BA
-                matMul4x4(bone_out_base + bone_idx * 0x40, lm2_addr, src_mat);
+                matMul4x4Local(bone_out_base + bone_idx * 0x40, local_mat2, src_mat);
             }
 
             // --- Billboard post-processing (flags & 0x78) ---
@@ -1747,6 +1785,7 @@ fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     const data_base = ru32(model_hdr + 0x58);
     const bone_rt_base = ru32(this + SO.bone_rt_base);
     const out_base = ru32(this + SO.tex_anim_out);
+    const stf = getShortToFloat();
 
     var i: u32 = 0;
     var data_off: u32 = 0;
@@ -1759,32 +1798,26 @@ fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
         const anim_data = data_base + data_off;
         const output = out_base + out_off;
         if (frame_ctr < ru32(data_base + data_off + 0x0C)) {
-            interpVec3Track(this, bone_rt_base, anim_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
+            _ = interpVec3Track(this, bone_rt_base, anim_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
         }
         // Alpha/opacity track (assembly 0x715AF1-0x715C5E)
-        // Gate: anim_data+0x28 (alpha kf count) > anim_frame_ctr
         if (frame_ctr < ru32(anim_data + 0x28)) {
             const alpha_anim = anim_data + 0x1C;
-            // ESI = output + 0x30 in original (alpha output area)
             const alpha_out = output + 0x30;
             const ar = findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), alpha_anim, alpha_out);
             const mode = ri16(alpha_anim);
             if (mode == 0) {
-                // Mode 0: direct short→float copy. Assembly JMPs past crossfade.
                 const kf_data = ru32(alpha_anim + 0x18);
                 const sv = @as(f32, @floatFromInt(@as(i32, @as(*align(1) const i16, @ptrFromInt(kf_data + ar.idx0 * 2)).*)));
-                wf32(alpha_out + 0x0C, sv * getShortToFloat());
+                wf32(alpha_out + 0x0C, sv * stf);
             } else {
-                // Mode != 0: lerp + crossfade
-                const primary = shortInterpToFloat(alpha_anim, ar);
+                const primary = shortInterpToFloat(alpha_anim, ar, stf);
                 wf32(alpha_out + 0x0C, primary);
 
-                // Crossfade (assembly 0x715BAF-0x715C5E)
-                // Only runs for mode != 0 — mode 0 JMPs past this
                 const bw = rf32(bone_rt_base + BR.blend_weight);
                 if (bw != 0.0 and ri16(alpha_anim + 0x02) == -1) {
                     const asr = findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), alpha_anim, alpha_out + 0x10);
-                    const secondary = shortInterpToFloat(alpha_anim, asr);
+                    const secondary = shortInterpToFloat(alpha_anim, asr, stf);
                     wf32(alpha_out + 0x1C, secondary);
                     wf32(alpha_out + 0x0C, @mulAdd(f32, secondary - primary, bw, primary));
                 }
@@ -1795,15 +1828,15 @@ fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
 
 /// Short-value interpolation: uses InterpResult indices, looks up short values, interpolates.
 /// Shared by texAnimLoop alpha, colorAnimLoop, and word animation crossfade.
-inline fn shortInterpToFloat(anim_data: u32, r: InterpResult) f32 {
+inline fn shortInterpToFloat(anim_data: u32, r: InterpResult, stf: f32) f32 {
     const mode = ri16(anim_data);
     const table = anim_data + AD.nvalues;
     if (mode == 0) {
-        return @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, r.idx0)))) * getShortToFloat();
+        return @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, r.idx0)))) * stf;
     } else {
         const v1 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, r.idx1))));
         const v0 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, r.idx0))));
-        return (v1 * getShortToFloat() - v0 * getShortToFloat()) * r.t + v0 * getShortToFloat();
+        return (v1 * stf - v0 * stf) * r.t + v0 * stf;
     }
 }
 
@@ -1815,6 +1848,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     const data_base = ru32(model_hdr + 0x68);
     const bone_rt_base = ru32(this + SO.bone_rt_base);
     const out_base = ru32(this + SO.color_anim_out);
+    const stf = getShortToFloat();
 
     var i: u32 = 0;
     var data_off: u32 = 0;
@@ -1826,25 +1860,21 @@ fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }) {
         const anim_data = data_base + data_off;
         const output = out_base + out_off;
-        // Gate: anim_data+0x0C (kf count) > anim_frame_ctr
         if (frame_ctr < ru32(anim_data + 0x0C)) {
             const cr = findInterpIdx(this, ru32(bone_rt_base + BR.prim_time), ru32(bone_rt_base + BR.prim_track), anim_data, output);
             const mode = ri16(anim_data);
             if (mode == 0) {
-                // Mode 0: direct short→float. Assembly JMPs past crossfade (0x715D05).
                 const kf_data = ru32(anim_data + 0x18);
                 const sv = @as(f32, @floatFromInt(@as(i32, @as(*align(1) const i16, @ptrFromInt(kf_data + cr.idx0 * 2)).*)));
-                wf32(output + 0x0C, sv * getShortToFloat());
+                wf32(output + 0x0C, sv * stf);
             } else {
-                // Mode != 0: lerp + crossfade
-                const primary = shortInterpToFloat(anim_data, cr);
+                const primary = shortInterpToFloat(anim_data, cr, stf);
                 wf32(output + 0x0C, primary);
 
-                // Crossfade (assembly 0x715D6B-0x715E1B)
                 const bw = rf32(bone_rt_base + BR.blend_weight);
                 if (bw != 0.0 and ri16(anim_data + 0x02) == -1) {
                     const csr = findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
-                    const secondary = shortInterpToFloat(anim_data, csr);
+                    const secondary = shortInterpToFloat(anim_data, csr, stf);
                     wf32(output + 0x1C, secondary);
                     wf32(output + 0x0C, @mulAdd(f32, secondary - primary, bw, primary));
                 }
@@ -1937,22 +1967,22 @@ fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
         // Rotation: AnimData at kf_entry+0x1C, gate at kf_entry+0x28
         // Assembly at 0x715FDB: CMP [ECX+0x28], 0; AnimData at EDX+0x1C
         if (ru32(kf_data + 0x28) != 0) {
-            interpAnimKF(this, bone_rt_base, kf_data + 0x1C, output + 0x30);
+            const q = interpAnimKF(this, bone_rt_base, kf_data + 0x1C, output + 0x30);
             applyTranslation(mat_out, rf32(0xCF043C), rf32(0xCF0440), rf32(0xCF0444));
-            rotateByQuaternion(mat_out, rf32(output + 0x3C), rf32(output + 0x40), rf32(output + 0x44), rf32(output + 0x48));
+            rotateByQuaternion(mat_out, q[0], q[1], q[2], q[3]);
             applyTranslation(mat_out, -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444));
         }
 
         if (ru32(kf_data + 0x44) != 0) {
-            interpVec3Track(this, bone_rt_base, kf_data + 0x38, output + 0x68, ufloat(ru32(bone_rt_base + BR.blend_weight)));
+            const s = interpVec3Track(this, bone_rt_base, kf_data + 0x38, output + 0x68, ufloat(ru32(bone_rt_base + BR.blend_weight)));
             applyTranslation(mat_out, rf32(0xCF043C), rf32(0xCF0440), rf32(0xCF0444));
-            scaleMatrix3x3(mat_out, rf32(output + 0x74), rf32(output + 0x78), rf32(output + 0x7C));
+            scaleMatrix3x3(mat_out, s[0], s[1], s[2]);
             applyTranslation(mat_out, -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444));
         }
 
         if (ru32(kf_data + 0x0C) != 0) {
-            interpVec3Track(this, bone_rt_base, kf_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
-            applyTranslation(mat_out, rf32(output + 0x0C), rf32(output + 0x10), rf32(output + 0x14));
+            const tv = interpVec3Track(this, bone_rt_base, kf_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
+            applyTranslation(mat_out, tv[0], tv[1], tv[2]);
         }
     }
 }
@@ -2013,32 +2043,32 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
 
         // ---- Track A (float): gate=entry+0x38, AD=entry+0x2C, output+0x30 ----
         if (frame_ctr < ru32(entry + 0x38)) {
-            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
+            _ = interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
 
         // ---- Track B (Vec3): gate=entry+0x1C, AD=entry+0x10, output+0x00 ----
         if (frame_ctr < ru32(entry + 0x1C)) {
-            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+            const v = interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
             // Post-processing 1 (asm 0x71678A-0x7167CE)
             const scale1 = rf32(output + 0x3C) * rf32(this + SO.render_scale_z);
-            wf32(output + 0x134, rf32(output + 0x0C) * scale1);
-            wf32(output + 0x138, rf32(output + 0x10) * scale1);
-            wf32(output + 0x13C, rf32(output + 0x14) * scale1);
+            wf32(output + 0x134, v[0] * scale1);
+            wf32(output + 0x138, v[1] * scale1);
+            wf32(output + 0x13C, v[2] * scale1);
         }
 
         // ---- Track C (float): gate=entry+0x70, AD=entry+0x64, output+0x80 ----
         if (frame_ctr < ru32(entry + 0x70)) {
-            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
+            _ = interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
 
         // ---- Track D (Vec3): gate=entry+0x54, AD=entry+0x48, output+0x50 ----
         if (frame_ctr < ru32(entry + 0x54)) {
-            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
+            const v2 = interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
             // Post-processing 2 (asm 0x716A67-0x716AA6)
             const scale2 = rf32(output + 0x8C) * rf32(this + SO.render_scale_z);
-            wf32(output + 0x140, rf32(output + 0x5C) * scale2);
-            wf32(output + 0x144, rf32(output + 0x60) * scale2);
-            wf32(output + 0x148, rf32(output + 0x64) * scale2);
+            wf32(output + 0x140, v2[0] * scale2);
+            wf32(output + 0x144, v2[1] * scale2);
+            wf32(output + 0x148, v2[2] * scale2);
         }
     }
 }
@@ -2078,6 +2108,7 @@ fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
 
 fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
+    const stf = getShortToFloat();
     // Assembly: model_hdr+0x134 section (asm 0x71763E-0x717D6A)
     // Then additional_remaining reset at 0x717D6F
     // Then model_hdr+0x13C section (asm 0x717D75-0x7185E3)
@@ -2128,7 +2159,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
             if (frame_ctr < ru32(entry + 0x30)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpVec3Track(this, bone_rt, entry + 0x24, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+                _ = interpVec3Track(this, bone_rt, entry + 0x24, output, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Alpha track: entry+0x40 vs entry+0x4C
@@ -2141,11 +2172,11 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
                 const table = entry + 0x40 + AD.nvalues;
                 if (alpha_mode == 0) {
                     const sv = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, par.idx0))));
-                    wf32(output + 0x3C, sv * getShortToFloat());
+                    wf32(output + 0x3C, sv * stf);
                 } else {
                     const v1 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, par.idx1))));
                     const v0 = @as(f32, @floatFromInt(@as(i32, readShortViaGame(table, par.idx0))));
-                    wf32(output + 0x3C, (v1 * getShortToFloat() - v0 * getShortToFloat()) * par.t + v0 * getShortToFloat());
+                    wf32(output + 0x3C, (v1 * stf - v0 * stf) * par.t + v0 * stf);
                 }
             }
 
@@ -2153,14 +2184,14 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
             if (frame_ctr < ru32(entry + 0x68)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
+                _ = interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Emission rate: entry+0x78 vs entry+0x84
             if (frame_ctr < ru32(entry + 0x84)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70, ufloat(ru32(bone_rt + BR.blend_weight)));
+                _ = interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Scale track: entry+0xA4 vs entry+0xB0
@@ -2247,37 +2278,37 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
             if (vis_byte != 0 or frame_ctr == 0) {
                 // Track 1: emission rate — gate=+0x40, AnimData=+0x34, output=+0x00
                 if (frame_ctr < ru32(entry + 0x40)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x34, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x34, output, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 2: speed — gate=+0x5C, AnimData=+0x50, output=+0x20
                 if (frame_ctr < ru32(entry + 0x5C)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 3: color — gate=+0x78, AnimData=+0x6C, output=+0x40
                 if (frame_ctr < ru32(entry + 0x78)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 4 — gate=+0x94, AnimData=+0x88, output=+0x60
                 if (frame_ctr < ru32(entry + 0x94)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 5 (Vec3 spline) — gate=+0xB0, AnimData=+0xA4, output=+0x80
                 if (frame_ctr < ru32(entry + 0xB0)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 6 — gate=+0xCC, AnimData=+0xC0, output=+0xA0
                 if (frame_ctr < ru32(entry + 0xCC)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Tracks 7-10: same as interpFloatTrack (0x71AF20 is identical logic)
                 if (frame_ctr < ru32(entry + 0xE8))
-                    interpFloatTrack(this, bone_rt, entry + 0xDC, output + 0xC0, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0xDC, output + 0xC0, ufloat(ru32(bone_rt + BR.blend_weight)));
                 if (frame_ctr < ru32(entry + 0x104))
-                    interpFloatTrack(this, bone_rt, entry + 0xF8, output + 0xE0, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0xF8, output + 0xE0, ufloat(ru32(bone_rt + BR.blend_weight)));
                 if (frame_ctr < ru32(entry + 0x120))
-                    interpFloatTrack(this, bone_rt, entry + 0x114, output + 0x100, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x114, output + 0x100, ufloat(ru32(bone_rt + BR.blend_weight)));
                 if (frame_ctr < ru32(entry + 0x13C))
-                    interpFloatTrack(this, bone_rt, entry + 0x130, output + 0x120, ufloat(ru32(bone_rt + BR.blend_weight)));
+                    _ = interpFloatTrack(this, bone_rt, entry + 0x130, output + 0x120, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
         }
     }
