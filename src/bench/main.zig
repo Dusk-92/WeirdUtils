@@ -829,8 +829,8 @@ pub fn main() void {
     // =========================================================================
     {
         print("\n{s}\n", .{"-- transform44 (comprehensive fixture) --"});
-        const T44_ITERS: u32 = 500_000;
-        const BASELINE_CYCLES: u64 = 3934; // frozen baseline measurement
+        const T44_ITERS: u32 = 2_000_000;
+        const BASELINE_CYCLES: u64 = 4176; // frozen baseline measured at 2M iterations
         const wu = std.mem.writeInt;
         const fb = @as(u32, @bitCast(@as(f32, 1.0)));
 
@@ -1558,7 +1558,6 @@ pub fn main() void {
         const pp = @intFromPtr(&pos);
         const po = @intFromPtr(&ofs);
 
-        // Only benchmark SSE — baseline is frozen constant
         const best_sse = run_bench_fn(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
         const avg_sse = best_sse / T44_ITERS;
 
