@@ -840,7 +840,7 @@ pub fn main() void {
         const BKF_COUNT = 1;
         const GS_COUNT = 3;
         const RIBBON_COUNT = 1;
-        const PARTICLE_124_COUNT = 2;
+        const PARTICLE_124_COUNT = 3;
         const PARTICLE_134_COUNT = 1;
         const PARTICLE_13C_COUNT = 1;
         const ATTACH_COUNT = 2;
@@ -895,6 +895,8 @@ pub fn main() void {
         // FloatTrack12 keyframes (12 bytes per kf: value+in_tangent+out_tangent)
         var ft12_ts = [2]u32{ 0, 1000 };
         var ft12_vals = [6]f32{ 1.0, 0, 0, 0.5, 0, 0 };
+        // Multi-track range: 1 range pair [start=0, end=1] covering indices 0-1
+        var range_pair = [2]u32{ 0, 1 };
         // Byte keyframe values for attachment/visibility
         var byte_vals = [2]u8{ 1, 0 };
         var parent_mat: [64]u8 align(16) = undefined;
@@ -1227,6 +1229,27 @@ pub fn main() void {
             wu(u32, p124_data[p2 + 0x60 + 0x0C ..][0..4], 2, .little);
             wu(u32, p124_data[p2 + 0x60 + 0x10 ..][0..4], @intFromPtr(&ft12_ts), .little);
             wu(u32, p124_data[p2 + 0x60 + 0x18 ..][0..4], @intFromPtr(&ft12_vals), .little);
+        }
+
+        // --- Particle 0x124 entry 3 (offset 0xF8): FloatTrack12 mode=0 + multi-track range ---
+        {
+            const p3 = 0x7C * 2; // third entry offset
+            // Track 3: FloatTrack12 mode=0 (direct copy — tests interpFloatTrack12 mode=0)
+            wu(u32, p124_data[p3 + 0x6C ..][0..4], 2, .little); // gate
+            wu(u16, p124_data[p3 + 0x60 ..][0..2], 0, .little); // mode=0!
+            wu(u16, p124_data[p3 + 0x62 ..][0..2], 0xFFFF, .little);
+            wu(u32, p124_data[p3 + 0x60 + 0x0C ..][0..4], 2, .little);
+            wu(u32, p124_data[p3 + 0x60 + 0x10 ..][0..4], @intFromPtr(&ft12_ts), .little);
+            wu(u32, p124_data[p3 + 0x60 + 0x18 ..][0..4], @intFromPtr(&ft12_vals), .little);
+            // Track 1: Vec3Track36 with nRanges=1 (multi-track range path in findInterpIdx)
+            wu(u32, p124_data[p3 + 0x1C ..][0..4], 2, .little); // gate
+            wu(u16, p124_data[p3 + 0x10 ..][0..2], 1, .little); // mode=lerp
+            wu(u16, p124_data[p3 + 0x12 ..][0..2], 0xFFFF, .little);
+            wu(u32, p124_data[p3 + 0x10 + 0x04 ..][0..4], 1, .little); // nRanges = 1 (multi-track!)
+            wu(u32, p124_data[p3 + 0x10 + 0x08 ..][0..4], @intFromPtr(&range_pair), .little); // range data
+            wu(u32, p124_data[p3 + 0x10 + 0x0C ..][0..4], 2, .little); // kf_count
+            wu(u32, p124_data[p3 + 0x10 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
+            wu(u32, p124_data[p3 + 0x10 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
         }
 
         // --- Attachment child traversal: create a fake child SceneObject ---
