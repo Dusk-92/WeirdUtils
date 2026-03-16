@@ -928,7 +928,7 @@ pub fn main() void {
         wu(u32, scene_obj[0x30..0x34], @intFromPtr(&model_ctr_mem), .little);
         wu(u32, scene_obj[0x4C..0x50], 100, .little); // search_data_base != 0 (exercises time delta path)
         wu(u32, scene_obj[0x64..0x68], @intFromPtr(&gs_values), .little);
-        wu(u32, scene_obj[0x8C..0x90], 999, .little); // anim_frame_ctr (large = all gates pass)
+        wu(u32, scene_obj[0x8C..0x90], 0, .little); // anim_frame_ctr=0: all gates pass (0 < any kf_count)
         wu(u32, scene_obj[0x90..0x94], @intFromPtr(&bone_rt), .little);
         wu(u32, scene_obj[0x94..0x98], @intFromPtr(&bone_out), .little);
         wu(u32, scene_obj[0xA0..0xA4], @intFromPtr(&tex_anim_out), .little);
