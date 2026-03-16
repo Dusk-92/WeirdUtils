@@ -833,14 +833,14 @@ pub fn main() void {
         const wu = std.mem.writeInt;
         const fb = @as(u32, @bitCast(@as(f32, 1.0)));
 
-        const BONE_COUNT = 16;
+        const BONE_COUNT = 18;
         const TEX_ANIM_COUNT = 2;
-        const COLOR_ANIM_COUNT = 2;
+        const COLOR_ANIM_COUNT = 3; // 3rd entry: mode=0 for shortInterpToFloat mode=0 path
         const WORD_ANIM_COUNT = 1;
         const BKF_COUNT = 1;
-        const GS_COUNT = 2;
+        const GS_COUNT = 3;
         const RIBBON_COUNT = 1;
-        const PARTICLE_124_COUNT = 1;
+        const PARTICLE_124_COUNT = 2;
         const PARTICLE_134_COUNT = 1;
         const PARTICLE_13C_COUNT = 1;
         const ATTACH_COUNT = 2;
@@ -853,8 +853,8 @@ pub fn main() void {
         var bone_defs: [BONE_COUNT * 0x6C]u8 = std.mem.zeroes([BONE_COUNT * 0x6C]u8);
         var bone_rt: [BONE_COUNT * 0x118]u8 = std.mem.zeroes([BONE_COUNT * 0x118]u8);
         var bone_out: [BONE_COUNT * 0x40]u8 align(16) = std.mem.zeroes([BONE_COUNT * 0x40]u8);
-        var gs_durations: [GS_COUNT]u32 = .{ 3000, 5000 };
-        var gs_values: [GS_COUNT]u32 = .{ 0, 0 };
+        var gs_durations: [GS_COUNT]u32 = .{ 3000, 5000, 0 }; // third GS has dur=0 (tests that path)
+        var gs_values: [GS_COUNT]u32 = .{ 0, 0, 0 };
         var tex_anim_data: [TEX_ANIM_COUNT * 0x38]u8 = std.mem.zeroes([TEX_ANIM_COUNT * 0x38]u8);
         var tex_anim_out: [TEX_ANIM_COUNT * 0x50]u8 = std.mem.zeroes([TEX_ANIM_COUNT * 0x50]u8);
         var color_data: [COLOR_ANIM_COUNT * 0x1C]u8 = std.mem.zeroes([COLOR_ANIM_COUNT * 0x1C]u8);
@@ -1133,10 +1133,11 @@ pub fn main() void {
             wu(u32, tex_anim_data[td + 0x1C + 0x18 ..][0..4], @intFromPtr(&short_vals), .little);
         }
 
-        // --- Color animation data (2 entries, stride 0x1C) ---
+        // --- Color animation data (3 entries, stride 0x1C) ---
+        // Entries 0-1: mode=1 (lerp + crossfade). Entry 2: mode=0 (direct, tests shortInterpToFloat mode=0)
         for (0..COLOR_ANIM_COUNT) |i| {
             const cd = i * 0x1C;
-            wu(u16, color_data[cd ..][0..2], 1, .little);
+            wu(u16, color_data[cd ..][0..2], if (i < 2) @as(u16, 1) else @as(u16, 0), .little);
             wu(u16, color_data[cd + 0x02 ..][0..2], 0xFFFF, .little);
             wu(u32, color_data[cd + 0x0C ..][0..4], 2, .little);
             wu(u32, color_data[cd + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
@@ -1144,7 +1145,7 @@ pub fn main() void {
         }
 
         // --- Word animation data (1 entry, stride 0x1C) ---
-        wu(u16, word_data[0x00..0x02], 0, .little); // mode=0 (copy)
+        wu(u16, word_data[0x00..0x02], 1, .little); // mode=1 (exercises crossfade path)
         wu(u16, word_data[0x02..0x04], 0xFFFF, .little);
         wu(u32, word_data[0x0C..0x10], 2, .little);
         wu(u32, word_data[0x10..0x14], @intFromPtr(&ts2), .little);
@@ -1189,7 +1190,7 @@ pub fn main() void {
         // --- Particle 0x124 data (1 entry, stride 0x7C) ---
         // Track 1 (Vec3Track36): gate at +0x1C, AnimData at +0x10
         wu(u32, p124_data[0x1C..0x20], 2, .little);
-        wu(u16, p124_data[0x10..0x12], 1, .little); // mode=lerp
+        wu(u16, p124_data[0x10..0x12], 0, .little); // mode=0 (direct copy, tests Vec3Track36 mode=0)
         wu(u16, p124_data[0x12..0x14], 0xFFFF, .little);
         wu(u32, p124_data[0x10 + 0x0C ..][0..4], 2, .little);
         wu(u32, p124_data[0x10 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
@@ -1202,7 +1203,41 @@ pub fn main() void {
         wu(u32, p124_data[0x60 + 0x10 ..][0..4], @intFromPtr(&ft12_ts), .little);
         wu(u32, p124_data[0x60 + 0x18 ..][0..4], @intFromPtr(&ft12_vals), .little);
 
-        // --- Attachment data (1 entry, stride 0x30) ---
+        // --- Particle 0x124 entry 2 (offset 0x7C): Vec3Track36 mode=1, FloatTrack12 mode=3 ---
+        {
+            const p2 = 0x7C; // second entry offset
+            // Track 1: Vec3Track36 mode=1 (lerp)
+            wu(u32, p124_data[p2 + 0x1C ..][0..4], 2, .little);
+            wu(u16, p124_data[p2 + 0x10 ..][0..2], 1, .little); // mode=1
+            wu(u16, p124_data[p2 + 0x12 ..][0..2], 0xFFFF, .little);
+            wu(u32, p124_data[p2 + 0x10 + 0x0C ..][0..4], 2, .little);
+            wu(u32, p124_data[p2 + 0x10 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
+            wu(u32, p124_data[p2 + 0x10 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
+            // Track 2: Vec3Track36 mode=2 (bezier)
+            wu(u32, p124_data[p2 + 0x44 ..][0..4], 2, .little);
+            wu(u16, p124_data[p2 + 0x38 ..][0..2], 2, .little); // mode=2
+            wu(u16, p124_data[p2 + 0x3A ..][0..2], 0xFFFF, .little);
+            wu(u32, p124_data[p2 + 0x38 + 0x0C ..][0..4], 2, .little);
+            wu(u32, p124_data[p2 + 0x38 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
+            wu(u32, p124_data[p2 + 0x38 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
+            // Track 3: FloatTrack12 mode=3 (hermite)
+            wu(u32, p124_data[p2 + 0x6C ..][0..4], 2, .little);
+            wu(u16, p124_data[p2 + 0x60 ..][0..2], 3, .little); // mode=3
+            wu(u16, p124_data[p2 + 0x62 ..][0..2], 0xFFFF, .little);
+            wu(u32, p124_data[p2 + 0x60 + 0x0C ..][0..4], 2, .little);
+            wu(u32, p124_data[p2 + 0x60 + 0x10 ..][0..4], @intFromPtr(&ft12_ts), .little);
+            wu(u32, p124_data[p2 + 0x60 + 0x18 ..][0..4], @intFromPtr(&ft12_vals), .little);
+        }
+
+        // --- Attachment child traversal: create a fake child SceneObject ---
+        // hierarchy_idx (this+0x1DC) points to a "child" that has attach_idx=0xFFFF (skip processing)
+        // and next=0 (end of list). This exercises the while(child!=0) loop.
+        var fake_child: [0x200]u8 = std.mem.zeroes([0x200]u8);
+        wu(u32, fake_child[0x1D4..0x1D8], 0xFFFF, .little); // attach_idx = 0xFFFF (skip)
+        wu(u32, fake_child[0x1E4..0x1E8], 0, .little); // next = 0 (end of list)
+        wu(u32, scene_obj[0x1DC..0x1E0], @intFromPtr(&fake_child), .little); // hierarchy_idx = &fake_child
+
+        // --- Attachment data (2 entries, stride 0x30) ---
         // bone_idx at +0x04, gate at +0x20, AnimData at +0x14
         wu(u16, attach_data[0x04..0x06], 0, .little); // bone_idx = 0
         wu(u32, attach_data[0x20..0x24], 1000, .little); // gate kf_count
@@ -1253,7 +1288,7 @@ pub fn main() void {
         @memcpy(anim_lookup[0x44..0x88], &anim_entry2);
         wu(u32, model_hdr_mem[0x20..0x24], @intFromPtr(&anim_lookup), .little);
 
-        // Bone 13: own anim_slot=1 (clamped path)
+        // Bone 13: own anim_slot=1 (clamped path, sec_end=200 < cur_time=500 → "passed" branch)
         {
             const bd13 = 13 * 0x6C;
             wu(u16, bone_defs[bd13 + 0x28 ..][0..2], 1, .little);
@@ -1262,11 +1297,57 @@ pub fn main() void {
             wu(u32, bone_defs[bd13 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
             wu(u32, bone_defs[bd13 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
             const br13 = 13 * 0x118;
-            wu(u32, bone_rt[br13 + 0xA4 ..][0..4], 1, .little); // anim_slot = 1 (clamped entry)
-            wu(u32, bone_rt[br13 + 0xA8 ..][0..4], 0, .little); // sec_start
-            wu(u32, bone_rt[br13 + 0xAC ..][0..4], 2000, .little); // sec_end
-            wu(u32, bone_rt[br13 + 0xB0 ..][0..4], fb, .little); // time_scale
+            wu(u32, bone_rt[br13 + 0xA4 ..][0..4], 1, .little); // anim_slot=1 (clamped)
+            wu(u32, bone_rt[br13 + 0xA8 ..][0..4], 0, .little); // sec_start=0
+            wu(u32, bone_rt[br13 + 0xAC ..][0..4], 200, .little); // sec_end=200 (< cur_time → "passed")
+            wu(u32, bone_rt[br13 + 0xB0 ..][0..4], fb, .little);
             wu(u32, bone_rt[br13 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
+        // Bone 14: interpAnimKF mode=0 (direct quat copy, no lerp)
+        {
+            const bd14 = 14 * 0x6C;
+            wu(u16, bone_defs[bd14 + 0x28 ..][0..2], 0, .little); // mode=0!
+            wu(u16, bone_defs[bd14 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd14 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd14 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd14 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+            const br14 = 14 * 0x118;
+            wu(u32, bone_rt[br14 + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br14 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
+        // Bone 15: interpVec3Track mode=0 (direct vec3 copy)
+        {
+            const bd15 = 15 * 0x6C;
+            wu(u16, bone_defs[bd15 + 0x0C ..][0..2], 0, .little); // trans mode=0!
+            wu(u16, bone_defs[bd15 + 0x0E ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd15 + 0x18 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd15 + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd15 + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+            const br15 = 15 * 0x118;
+            wu(u32, bone_rt[br15 + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br15 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
+        // Bone 16: billboard post 0x08 with had_anim=FALSE (flags & 0x280 == 0, flags & 0x78 != 0)
+        {
+            const bd16 = 16 * 0x6C;
+            wu(u32, bone_defs[bd16 + 0x04 ..][0..4], 0x08, .little); // post-0x08 only, no 0x280
+            wu(u32, bone_defs[bd16 + 0x60 ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little); // pivot
+            const br16 = 16 * 0x118;
+            wu(u32, bone_rt[br16 + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br16 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
+        // Bone 17: billboard pinned (flags & 1 set → skips translation recompute)
+        {
+            const bd17 = 17 * 0x6C;
+            wu(u32, bone_defs[bd17 + 0x04 ..][0..4], 0x289, .little); // 0x280 | 0x08 | 0x01 (pinned)
+            wu(u16, bone_defs[bd17 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd17 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd17 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd17 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd17 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+            const br17 = 17 * 0x118;
+            wu(u32, bone_rt[br17 + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br17 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
         }
 
         // --- Billboard bones: types 4, 6, 0x10, 0x20, 0x40 ---
