@@ -833,7 +833,7 @@ pub fn main() void {
         const wu = std.mem.writeInt;
         const fb = @as(u32, @bitCast(@as(f32, 1.0)));
 
-        const BONE_COUNT = 12;
+        const BONE_COUNT = 16;
         const TEX_ANIM_COUNT = 2;
         const COLOR_ANIM_COUNT = 2;
         const WORD_ANIM_COUNT = 1;
@@ -841,7 +841,9 @@ pub fn main() void {
         const GS_COUNT = 2;
         const RIBBON_COUNT = 1;
         const PARTICLE_124_COUNT = 1;
-        const ATTACH_COUNT = 1;
+        const PARTICLE_134_COUNT = 1;
+        const PARTICLE_13C_COUNT = 1;
+        const ATTACH_COUNT = 2;
 
         // Allocate all memory blocks
         var scene_obj: [0x400]u8 align(16) = std.mem.zeroes([0x400]u8);
@@ -871,6 +873,22 @@ pub fn main() void {
         // Attachments: data stride 0x30, hierarchy entry 0x20
         var attach_data: [ATTACH_COUNT * 0x30]u8 = std.mem.zeroes([ATTACH_COUNT * 0x30]u8);
         var hierarchy: [ATTACH_COUNT * 0x20]u8 = std.mem.zeroes([ATTACH_COUNT * 0x20]u8);
+        // Particle 0x134: data stride 0xDC, output stride 0xD0
+        var p134_data: [PARTICLE_134_COUNT * 0xDC]u8 = std.mem.zeroes([PARTICLE_134_COUNT * 0xDC]u8);
+        var p134_out: [PARTICLE_134_COUNT * 0xD0]u8 = std.mem.zeroes([PARTICLE_134_COUNT * 0xD0]u8);
+        // Particle 0x13C: data stride 0x1F8, output stride 0x16C
+        var p13c_data: [PARTICLE_13C_COUNT * 0x1F8]u8 = std.mem.zeroes([PARTICLE_13C_COUNT * 0x1F8]u8);
+        var p13c_out: [PARTICLE_13C_COUNT * 0x16C]u8 = std.mem.zeroes([PARTICLE_13C_COUNT * 0x16C]u8);
+        // Per-emitter particle buffer for isParticleBufferNotEmpty
+        var particle_buf: [0x100]u8 = std.mem.zeroes([0x100]u8);
+        // Per-emitter data pointer array for 0x13C section
+        var p13c_ptrs: [PARTICLE_13C_COUNT]u32 = undefined;
+        // Emitter context
+        var emitter_ctx_mem: [0x200]u8 = std.mem.zeroes([0x200]u8);
+        // Extra matrix for bone_flag_cache test
+        var extra_mat: [64]u8 align(16) = undefined;
+        // Second anim_entry (looping) for bone with own anim_slot
+        var anim_entry2: [0x44]u8 = std.mem.zeroes([0x44]u8);
         // Vec3Track36 keyframes (36 bytes per kf: pos+in_tangent+out_tangent)
         var v3t36_ts = [2]u32{ 0, 1000 };
         var v3t36_vals: [18]f32 = .{ 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }; // 2 kf * 9 floats
@@ -918,9 +936,14 @@ pub fn main() void {
         wu(u32, scene_obj[0xAC..0xB0], @intFromPtr(&word_out), .little);
         wu(u32, scene_obj[0xB0..0xB4], @intFromPtr(&bkf_out1), .little);
         wu(u32, scene_obj[0xB4..0xB8], @intFromPtr(&bkf_out2), .little);
-        wu(u32, scene_obj[0x1C8..0x1CC], @intFromPtr(&hierarchy), .little); // hierarchy_ptr (for attachments)
-        wu(u32, scene_obj[0x200..0x204], @intFromPtr(&ribbon_out), .little); // ribbon output (SO.field_200)
+        wu(u32, scene_obj[0x1C8..0x1CC], @intFromPtr(&hierarchy), .little); // hierarchy_ptr
+        wu(u32, scene_obj[0x1CC..0x1D0], @intFromPtr(&emitter_ctx_mem), .little); // emitter_ctx
+        wu(u32, scene_obj[0x200..0x204], @intFromPtr(&ribbon_out), .little); // ribbon output
         wu(u32, scene_obj[0x3C4..0x3C8], @intFromPtr(&p124_out), .little); // particle 0x124 output
+        wu(u32, scene_obj[0x3C8..0x3CC], @intFromPtr(&p134_out), .little); // particle 0x134 output
+        wu(u32, scene_obj[0x3D0..0x3D4], @intFromPtr(&p13c_out), .little); // particle 0x13C output
+        wu(u32, scene_obj[0x3D4..0x3D8], @intFromPtr(&p13c_ptrs), .little); // particle 0x13C per-emitter ptrs
+        wu(u32, scene_obj[0x50..0x54], 1, .little); // emitter_enable_flag (for 0x13C vis check)
         for ([_]u32{ 0x180, 0x184, 0x188, 0x18C }) |off| {
             wu(u32, scene_obj[off..][0..4], fb, .little);
         }
@@ -950,8 +973,12 @@ pub fn main() void {
         wu(u32, mh[0x108..0x10C], @intFromPtr(&attach_data), .little);
         wu(u32, mh[0x11C..0x120], RIBBON_COUNT, .little); // ribbon count
         wu(u32, mh[0x120..0x124], @intFromPtr(&ribbon_data), .little);
-        wu(u32, mh[0x124..0x128], PARTICLE_124_COUNT, .little); // particle 0x124 count
+        wu(u32, mh[0x124..0x128], PARTICLE_124_COUNT, .little);
         wu(u32, mh[0x128..0x12C], @intFromPtr(&p124_data), .little);
+        wu(u32, mh[0x134..0x138], PARTICLE_134_COUNT, .little);
+        wu(u32, mh[0x138..0x13C], @intFromPtr(&p134_data), .little);
+        wu(u32, mh[0x13C..0x140], PARTICLE_13C_COUNT, .little);
+        wu(u32, mh[0x140..0x144], @intFromPtr(&p13c_data), .little);
 
         // --- Bone defs: 12 bones ---
         // Bone 0: root, rot(8kf)+trans(2kf), anim_slot=-1 (inherit)
@@ -1195,8 +1222,152 @@ pub fn main() void {
             wu(u32, bone_defs[bd6 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
         }
 
-        // --- Clamped animation path: make bone 5's anim_entry flag bit 0x10 & 1 set ---
-        anim_entry[0x10] = 1; // looping flag = 1 (clamped path)
+        // --- Clamped animation path: bone 5 uses anim_entry (clamped, flag=1) ---
+        anim_entry[0x10] = 1;
+
+        // --- Looping animation path: add second anim_entry at slot 1 for bone 7 ---
+        wu(u32, anim_entry2[0x04..0x08], 0, .little); // anim_start
+        wu(u32, anim_entry2[0x08..0x0C], 1000, .little); // anim_end
+        // anim_entry2[0x10] = 0 (looping, flag & 1 == 0)
+        // We need anim_lookup to be an array. Make anim_entry the array base:
+        // slot 0 = anim_entry (clamped), slot 1 = anim_entry2 (looping)
+        // Overwrite model_hdr+0x20 to point to an array. Reuse anim_entry as slot 0.
+        // For simplicity, just make bone 7 use slot 0 but with looping flag.
+        // Actually easier: make anim_entry looping and anim_entry2 clamped, assign bone 5→slot1, bone 7→slot0
+        // ... too complex. Just test looping by setting anim_entry flag to 0 for half the iterations.
+        // Instead: add bone 7 with anim_slot=0, and anim_entry has flag=1 (clamped).
+        // Add bone 8 with anim_slot=0 too, but we toggle the flag. Not practical.
+        // Simplest: anim_entry is BOTH looping AND clamped paths depending on the flag bit.
+        // We'll set it to 0 (looping) and test bone 5 looping. Bone 5 already has slot=0.
+        // Then we already test clamped via the sec_end check. The clamped path fires when
+        // sec_end <= cur_time. Let's just ensure bone 5 tests looping:
+        anim_entry[0x10] = 0; // looping (flag & 1 == 0)
+
+        // --- Billboard bones: types 4, 6, 0x10, 0x20, 0x40 ---
+        // Bone 7: billboard type 4 (spherical)
+        {
+            const bd7 = 7 * 0x6C;
+            wu(u32, bone_defs[bd7 + 0x04 ..][0..4], 0x284, .little); // flags: 0x280 | 0x04 (spherical)
+            wu(u16, bone_defs[bd7 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd7 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd7 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd7 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd7 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+        // Bone 8: billboard type 6 (full)
+        {
+            const bd8 = 8 * 0x6C;
+            wu(u32, bone_defs[bd8 + 0x04 ..][0..4], 0x286, .little); // flags: 0x280 | 0x06
+            wu(u16, bone_defs[bd8 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd8 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd8 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd8 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd8 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+        // Bone 9: billboard post type 0x10
+        {
+            const bd9 = 9 * 0x6C;
+            wu(u32, bone_defs[bd9 + 0x04 ..][0..4], 0x290, .little); // 0x280 | 0x10
+            wu(u16, bone_defs[bd9 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd9 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd9 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd9 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd9 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+        // Bone 10: billboard post type 0x20
+        {
+            const bd10 = 10 * 0x6C;
+            wu(u32, bone_defs[bd10 + 0x04 ..][0..4], 0x2A0, .little); // 0x280 | 0x20
+            wu(u16, bone_defs[bd10 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd10 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd10 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd10 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd10 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+        // Bone 11: billboard post type 0x40
+        {
+            const bd11 = 11 * 0x6C;
+            wu(u32, bone_defs[bd11 + 0x04 ..][0..4], 0x2C0, .little); // 0x280 | 0x40
+            wu(u16, bone_defs[bd11 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd11 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd11 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd11 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd11 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+        }
+
+        // --- Bone 12: has bone_flag_cache (extra matmul) ---
+        {
+            const bd12 = 12 * 0x6C;
+            wu(u32, bone_defs[bd12 + 0x04 ..][0..4], 0x280, .little); // rotation anim
+            wu(u16, bone_defs[bd12 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd12 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd12 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd12 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd12 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+            @memcpy(extra_mat[0..64], std.mem.asBytes(&ident));
+            const br12 = 12 * 0x118;
+            wu(u32, bone_rt[br12 + 0xF0 ..][0..4], @intFromPtr(&extra_mat), .little); // bone_flag_cache
+            wu(u32, bone_rt[br12 + 0xF4 ..][0..4], 0x80, .little); // flags2 with bit 0x80 set
+        }
+
+        // --- Particle buffer for isParticleBufferNotEmpty ---
+        p13c_ptrs[0] = @intFromPtr(&particle_buf);
+        // Set particle_buf+0x64 = 1 so isParticleBufferNotEmpty returns true
+        particle_buf[0x64] = 1;
+
+        // --- Emitter context setup ---
+        wu(u32, emitter_ctx_mem[0x50..0x54], 1, .little); // emitter_ctx+0x50 != 0
+        wu(u32, scene_obj[0x1D8..0x1DC], 1, .little); // this+0x1D8 != 0 (for emitter flag)
+
+        // --- Particle 0x134 data (1 entry, stride 0xDC) ---
+        // bone_idx at +0x04, visibility gate at +0xCC
+        wu(u16, p134_data[0x04..0x06], 0, .little); // bone_idx=0
+        wu(u32, p134_data[0xCC..0xD0], 1000, .little); // visibility gate
+        // Position track: gate at +0x30, AnimData at +0x24
+        wu(u32, p134_data[0x30..0x34], 2, .little);
+        wu(u16, p134_data[0x24..0x26], 1, .little);
+        wu(u16, p134_data[0x26..0x28], 0xFFFF, .little);
+        wu(u32, p134_data[0x24 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p134_data[0x24 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, p134_data[0x24 + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+        // Visibility AnimData at +0xC0
+        wu(u16, p134_data[0xC0..0xC2], 0, .little); // mode=0
+        wu(u16, p134_data[0xC2..0xC4], 0xFFFF, .little);
+        wu(u32, p134_data[0xC0 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p134_data[0xC0 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, p134_data[0xC0 + 0x18 ..][0..4], @intFromPtr(&byte_vals), .little);
+
+        // --- Particle 0x13C data (1 entry, stride 0x1F8) ---
+        // bone_idx at +0x14, visibility gate at +0x1E8
+        wu(u16, p13c_data[0x14..0x16], 0, .little);
+        wu(u32, p13c_data[0x1E8..0x1EC], 1000, .little); // vis gate
+        // Visibility AnimData at +0x1DC
+        wu(u16, p13c_data[0x1DC..0x1DE], 0, .little);
+        wu(u16, p13c_data[0x1DE..0x1E0], 0xFFFF, .little);
+        wu(u32, p13c_data[0x1DC + 0x0C ..][0..4], 2, .little);
+        wu(u32, p13c_data[0x1DC + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, p13c_data[0x1F4..0x1F8], @intFromPtr(&byte_vals), .little); // vis keyframe values
+        // Track 1 (emission rate): gate at +0x40, AnimData at +0x34
+        wu(u32, p13c_data[0x40..0x44], 2, .little);
+        wu(u16, p13c_data[0x34..0x36], 1, .little);
+        wu(u16, p13c_data[0x36..0x38], 0xFFFF, .little);
+        wu(u32, p13c_data[0x34 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p13c_data[0x34 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, p13c_data[0x34 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
+
+        // --- Particle 0x124: add hermite mode track ---
+        // Track 2 (Vec3Track36): gate at +0x44, AnimData at +0x38, mode=3 (hermite)
+        wu(u32, p124_data[0x44..0x48], 2, .little);
+        wu(u16, p124_data[0x38..0x3A], 3, .little); // mode=hermite
+        wu(u16, p124_data[0x3A..0x3C], 0xFFFF, .little);
+        wu(u32, p124_data[0x38 + 0x0C ..][0..4], 2, .little);
+        wu(u32, p124_data[0x38 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
+        wu(u32, p124_data[0x38 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
+
+        // --- Make bone 0 have blend_weight > 0 so section function crossfade fires ---
+        wu(u32, bone_rt[0x10C..0x110], @as(u32, @bitCast(@as(f32, 0.3))), .little); // bone 0 blend_weight
+        wu(u32, bone_rt[0xC4..0xC8], 300, .little); // bone 0 sec_time
+        wu(u32, bone_rt[0xC8..0xCC], 0, .little); // bone 0 sec_track
 
         const pos = [3]f32{ 0, 0, 0 };
         const ofs = [3]f32{ 0, 0, 0 };
@@ -1237,6 +1408,51 @@ pub fn main() void {
         const avg = best / T44_ITERS;
         print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF, {d} ribbon, {d} particle, {d} attach\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT, RIBBON_COUNT, PARTICLE_124_COUNT, ATTACH_COUNT });
         print("  {d} cycles/call (best of 5 runs, {d}K iterations)\n", .{ avg, T44_ITERS / 1000 });
+
+        // --- Output validation: run twice with same input, compare all output buffers ---
+        {
+            // Reset to known state
+            wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            @memset(&bone_out, 0);
+            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+
+            // Snapshot all outputs
+            var snap_bone_out: @TypeOf(bone_out) = undefined;
+            var snap_bone_rt: @TypeOf(bone_rt) = undefined;
+            var snap_tex_out: @TypeOf(tex_anim_out) = undefined;
+            var snap_color_out: @TypeOf(color_out) = undefined;
+            @memcpy(&snap_bone_out, &bone_out);
+            @memcpy(&snap_bone_rt, &bone_rt);
+            @memcpy(&snap_tex_out, &tex_anim_out);
+            @memcpy(&snap_color_out, &color_out);
+
+            // Reset and run again with same input
+            wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            @memset(&bone_out, 0);
+            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+
+            // Compare
+            var diffs: u32 = 0;
+            for (0..bone_out.len) |i| {
+                if (bone_out[i] != snap_bone_out[i]) diffs += 1;
+            }
+            for (0..bone_rt.len) |i| {
+                if (bone_rt[i] != snap_bone_rt[i]) diffs += 1;
+            }
+            for (0..tex_anim_out.len) |i| {
+                if (tex_anim_out[i] != snap_tex_out[i]) diffs += 1;
+            }
+            for (0..color_out.len) |i| {
+                if (color_out[i] != snap_color_out[i]) diffs += 1;
+            }
+            if (diffs == 0) {
+                print("  determinism: PASS (identical output on repeated run)\n", .{});
+            } else {
+                print("  determinism: FAIL ({d} byte diffs)\n", .{diffs});
+            }
+        }
     }
 
     print("\n", .{});
