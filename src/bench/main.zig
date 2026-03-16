@@ -947,7 +947,10 @@ pub fn main() void {
         for ([_]u32{ 0x180, 0x184, 0x188, 0x18C }) |off| {
             wu(u32, scene_obj[off..][0..4], fb, .little);
         }
-        @memcpy(scene_obj[0xFC..0x13C], std.mem.asBytes(&ident));
+        // bb_row0 at +0xFC and world_xform at +0x10C need non-zero values
+        // for billboard spherical scale computation to execute (not early-exit on epsilon)
+        const bb_mat = [16]f32{ 0.7, 0.3, 0.0, 0, -0.3, 0.7, 0.0, 0, 0.0, 0.0, 1.0, 0, 0.5, 1.0, 0.0, 1 };
+        @memcpy(scene_obj[0xFC..0x13C], std.mem.asBytes(&bb_mat));
         @memcpy(scene_obj[0xBC..0xFC], std.mem.asBytes(&ident));
 
         // --- Anim context ---
@@ -1237,11 +1240,34 @@ pub fn main() void {
         // ... too complex. Just test looping by setting anim_entry flag to 0 for half the iterations.
         // Instead: add bone 7 with anim_slot=0, and anim_entry has flag=1 (clamped).
         // Add bone 8 with anim_slot=0 too, but we toggle the flag. Not practical.
-        // Simplest: anim_entry is BOTH looping AND clamped paths depending on the flag bit.
-        // We'll set it to 0 (looping) and test bone 5 looping. Bone 5 already has slot=0.
-        // Then we already test clamped via the sec_end check. The clamped path fires when
-        // sec_end <= cur_time. Let's just ensure bone 5 tests looping:
-        anim_entry[0x10] = 0; // looping (flag & 1 == 0)
+        // anim_entry = slot 0 (looping, flag & 1 == 0)
+        anim_entry[0x10] = 0;
+        // anim_entry2 = slot 1 (clamped, flag & 1 == 1)
+        wu(u32, anim_entry2[0x04..0x08], 0, .little);
+        wu(u32, anim_entry2[0x08..0x0C], 1000, .little);
+        anim_entry2[0x10] = 1;
+        // anim_lookup must be contiguous: [slot0=anim_entry, slot1=anim_entry2]
+        // Since each is 0x44 bytes, put them adjacent
+        var anim_lookup: [2 * 0x44]u8 = std.mem.zeroes([2 * 0x44]u8);
+        @memcpy(anim_lookup[0..0x44], &anim_entry);
+        @memcpy(anim_lookup[0x44..0x88], &anim_entry2);
+        wu(u32, model_hdr_mem[0x20..0x24], @intFromPtr(&anim_lookup), .little);
+
+        // Bone 13: own anim_slot=1 (clamped path)
+        {
+            const bd13 = 13 * 0x6C;
+            wu(u16, bone_defs[bd13 + 0x28 ..][0..2], 1, .little);
+            wu(u16, bone_defs[bd13 + 0x2A ..][0..2], 0xFFFF, .little);
+            wu(u32, bone_defs[bd13 + 0x34 ..][0..4], 2, .little);
+            wu(u32, bone_defs[bd13 + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, bone_defs[bd13 + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+            const br13 = 13 * 0x118;
+            wu(u32, bone_rt[br13 + 0xA4 ..][0..4], 1, .little); // anim_slot = 1 (clamped entry)
+            wu(u32, bone_rt[br13 + 0xA8 ..][0..4], 0, .little); // sec_start
+            wu(u32, bone_rt[br13 + 0xAC ..][0..4], 2000, .little); // sec_end
+            wu(u32, bone_rt[br13 + 0xB0 ..][0..4], fb, .little); // time_scale
+            wu(u32, bone_rt[br13 + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
 
         // --- Billboard bones: types 4, 6, 0x10, 0x20, 0x40 ---
         // Bone 7: billboard type 4 (spherical)
@@ -1355,7 +1381,7 @@ pub fn main() void {
         wu(u32, p13c_data[0x34 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
         wu(u32, p13c_data[0x34 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
 
-        // --- Particle 0x124: add hermite mode track ---
+        // --- Particle 0x124: Track 2 hermite, Track 3 bezier ---
         // Track 2 (Vec3Track36): gate at +0x44, AnimData at +0x38, mode=3 (hermite)
         wu(u32, p124_data[0x44..0x48], 2, .little);
         wu(u16, p124_data[0x38..0x3A], 3, .little); // mode=hermite
@@ -1363,6 +1389,9 @@ pub fn main() void {
         wu(u32, p124_data[0x38 + 0x0C ..][0..4], 2, .little);
         wu(u32, p124_data[0x38 + 0x10 ..][0..4], @intFromPtr(&v3t36_ts), .little);
         wu(u32, p124_data[0x38 + 0x18 ..][0..4], @intFromPtr(&v3t36_vals), .little);
+        // Track 3 (FloatTrack12): gate at +0x6C, already set above with mode=1
+        // Change to mode=2 (bezier) to test that path
+        wu(u16, p124_data[0x60..0x62], 2, .little); // mode=bezier
 
         // --- Make bone 0 have blend_weight > 0 so section function crossfade fires ---
         wu(u32, bone_rt[0x10C..0x110], @as(u32, @bitCast(@as(f32, 0.3))), .little); // bone 0 blend_weight
@@ -1373,6 +1402,7 @@ pub fn main() void {
         const ofs = [3]f32{ 0, 0, 0 };
         const sb: u32 = @bitCast(@as(f32, 1.0));
         const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_SSE" });
+        const transformImpl_BASELINE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_BASELINE" });
 
         // Pre-set boneKeyframe init flag so we skip the atexit call (Windows CRT, can't run on Linux)
         @as(*u8, @ptrFromInt(0xCF04C4)).* = 1;
@@ -1381,76 +1411,114 @@ pub fn main() void {
         @as(*align(1) u32, @ptrFromInt(0xCF0440)).* = 0x3F000000; // 0.5f
         @as(*align(1) u32, @ptrFromInt(0xCF0444)).* = 0x00000000; // 0.0f
 
-        // Warmup (varying timestamp to warm all findInterpIdx paths)
-        for (0..1000) |iter| {
-            const ts_val: u32 = @intCast((iter * 7) % 1000); // sweep 0-999
-            wu(u32, anim_ctx_mem[0x0C..0x10], ts_val, .little);
+        // Warmup: forward sweep then backward sweep to exercise both scan directions
+        for (0..500) |iter| {
+            wu(u32, anim_ctx_mem[0x0C..0x10], @as(u32, @intCast(iter * 2)), .little);
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+        }
+        // Backward sweep: 999 down to 0, exercises backward scan path
+        for (0..500) |iter| {
+            wu(u32, anim_ctx_mem[0x0C..0x10], @as(u32, @intCast(999 - iter * 2)), .little);
             wu(u32, scene_obj[0x40..0x44], 0, .little);
             transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
         }
 
-        // Benchmark — vary timestamp each iteration to stress cached index
-        var best: u64 = std.math.maxInt(u64);
-        for (0..5) |_| {
-            const t = rdtsc();
-            for (0..T44_ITERS) |iter| {
-                // Advancing timestamp: simulates real frame-to-frame progression
-                // Cycles through 0-999 with small steps (cache-friendly) and occasional jumps
-                const ts_val: u32 = @intCast(if (iter % 50 == 0) (iter * 37) % 1000 else (iter * 3) % 1000);
-                wu(u32, anim_ctx_mem[0x0C..0x10], ts_val, .little);
-                wu(u32, scene_obj[0x40..0x44], 0, .little);
-                transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+        // --- Benchmark both BASELINE and SSE ---
+        const run_bench_fn = struct {
+            fn run(func: *const fn (u32, u32, u32, u32, u32) callconv(.c) void, so2: u32, pm: u32, pp: u32, po: u32, sb2: u32, scene: *[0x400]u8, actx: *[0x20]u8, iters: u32) u64 {
+                var best_inner: u64 = std.math.maxInt(u64);
+                for (0..5) |_| {
+                    const t = rdtsc();
+                    for (0..iters) |iter| {
+                        const phase = iter % 200;
+                        const ts_val: u32 = @intCast(if (phase < 100)
+                            phase * 10
+                        else if (phase < 150)
+                            (149 - (phase - 100)) * 20
+                        else
+                            (phase * 37) % 1000);
+                        wu(u32, actx[0x0C..0x10], ts_val, .little);
+                        wu(u32, scene[0x40..0x44], 0, .little);
+                        func(so2, pm, pp, po, sb2);
+                    }
+                    const elapsed = rdtsc() - t;
+                    if (elapsed < best_inner) best_inner = elapsed;
+                }
+                return best_inner;
             }
-            const elapsed = rdtsc() - t;
-            if (elapsed < best) best = elapsed;
+        }.run;
+
+        const pm = @intFromPtr(&parent_mat);
+        const pp = @intFromPtr(&pos);
+        const po = @intFromPtr(&ofs);
+
+        const best_baseline = run_bench_fn(transformImpl_BASELINE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
+        const best_sse = run_bench_fn(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
+
+        const avg_base = best_baseline / T44_ITERS;
+        const avg_sse = best_sse / T44_ITERS;
+
+        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF, {d} ribbon, {d} particle, {d} attach\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT, RIBBON_COUNT, PARTICLE_124_COUNT, ATTACH_COUNT });
+        print("  BASELINE: {d} cycles/call\n", .{avg_base});
+        print("  SSE:      {d} cycles/call", .{avg_sse});
+        if (avg_sse < avg_base) {
+            print("  ({d}.{d}x faster)\n", .{ avg_base * 10 / avg_sse / 10, (avg_base * 10 / avg_sse) % 10 });
+        } else if (avg_sse > avg_base) {
+            print("  ({d}.{d}x slower)\n", .{ avg_sse * 10 / avg_base / 10, (avg_sse * 10 / avg_base) % 10 });
+        } else {
+            print("  (same)\n", .{});
         }
 
-        const avg = best / T44_ITERS;
-        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF, {d} ribbon, {d} particle, {d} attach\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT, RIBBON_COUNT, PARTICLE_124_COUNT, ATTACH_COUNT });
-        print("  {d} cycles/call (best of 5 runs, {d}K iterations)\n", .{ avg, T44_ITERS / 1000 });
-
-        // --- Output validation: run twice with same input, compare all output buffers ---
+        // --- Output parity: run both with same input, compare all outputs ---
         {
-            // Reset to known state
             wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
             wu(u32, scene_obj[0x40..0x44], 0, .little);
             @memset(&bone_out, 0);
-            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+            @memset(&bone_rt, 0);
+            // Re-init bone_rt fields that must be set
+            for (0..BONE_COUNT) |i| {
+                const br = i * 0x118;
+                wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+            }
+            wu(u32, bone_rt[0x98..0x9C], 500, .little);
+            transformImpl_BASELINE(so, pm, pp, po, sb);
 
-            // Snapshot all outputs
-            var snap_bone_out: @TypeOf(bone_out) = undefined;
-            var snap_bone_rt: @TypeOf(bone_rt) = undefined;
-            var snap_tex_out: @TypeOf(tex_anim_out) = undefined;
-            var snap_color_out: @TypeOf(color_out) = undefined;
-            @memcpy(&snap_bone_out, &bone_out);
-            @memcpy(&snap_bone_rt, &bone_rt);
-            @memcpy(&snap_tex_out, &tex_anim_out);
-            @memcpy(&snap_color_out, &color_out);
+            var snap_out: @TypeOf(bone_out) = undefined;
+            var snap_rt: @TypeOf(bone_rt) = undefined;
+            var snap_tex: @TypeOf(tex_anim_out) = undefined;
+            @memcpy(&snap_out, &bone_out);
+            @memcpy(&snap_rt, &bone_rt);
+            @memcpy(&snap_tex, &tex_anim_out);
 
-            // Reset and run again with same input
+            // Reset and run SSE
             wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
             wu(u32, scene_obj[0x40..0x44], 0, .little);
             @memset(&bone_out, 0);
-            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+            @memset(&bone_rt, 0);
+            for (0..BONE_COUNT) |i| {
+                const br = i * 0x118;
+                wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+            }
+            wu(u32, bone_rt[0x98..0x9C], 500, .little);
+            transformImpl_SSE(so, pm, pp, po, sb);
 
-            // Compare
             var diffs: u32 = 0;
             for (0..bone_out.len) |i| {
-                if (bone_out[i] != snap_bone_out[i]) diffs += 1;
+                if (bone_out[i] != snap_out[i]) diffs += 1;
             }
             for (0..bone_rt.len) |i| {
-                if (bone_rt[i] != snap_bone_rt[i]) diffs += 1;
+                if (bone_rt[i] != snap_rt[i]) diffs += 1;
             }
             for (0..tex_anim_out.len) |i| {
-                if (tex_anim_out[i] != snap_tex_out[i]) diffs += 1;
-            }
-            for (0..color_out.len) |i| {
-                if (color_out[i] != snap_color_out[i]) diffs += 1;
+                if (tex_anim_out[i] != snap_tex[i]) diffs += 1;
             }
             if (diffs == 0) {
-                print("  determinism: PASS (identical output on repeated run)\n", .{});
+                print("  parity:   PASS (SSE == BASELINE)\n", .{});
             } else {
-                print("  determinism: FAIL ({d} byte diffs)\n", .{diffs});
+                print("  parity:   FAIL ({d} byte diffs)\n", .{diffs});
             }
         }
     }

@@ -178,9 +178,22 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
             }),
         });
+        const bench_bone_baseline = b.addObject(.{
+            .name = "bench_bone_baseline",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/transform44/bone_sse_baseline.zig"),
+                .target = b.resolveTargetQuery(.{
+                    .cpu_arch = .x86,
+                    .os_tag = .linux,
+                    .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
+                }),
+                .optimize = .ReleaseFast,
+            }),
+        });
         bench.root_module.addObject(bench_math_sse);
         bench.root_module.addObject(bench_silicon_sse);
         bench.root_module.addObject(bench_bone_sse);
+        bench.root_module.addObject(bench_bone_baseline);
         bench.root_module.linkSystemLibrary("m", .{});
         const install_bench = b.addInstallArtifact(bench, .{});
         const bench_step = b.step("bench", "Build math_sse benchmark harness (x86 Linux)");
