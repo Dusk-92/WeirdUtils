@@ -344,47 +344,12 @@ inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void
 }
 
 /// Quaternion → rotation matrix, then multiply: mat = quat_rot * mat.
-/// Standard quat→mat conversion + SSE 4x4 matrix multiply.
-/// Used in bone keyframe processing where matrix already has content.
+/// Builds rotation matrix on stack, then delegates to matMul4x4 (V4 + FMA).
 inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
-    const xx2 = qx * (qx + qx);
-    const xy2 = qx * (qy + qy);
-    const xz2 = qx * (qz + qz);
-    const yy2 = qy * (qy + qy);
-    const yz2 = qy * (qz + qz);
-    const zz2 = qz * (qz + qz);
-    const wx2 = qw * (qx + qx);
-    const wy2 = qw * (qy + qy);
-    const wz2 = qw * (qz + qz);
-
-    // Rotation matrix from quaternion (row-major)
-    const rot: [16]f32 = .{
-        1.0 - (yy2 + zz2), xy2 + wz2,         xz2 - wy2,         0,
-        xy2 - wz2,         1.0 - (xx2 + zz2), yz2 + wx2,         0,
-        xz2 + wy2,         yz2 - wx2,         1.0 - (xx2 + yy2), 0,
-        0,                  0,                  0,                  1,
-    };
-
-    // SSE matrix multiply: result = rot * mat
     var tmp: [16]f32 = undefined;
-    const r0: V4 = .{ rf32(mat + 0x00), rf32(mat + 0x04), rf32(mat + 0x08), rf32(mat + 0x0C) };
-    const r1: V4 = .{ rf32(mat + 0x10), rf32(mat + 0x14), rf32(mat + 0x18), rf32(mat + 0x1C) };
-    const r2: V4 = .{ rf32(mat + 0x20), rf32(mat + 0x24), rf32(mat + 0x28), rf32(mat + 0x2C) };
-    const r3: V4 = .{ rf32(mat + 0x30), rf32(mat + 0x34), rf32(mat + 0x38), rf32(mat + 0x3C) };
-
-    inline for (0..4) |i| {
-        const b = i * 4;
-        const out = splat(rot[b]) * r0 + splat(rot[b + 1]) * r1 + splat(rot[b + 2]) * r2 + splat(rot[b + 3]) * r3;
-        tmp[b] = out[0];
-        tmp[b + 1] = out[1];
-        tmp[b + 2] = out[2];
-        tmp[b + 3] = out[3];
-    }
-
-    // Copy back
-    inline for (0..16) |i| {
-        wf32(mat + @as(u32, @intCast(i)) * 4, tmp[i]);
-    }
+    const tmp_addr = @intFromPtr(&tmp);
+    buildRotationMatrix(tmp_addr, qx, qy, qz, qw);
+    matMul4x4(mat, tmp_addr, mat);
 }
 
 /// Copy 16 floats (4x4 matrix)
