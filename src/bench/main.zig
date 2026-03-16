@@ -98,10 +98,31 @@ fn mapFixedSection(addr: usize, size: usize, data: []const u8, exec: bool) bool 
     return true;
 }
 
+fn mapZeroed(addr: usize, size: usize) bool {
+    _ = posix.mmap(
+        @ptrFromInt(addr), size,
+        .{ .READ = true, .WRITE = true },
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .FIXED = true },
+        -1, 0,
+    ) catch return false;
+    return true;
+}
+
 fn mapWowSections() bool {
     if (sections_mapped) return true;
     if (!mapFixedSection(TEXT_START, TEXT_SIZE, wow_text_data, true)) return false;
     if (!mapFixedSection(RDATA_START, RDATA_SIZE, wow_rdata_data, false)) return false;
+    // Map additional pages for runtime constants that live outside .rdata:
+    // 0x80C000-0x813000 covers 0x80C5C8 (billboard epsilon) and 0x811610 (SHORT_TO_FLOAT)
+    // 0xCF0000-0xCF1000 covers 0xCF04C4 (boneKeyframe init flag) and 0xCF043C (pivot constants)
+    _ = mapZeroed(0x80C000, 0x8000); // covers 0x80C000-0x814000
+    _ = mapZeroed(0xCF0000, 0x1000); // covers 0xCF0000-0xCF1000
+    // Write runtime constant values
+    @as(*align(1) u32, @ptrFromInt(0x811610)).* = 0x38000100; // SHORT_TO_FLOAT ~1/32767
+    @as(*align(1) u32, @ptrFromInt(0x8029D4)).* = 0x34800000; // billboard epsilon
+    @as(*align(1) u32, @ptrFromInt(0x80C5C8)).* = 0x35800000; // billboard sq epsilon
+    @as(*align(1) u32, @ptrFromInt(0x80297C)).* = 0x40400000; // 3.0
+    @as(*align(1) u32, @ptrFromInt(0x802990)).* = 0x40C00000; // 6.0
     sections_mapped = true;
     return true;
 }
@@ -802,79 +823,197 @@ pub fn main() void {
     }
 
     // =========================================================================
-    // transform44: SSE implementation benchmark
+    // transform44: SSE implementation benchmark — comprehensive fixture
+    // Exercises: bone loop (rot/trans/scale/static/billboard), texAnim,
+    // colorAnim, wordAnim, boneKeyframe, crossfade, global sequences
     // =========================================================================
     {
-        print("\n{s}\n", .{"-- transform44 (SSE only, 8 bones, 4 animated) --"});
-        const T44_ITERS: u64 = 200_000;
+        print("\n{s}\n", .{"-- transform44 (comprehensive fixture) --"});
+        const T44_ITERS: u64 = 100_000;
+        const wu = std.mem.writeInt;
+        const fb = @as(u32, @bitCast(@as(f32, 1.0)));
 
-        // Synthetic SceneObject with 8 bones: 4 rotation-animated, 2 translation-animated, 4 static
+        const BONE_COUNT = 12;
+        const TEX_ANIM_COUNT = 2;
+        const COLOR_ANIM_COUNT = 2;
+        const WORD_ANIM_COUNT = 1;
+        const BKF_COUNT = 1;
+        const GS_COUNT = 2;
+
+        // Allocate all memory blocks
         var scene_obj: [0x400]u8 align(16) = std.mem.zeroes([0x400]u8);
         var anim_ctx_mem: [0x20]u8 = std.mem.zeroes([0x20]u8);
         var model_ctr_mem: [0x140]u8 = std.mem.zeroes([0x140]u8);
-        const BONE_COUNT = 8;
         var model_hdr_mem: [0x200]u8 = std.mem.zeroes([0x200]u8);
         var bone_defs: [BONE_COUNT * 0x6C]u8 = std.mem.zeroes([BONE_COUNT * 0x6C]u8);
         var bone_rt: [BONE_COUNT * 0x118]u8 = std.mem.zeroes([BONE_COUNT * 0x118]u8);
         var bone_out: [BONE_COUNT * 0x40]u8 align(16) = std.mem.zeroes([BONE_COUNT * 0x40]u8);
+        var gs_durations: [GS_COUNT]u32 = .{ 3000, 5000 };
+        var gs_values: [GS_COUNT]u32 = .{ 0, 0 };
+        var tex_anim_data: [TEX_ANIM_COUNT * 0x38]u8 = std.mem.zeroes([TEX_ANIM_COUNT * 0x38]u8);
+        var tex_anim_out: [TEX_ANIM_COUNT * 0x50]u8 = std.mem.zeroes([TEX_ANIM_COUNT * 0x50]u8);
+        var color_data: [COLOR_ANIM_COUNT * 0x1C]u8 = std.mem.zeroes([COLOR_ANIM_COUNT * 0x1C]u8);
+        var color_out: [COLOR_ANIM_COUNT * 0x20]u8 = std.mem.zeroes([COLOR_ANIM_COUNT * 0x20]u8);
+        var word_data: [WORD_ANIM_COUNT * 0x1C]u8 = std.mem.zeroes([WORD_ANIM_COUNT * 0x1C]u8);
+        var word_out: [WORD_ANIM_COUNT * 0x20]u8 = std.mem.zeroes([WORD_ANIM_COUNT * 0x20]u8);
+        var bkf_data: [BKF_COUNT * 0x54]u8 = std.mem.zeroes([BKF_COUNT * 0x54]u8);
+        var bkf_out1: [BKF_COUNT * 0x98]u8 = std.mem.zeroes([BKF_COUNT * 0x98]u8);
+        var bkf_out2: [BKF_COUNT * 0x40]u8 align(16) = std.mem.zeroes([BKF_COUNT * 0x40]u8);
         var parent_mat: [64]u8 align(16) = undefined;
+
         const ident = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
         @memcpy(parent_mat[0..64], std.mem.asBytes(&ident));
 
-        var rot_ts = [2]u32{ 0, 1000 };
+        // Keyframe data: shared across tracks
+        var ts2 = [2]u32{ 0, 1000 };
         var rot_vals = [8]f32{ 0, 0, 0, 1, 0.383, 0, 0, 0.924 };
-        var trans_ts = [2]u32{ 0, 1000 };
-        var trans_vals = [6]f32{ 0, 0, 0, 1, 2, 3 };
+        var trans_vals = [6]f32{ 0, 0, 0, 1.5, 2.0, -0.5 };
+        var scale_vals = [6]f32{ 1, 1, 1, 1.2, 0.8, 1.1 };
+        var short_vals = [4]i16{ 16383, 32767, 0, -16383 };
+        var word_vals = [2]u16{ 100, 200 };
 
         const so = @intFromPtr(&scene_obj);
-        const wu = std.mem.writeInt;
 
+        // --- Wire SceneObject ---
         wu(u32, scene_obj[0x10..0x14], 1, .little);
         wu(u32, scene_obj[0x2C..0x30], @intFromPtr(&anim_ctx_mem), .little);
         wu(u32, scene_obj[0x30..0x34], @intFromPtr(&model_ctr_mem), .little);
-        wu(u32, scene_obj[0x64..0x68], so + 0x300, .little);
+        wu(u32, scene_obj[0x64..0x68], @intFromPtr(&gs_values), .little);
+        wu(u32, scene_obj[0x8C..0x90], 999, .little); // anim_frame_ctr (large = all gates pass)
         wu(u32, scene_obj[0x90..0x94], @intFromPtr(&bone_rt), .little);
         wu(u32, scene_obj[0x94..0x98], @intFromPtr(&bone_out), .little);
+        wu(u32, scene_obj[0xA0..0xA4], @intFromPtr(&tex_anim_out), .little);
+        wu(u32, scene_obj[0xA8..0xAC], @intFromPtr(&color_out), .little);
+        wu(u32, scene_obj[0xAC..0xB0], @intFromPtr(&word_out), .little);
+        wu(u32, scene_obj[0xB0..0xB4], @intFromPtr(&bkf_out1), .little);
+        wu(u32, scene_obj[0xB4..0xB8], @intFromPtr(&bkf_out2), .little);
         for ([_]u32{ 0x180, 0x184, 0x188, 0x18C }) |off| {
-            wu(u32, scene_obj[off..][0..4], @as(u32, @bitCast(@as(f32, 1.0))), .little);
+            wu(u32, scene_obj[off..][0..4], fb, .little);
         }
         @memcpy(scene_obj[0xFC..0x13C], std.mem.asBytes(&ident));
         @memcpy(scene_obj[0xBC..0xFC], std.mem.asBytes(&ident));
 
+        // --- Anim context ---
         wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
         wu(u32, anim_ctx_mem[0x10..0x14], 1, .little);
-        wu(u32, model_ctr_mem[0x130..0x134], @intFromPtr(&model_hdr_mem), .little);
-        wu(u32, model_hdr_mem[0x34..0x38], BONE_COUNT, .little);
-        wu(u32, model_hdr_mem[0x38..0x3C], @intFromPtr(&bone_defs), .little);
 
+        // --- Model container + header ---
+        wu(u32, model_ctr_mem[0x130..0x134], @intFromPtr(&model_hdr_mem), .little);
+        const mh = &model_hdr_mem;
+        wu(u32, mh[0x14..0x18], GS_COUNT, .little);
+        wu(u32, mh[0x18..0x1C], @intFromPtr(&gs_durations), .little);
+        wu(u32, mh[0x34..0x38], BONE_COUNT, .little);
+        wu(u32, mh[0x38..0x3C], @intFromPtr(&bone_defs), .little);
+        wu(u32, mh[0x54..0x58], TEX_ANIM_COUNT, .little);
+        wu(u32, mh[0x58..0x5C], @intFromPtr(&tex_anim_data), .little);
+        wu(u32, mh[0x64..0x68], COLOR_ANIM_COUNT, .little);
+        wu(u32, mh[0x68..0x6C], @intFromPtr(&color_data), .little);
+        wu(u32, mh[0x6C..0x70], WORD_ANIM_COUNT, .little);
+        wu(u32, mh[0x70..0x74], @intFromPtr(&word_data), .little);
+        wu(u32, mh[0x74..0x78], BKF_COUNT, .little);
+        wu(u32, mh[0x78..0x7C], @intFromPtr(&bkf_data), .little);
+
+        // --- Bone defs: 12 bones ---
+        // 0-5: rotation, 0-3: translation, 2-3: scale, 4: billboard type 2
         for (0..BONE_COUNT) |i| {
             const bd = i * 0x6C;
             wu(u16, bone_defs[bd + 0x08 ..][0..2], if (i == 0) 0xFFFF else @as(u16, @intCast(i - 1)), .little);
-            if (i < 4) {
-                wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
-                wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
-                wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little);
-                wu(u32, bone_defs[bd + 0x38 ..][0..4], @intFromPtr(&rot_ts), .little);
-                wu(u32, bone_defs[bd + 0x40 ..][0..4], @intFromPtr(&rot_vals), .little);
+            // Rotation (bones 0-5)
+            if (i < 6) {
+                wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little); // mode=lerp
+                wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little); // no GS
+                wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little); // kf_count
+                wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
             }
-            if (i < 2) {
+            // Translation (bones 0-3)
+            if (i < 4) {
                 wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
                 wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
                 wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
-                wu(u32, bone_defs[bd + 0x1C ..][0..4], @intFromPtr(&trans_ts), .little);
-                wu(u32, bone_defs[bd + 0x24 ..][0..4], @intFromPtr(&trans_vals), .little);
+                wu(u32, bone_defs[bd + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                wu(u32, bone_defs[bd + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
             }
+            // Scale (bones 2-3)
+            if (i >= 2 and i < 4) {
+                wu(u16, bone_defs[bd + 0x44 ..][0..2], 1, .little);
+                wu(u16, bone_defs[bd + 0x46 ..][0..2], 0xFFFF, .little);
+                wu(u32, bone_defs[bd + 0x50 ..][0..4], 2, .little);
+                wu(u32, bone_defs[bd + 0x44 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                wu(u32, bone_defs[bd + 0x44 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
+            }
+            // Pivot (all bones get a pivot)
+            wu(u32, bone_defs[bd + 0x60 ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little);
+            wu(u32, bone_defs[bd + 0x64 ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little);
+            wu(u32, bone_defs[bd + 0x68 ..][0..4], @as(u32, @bitCast(@as(f32, 0.0))), .little);
+
+            // Bone runtime
             const br = i * 0x118;
-            wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
-            wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little); // anim_slot = -1
+            wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little); // sec_slot = -1
         }
-        wu(u32, bone_rt[0x98..0x9C], 500, .little);
+        wu(u32, bone_rt[0x98..0x9C], 500, .little); // bone 0 prim_time
+
+        // --- Texture animation data (2 entries, stride 0x38) ---
+        // Entry 0: Vec3 track (kf_count at +0x0C)
+        for (0..TEX_ANIM_COUNT) |i| {
+            const td = i * 0x38;
+            wu(u16, tex_anim_data[td ..][0..2], 1, .little); // mode=lerp
+            wu(u16, tex_anim_data[td + 0x02 ..][0..2], 0xFFFF, .little);
+            wu(u32, tex_anim_data[td + 0x0C ..][0..4], 2, .little); // vec3 kf_count
+            wu(u32, tex_anim_data[td + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, tex_anim_data[td + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+            // Alpha track at +0x1C (kf_count at +0x28)
+            wu(u16, tex_anim_data[td + 0x1C ..][0..2], 1, .little);
+            wu(u16, tex_anim_data[td + 0x1E ..][0..2], 0xFFFF, .little);
+            wu(u32, tex_anim_data[td + 0x28 ..][0..4], 2, .little); // alpha kf_count
+            wu(u32, tex_anim_data[td + 0x1C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, tex_anim_data[td + 0x1C + 0x18 ..][0..4], @intFromPtr(&short_vals), .little);
+        }
+
+        // --- Color animation data (2 entries, stride 0x1C) ---
+        for (0..COLOR_ANIM_COUNT) |i| {
+            const cd = i * 0x1C;
+            wu(u16, color_data[cd ..][0..2], 1, .little);
+            wu(u16, color_data[cd + 0x02 ..][0..2], 0xFFFF, .little);
+            wu(u32, color_data[cd + 0x0C ..][0..4], 2, .little);
+            wu(u32, color_data[cd + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+            wu(u32, color_data[cd + 0x18 ..][0..4], @intFromPtr(&short_vals), .little);
+        }
+
+        // --- Word animation data (1 entry, stride 0x1C) ---
+        wu(u16, word_data[0x00..0x02], 0, .little); // mode=0 (copy)
+        wu(u16, word_data[0x02..0x04], 0xFFFF, .little);
+        wu(u32, word_data[0x0C..0x10], 2, .little);
+        wu(u32, word_data[0x10..0x14], @intFromPtr(&ts2), .little);
+        wu(u32, word_data[0x18..0x1C], @intFromPtr(&word_vals), .little);
+
+        // --- Bone keyframe data (1 entry, stride 0x54) ---
+        // Translation at +0x00, rotation at +0x1C, scale at +0x38
+        // Translation kf_count at +0x0C
+        wu(u16, bkf_data[0x00..0x02], 1, .little);
+        wu(u16, bkf_data[0x02..0x04], 0xFFFF, .little);
+        wu(u32, bkf_data[0x0C..0x10], 2, .little);
+        wu(u32, bkf_data[0x10..0x14], @intFromPtr(&ts2), .little);
+        wu(u32, bkf_data[0x18..0x1C], @intFromPtr(&trans_vals), .little);
+        // Rotation kf_count at +0x28
+        wu(u16, bkf_data[0x1C..0x1E], 1, .little);
+        wu(u16, bkf_data[0x1E..0x20], 0xFFFF, .little);
+        wu(u32, bkf_data[0x28..0x2C], 2, .little);
+        wu(u32, bkf_data[0x1C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+        wu(u32, bkf_data[0x1C + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
 
         const pos = [3]f32{ 0, 0, 0 };
         const ofs = [3]f32{ 0, 0, 0 };
         const sb: u32 = @bitCast(@as(f32, 1.0));
-
         const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_SSE" });
+
+        // Pre-set boneKeyframe init flag so we skip the atexit call (Windows CRT, can't run on Linux)
+        @as(*u8, @ptrFromInt(0xCF04C4)).* = 1;
+        // Also write the pivot constants that atexit-init would have written
+        @as(*align(1) u32, @ptrFromInt(0xCF043C)).* = 0x3F000000; // 0.5f
+        @as(*align(1) u32, @ptrFromInt(0xCF0440)).* = 0x3F000000; // 0.5f
+        @as(*align(1) u32, @ptrFromInt(0xCF0444)).* = 0x00000000; // 0.0f
 
         // Warmup
         for (0..1000) |_| {
@@ -885,7 +1024,6 @@ pub fn main() void {
         // Benchmark
         var best: u64 = std.math.maxInt(u64);
         for (0..5) |_| {
-            wu(u32, scene_obj[0x40..0x44], 0, .little);
             const t = rdtsc();
             for (0..T44_ITERS) |_| {
                 wu(u32, scene_obj[0x40..0x44], 0, .little);
@@ -896,6 +1034,7 @@ pub fn main() void {
         }
 
         const avg = best / T44_ITERS;
+        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT });
         print("  {d} cycles/call (best of 5 runs, {d}K iterations)\n", .{ avg, T44_ITERS / 1000 });
     }
 
