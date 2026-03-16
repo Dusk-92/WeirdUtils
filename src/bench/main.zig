@@ -829,7 +829,8 @@ pub fn main() void {
     // =========================================================================
     {
         print("\n{s}\n", .{"-- transform44 (comprehensive fixture) --"});
-        const T44_ITERS: u64 = 100_000;
+        const T44_ITERS: u32 = 500_000;
+        const BASELINE_CYCLES: u64 = 3934; // frozen baseline measurement
         const wu = std.mem.writeInt;
         const fb = @as(u32, @bitCast(@as(f32, 1.0)));
 
@@ -1557,19 +1558,18 @@ pub fn main() void {
         const pp = @intFromPtr(&pos);
         const po = @intFromPtr(&ofs);
 
-        const best_baseline = run_bench_fn(transformImpl_BASELINE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
+        // Only benchmark SSE — baseline is frozen constant
         const best_sse = run_bench_fn(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
-
-        const avg_base = best_baseline / T44_ITERS;
         const avg_sse = best_sse / T44_ITERS;
 
-        print("  {d} bones, {d} texAnim, {d} colorAnim, {d} wordAnim, {d} boneKF, {d} ribbon, {d} particle, {d} attach\n", .{ BONE_COUNT, TEX_ANIM_COUNT, COLOR_ANIM_COUNT, WORD_ANIM_COUNT, BKF_COUNT, RIBBON_COUNT, PARTICLE_124_COUNT, ATTACH_COUNT });
-        print("  BASELINE: {d} cycles/call\n", .{avg_base});
+        print("  BASELINE: {d} cycles/call (frozen)\n", .{BASELINE_CYCLES});
         print("  SSE:      {d} cycles/call", .{avg_sse});
-        if (avg_sse < avg_base) {
-            print("  ({d}.{d}x faster)\n", .{ avg_base * 10 / avg_sse / 10, (avg_base * 10 / avg_sse) % 10 });
-        } else if (avg_sse > avg_base) {
-            print("  ({d}.{d}x slower)\n", .{ avg_sse * 10 / avg_base / 10, (avg_sse * 10 / avg_base) % 10 });
+        if (avg_sse < BASELINE_CYCLES) {
+            const pct = (BASELINE_CYCLES - avg_sse) * 100 / BASELINE_CYCLES;
+            print("  (-{d}%)\n", .{pct});
+        } else if (avg_sse > BASELINE_CYCLES) {
+            const pct = (avg_sse - BASELINE_CYCLES) * 100 / BASELINE_CYCLES;
+            print("  (+{d}%)\n", .{pct});
         } else {
             print("  (same)\n", .{});
         }

@@ -316,23 +316,13 @@ inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void
     const wy2 = qw * (qy + qy);
     const wz2 = qw * (qz + qz);
 
-    wf32(mat + 0x00, 1.0 - (yy2 + zz2));
-    wf32(mat + 0x04, xy2 + wz2);
-    wf32(mat + 0x08, xz2 - wy2);
-    wf32(mat + 0x0C, 0);
-    wf32(mat + 0x10, xy2 - wz2);
-    wf32(mat + 0x14, 1.0 - (xx2 + zz2));
-    wf32(mat + 0x18, yz2 + wx2);
-    wf32(mat + 0x1C, 0);
-    wf32(mat + 0x20, xz2 + wy2);
-    wf32(mat + 0x24, yz2 - wx2);
-    wf32(mat + 0x28, 1.0 - (xx2 + yy2));
-    wf32(mat + 0x2C, 0);
-    // Row 3 (translation = zero, w = 1)
-    wf32(mat + 0x30, 0);
-    wf32(mat + 0x34, 0);
-    wf32(mat + 0x38, 0);
-    wf32(mat + 0x3C, 1);
+    const r0 = V4{ 1.0 - (yy2 + zz2), xy2 + wz2, xz2 - wy2, 0 };
+    const r1 = V4{ xy2 - wz2, 1.0 - (xx2 + zz2), yz2 + wx2, 0 };
+    const r2 = V4{ xz2 + wy2, yz2 - wx2, 1.0 - (xx2 + yy2), 0 };
+    wf32(mat, r0[0]); wf32(mat + 4, r0[1]); wf32(mat + 8, r0[2]); wf32(mat + 12, r0[3]);
+    wf32(mat + 16, r1[0]); wf32(mat + 20, r1[1]); wf32(mat + 24, r1[2]); wf32(mat + 28, r1[3]);
+    wf32(mat + 32, r2[0]); wf32(mat + 36, r2[1]); wf32(mat + 40, r2[2]); wf32(mat + 44, r2[3]);
+    wf32(mat + 48, 0); wf32(mat + 52, 0); wf32(mat + 56, 0); wf32(mat + 60, 1);
 }
 
 /// Quaternion → rotation matrix × mat. Fused: builds quat rows as V4, multiplies in-register.
@@ -590,7 +580,7 @@ inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_dat
     const ts_hi = ru32(ts_base + next * 4);
     const numer = search -% ts_lo;
     const denom = ts_hi -% ts_lo;
-    const t: f32 = @floatCast(@as(f64, @floatFromInt(@as(i64, numer))) / @as(f64, @floatFromInt(@as(i32, @bitCast(denom)))));
+    const t: f32 = @as(f32, @floatFromInt(numer)) / @as(f32, @floatFromInt(@as(i32, @bitCast(denom))));
 
     wu32(output, result);
     wu32(output + 4, next);
@@ -1760,7 +1750,8 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
 // Post-bone-loop sections (extracted for readability)
 // =============================================================================
 
-inline fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x54);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x58);
@@ -1828,7 +1819,8 @@ inline fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
     }
 }
 
-inline fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     // Assembly: model_hdr+0x64 is both entry gate AND loop count
     const count = ru32(model_hdr + 0x64);
     if (count == 0) return;
@@ -1874,7 +1866,8 @@ inline fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-inline fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     // Assembly 0x715E46-0x715F25: word/byte animation section
     // model_hdr+0x6C = count, model_hdr+0x70 = data base
     // Output at this+0xAC (SO.scale1), data stride 0x1C, output stride 0x20
@@ -1918,7 +1911,7 @@ inline fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-inline fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
+fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     const count = ru32(model_hdr + 0x74);
     if (count == 0) return;
 
@@ -1979,7 +1972,7 @@ inline fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     }
 }
 
-inline fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Particle emitters are the largest section (~1000 lines of decompiled C).
     // They follow the same interpolation patterns but with many sub-tracks per emitter.
     // For the initial implementation, we handle the key tracks (position, speed, scale).
@@ -1995,7 +1988,8 @@ inline fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     additionalParticleLoops(this, model_hdr, frame_ctr);
 }
 
-inline fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x11C);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x120);
@@ -2065,7 +2059,8 @@ inline fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-inline fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x124);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x128);
@@ -2097,7 +2092,8 @@ inline fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-inline fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     // Assembly: model_hdr+0x134 section (asm 0x71763E-0x717D6A)
     // Then additional_remaining reset at 0x717D6F
     // Then model_hdr+0x13C section (asm 0x717D75-0x7185E3)
@@ -2304,7 +2300,8 @@ inline fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) voi
     }
 }
 
-inline fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
+fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
+    @setEvalBranchQuota(50000);
     const hierarchy = ru32(this + SO.hierarchy_ptr);
     if (hierarchy == 0) return;
 
