@@ -344,11 +344,15 @@ inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void 
     matMul4x4(mat, tmp_addr, mat);
 }
 
-/// Copy 16 floats (4x4 matrix)
+/// Copy 4x4 matrix (64 bytes) — 4 V4 loads/stores instead of 16 scalar copies.
 inline fn copyMat4(dst: u32, src: u32) void {
-    comptime var i: u32 = 0;
-    inline while (i < 64) : (i += 4) {
-        wu32(dst + i, ru32(src + i));
+    inline for (0..4) |i| {
+        const off: u32 = @intCast(i * 16);
+        const row = V4{ rf32(src + off), rf32(src + off + 4), rf32(src + off + 8), rf32(src + off + 12) };
+        wf32(dst + off, row[0]);
+        wf32(dst + off + 4, row[1]);
+        wf32(dst + off + 8, row[2]);
+        wf32(dst + off + 12, row[3]);
     }
 }
 
@@ -1136,9 +1140,13 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
 
     if (bone_count != 0) {
         var bone_idx: u32 = 0;
-        while (bone_idx < bone_count) : (bone_idx += 1) {
-            const bdef = bone_defs + bone_idx * 0x6C;
-            const brt = bone_rt_base + bone_idx * 0x118;
+        var bdef = bone_defs;
+        var brt = bone_rt_base;
+        while (bone_idx < bone_count) : ({
+            bone_idx += 1;
+            bdef += 0x6C;
+            brt += 0x118;
+        }) {
             const flags = ru32(bdef + BD.flags);
             const parent_idx_raw: i32 = @as(i32, @intCast(@as(i16, @bitCast(ru16(bdef + BD.parent_bone)))));
 
