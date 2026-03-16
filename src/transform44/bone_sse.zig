@@ -335,13 +335,42 @@ inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void
     wf32(mat + 0x3C, 1);
 }
 
-/// Quaternion → rotation matrix, then multiply: mat = quat_rot * mat.
-/// Builds rotation matrix on stack, then delegates to matMul4x4 (V4 + FMA).
+/// Quaternion → rotation matrix × mat. Fused: builds quat rows as V4, multiplies in-register.
 inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
-    var tmp: [16]f32 = undefined;
-    const tmp_addr = @intFromPtr(&tmp);
-    buildRotationMatrix(tmp_addr, qx, qy, qz, qw);
-    matMul4x4(mat, tmp_addr, mat);
+    const xx2 = qx * (qx + qx);
+    const xy2 = qx * (qy + qy);
+    const xz2 = qx * (qz + qz);
+    const yy2 = qy * (qy + qy);
+    const yz2 = qy * (qz + qz);
+    const zz2 = qz * (qz + qz);
+    const wx2 = qw * (qx + qx);
+    const wy2 = qw * (qy + qy);
+    const wz2 = qw * (qz + qz);
+
+    // Quat rotation rows as V4 — never touches memory
+    const q0 = V4{ 1.0 - (yy2 + zz2), xy2 + wz2, xz2 - wy2, 0 };
+    const q1 = V4{ xy2 - wz2, 1.0 - (xx2 + zz2), yz2 + wx2, 0 };
+    const q2 = V4{ xz2 + wy2, yz2 - wx2, 1.0 - (xx2 + yy2), 0 };
+
+    // Load mat rows
+    const m0 = V4{ rf32(mat), rf32(mat + 4), rf32(mat + 8), rf32(mat + 12) };
+    const m1 = V4{ rf32(mat + 16), rf32(mat + 20), rf32(mat + 24), rf32(mat + 28) };
+    const m2 = V4{ rf32(mat + 32), rf32(mat + 36), rf32(mat + 40), rf32(mat + 44) };
+    const m3 = V4{ rf32(mat + 48), rf32(mat + 52), rf32(mat + 56), rf32(mat + 60) };
+
+    // result = quat_rot × mat
+    inline for ([_]struct { q: V4, off: u32 }{ .{ .q = q0, .off = 0 }, .{ .q = q1, .off = 16 }, .{ .q = q2, .off = 32 } }) |r| {
+        const row = @mulAdd(V4, @as(V4, @splat(r.q[2])), m2, @mulAdd(V4, @as(V4, @splat(r.q[1])), m1, @as(V4, @splat(r.q[0])) * m0));
+        wf32(mat + r.off, row[0]);
+        wf32(mat + r.off + 4, row[1]);
+        wf32(mat + r.off + 8, row[2]);
+        wf32(mat + r.off + 12, row[3]);
+    }
+    // Row 3 = {0,0,0,1} × mat = m3 (unchanged)
+    wf32(mat + 48, m3[0]);
+    wf32(mat + 52, m3[1]);
+    wf32(mat + 56, m3[2]);
+    wf32(mat + 60, m3[3]);
 }
 
 /// Copy 4x4 matrix (64 bytes) — 4 V4 loads/stores instead of 16 scalar copies.
@@ -358,7 +387,7 @@ inline fn copyMat4(dst: u32, src: u32) void {
 
 /// 4x4 matrix multiply: dst = a * b (row-major). Safe for dst==a or dst==b.
 /// Uses V4 + @mulAdd (FMA): 1 mul + 3 FMA per row = 16 SIMD ops total.
-fn matMul4x4(dst: u32, a: u32, b: u32) void {
+inline fn matMul4x4(dst: u32, a: u32, b: u32) void {
     // Pre-load all rows of B
     const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
     const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
@@ -455,7 +484,7 @@ fn isParticleBufferNotEmpty(ptr: u32) bool {
 /// findInterpIdx: temporal-coherence keyframe search.
 /// Reimplementation of game function at 0x713D50 (334 bytes).
 /// Assembly-verified against t44_helpers_asm.txt.
-fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) void {
+inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) void {
     const n_ranges = ru32(anim_data + AD.track_count_flag);
 
     // Range selection: [start, last] not [start, count]
@@ -769,7 +798,7 @@ inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
     };
 }
 
-fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+inline fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
     findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
 
     const mode = ri16(anim_data + AD.interp_mode);
@@ -852,7 +881,7 @@ fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) 
     }
 }
 
-fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+inline fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
     findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
 
     const mode = ri16(anim_data + AD.interp_mode);
@@ -1474,23 +1503,18 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                 const dst = bone_out_base + bone_idx * 0x40;
                 copyMat4(dst, src_mat);
             } else {
-                // Reset to identity for composition
-                local_mat2 = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
                 const lm2_addr = @intFromPtr(&local_mat2);
-
                 const rot_anim = bdef + BD.rot_anim;
                 const rot_kf_count = ru32(bdef + BD.rot_nts);
 
-                // Step 1: Rotation — build rotation matrix from quaternion FIRST.
-                // The original at 0x74B6BB overwrites the bone-local matrix with the
-                // quaternion rotation matrix (it does NOT multiply — just writes directly).
-                // This runs BEFORE scale and translation so the translation offset
-                // (pivot - matrix * pivot) uses the correctly rotated matrix.
+                // Rotation overwrites all 16 floats — skip identity init when present
                 if (rot_kf_count != 0) {
                     if (frame_ctr < rot_kf_count) {
                         interpAnimKF(this, brt, rot_anim, brt + BR.rot_idx0);
                     }
                     buildRotationMatrix(lm2_addr, rf32(brt + BR.rot_x), rf32(brt + BR.rot_y), rf32(brt + BR.rot_z), rf32(brt + BR.rot_w));
+                } else {
+                    local_mat2 = .{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
                 }
 
                 // Step 2: Scale interpolation — applied after rotation
@@ -1736,7 +1760,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
 // Post-bone-loop sections (extracted for readability)
 // =============================================================================
 
-fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     const count = ru32(model_hdr + 0x54);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x58);
@@ -1791,7 +1815,7 @@ fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
 
 /// Short-value interpolation: reads indices from output, looks up short values, interpolates.
 /// Shared by texAnimLoop alpha, colorAnimLoop, and word animation crossfade.
-fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
+inline fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
     const mode = ri16(anim_data);
     const table = anim_data + AD.nvalues;
     if (mode == 0) {
@@ -1804,7 +1828,7 @@ fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
     }
 }
 
-fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Assembly: model_hdr+0x64 is both entry gate AND loop count
     const count = ru32(model_hdr + 0x64);
     if (count == 0) return;
@@ -1850,7 +1874,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Assembly 0x715E46-0x715F25: word/byte animation section
     // model_hdr+0x6C = count, model_hdr+0x70 = data base
     // Output at this+0xAC (SO.scale1), data stride 0x1C, output stride 0x20
@@ -1894,7 +1918,7 @@ fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
+inline fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     const count = ru32(model_hdr + 0x74);
     if (count == 0) return;
 
@@ -1955,7 +1979,7 @@ fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     }
 }
 
-fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Particle emitters are the largest section (~1000 lines of decompiled C).
     // They follow the same interpolation patterns but with many sub-tracks per emitter.
     // For the initial implementation, we handle the key tracks (position, speed, scale).
@@ -1971,7 +1995,7 @@ fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     additionalParticleLoops(this, model_hdr, frame_ctr);
 }
 
-fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     const count = ru32(model_hdr + 0x11C);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x120);
@@ -2041,7 +2065,7 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     const count = ru32(model_hdr + 0x124);
     if (count == 0) return;
     const data_base = ru32(model_hdr + 0x128);
@@ -2073,7 +2097,7 @@ fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+inline fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Assembly: model_hdr+0x134 section (asm 0x71763E-0x717D6A)
     // Then additional_remaining reset at 0x717D6F
     // Then model_hdr+0x13C section (asm 0x717D75-0x7185E3)
@@ -2280,7 +2304,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
+inline fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
     const hierarchy = ru32(this + SO.hierarchy_ptr);
     if (hierarchy == 0) return;
 
