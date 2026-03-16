@@ -1470,55 +1470,69 @@ pub fn main() void {
             print("  (same)\n", .{});
         }
 
-        // --- Output parity: run both with same input, compare all outputs ---
+        // --- Output parity: run BASELINE then SSE with identical input, compare ALL outputs ---
         {
-            wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
-            wu(u32, scene_obj[0x40..0x44], 0, .little);
-            @memset(&bone_out, 0);
-            @memset(&bone_rt, 0);
-            // Re-init bone_rt fields that must be set
-            for (0..BONE_COUNT) |i| {
-                const br = i * 0x118;
-                wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
-                wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+            const BufPair = struct { ptr: [*]u8, len: usize };
+            const bufs = [_]BufPair{
+                .{ .ptr = &bone_out, .len = bone_out.len },
+                .{ .ptr = &bone_rt, .len = bone_rt.len },
+                .{ .ptr = &tex_anim_out, .len = tex_anim_out.len },
+                .{ .ptr = &color_out, .len = color_out.len },
+                .{ .ptr = &word_out, .len = word_out.len },
+                .{ .ptr = &bkf_out1, .len = bkf_out1.len },
+                .{ .ptr = &bkf_out2, .len = bkf_out2.len },
+                .{ .ptr = &ribbon_out, .len = ribbon_out.len },
+                .{ .ptr = &p124_out, .len = p124_out.len },
+                .{ .ptr = &p134_out, .len = p134_out.len },
+                .{ .ptr = &p13c_out, .len = p13c_out.len },
+                .{ .ptr = &hierarchy, .len = hierarchy.len },
+                .{ .ptr = &scene_obj, .len = scene_obj.len },
+            };
+
+            const reset_and_run = struct {
+                fn go(func: *const fn (u32, u32, u32, u32, u32) callconv(.c) void, so3: u32, pm3: u32, pp3: u32, po3: u32, sb3: u32, scene3: *[0x400]u8, actx3: *[0x20]u8, brt3: [*]u8, bc: usize) void {
+                    wu(u32, actx3[0x0C..0x10], 500, .little);
+                    wu(u32, scene3[0x40..0x44], 0, .little);
+                    // Re-init bone_rt anim_slot/sec_slot fields
+                    for (0..bc) |i| {
+                        const br = i * 0x118;
+                        wu(u32, brt3[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                        wu(u32, brt3[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                    }
+                    wu(u32, brt3[0x98..0x9C], 500, .little);
+                    func(so3, pm3, pp3, po3, sb3);
+                }
+            }.go;
+
+            // Snapshot size = sum of all buffer lengths
+            var total_len: usize = 0;
+            for (bufs) |b| total_len += b.len;
+            var snap: [64 * 1024]u8 = undefined; // 64KB should be enough
+
+            // Run BASELINE, snapshot
+            reset_and_run(transformImpl_BASELINE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, &bone_rt, BONE_COUNT);
+            var off: usize = 0;
+            for (bufs) |b| {
+                @memcpy(snap[off..][0..b.len], b.ptr[0..b.len]);
+                off += b.len;
             }
-            wu(u32, bone_rt[0x98..0x9C], 500, .little);
-            transformImpl_BASELINE(so, pm, pp, po, sb);
 
-            var snap_out: @TypeOf(bone_out) = undefined;
-            var snap_rt: @TypeOf(bone_rt) = undefined;
-            var snap_tex: @TypeOf(tex_anim_out) = undefined;
-            @memcpy(&snap_out, &bone_out);
-            @memcpy(&snap_rt, &bone_rt);
-            @memcpy(&snap_tex, &tex_anim_out);
+            // Run SSE with same input
+            reset_and_run(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, &bone_rt, BONE_COUNT);
 
-            // Reset and run SSE
-            wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
-            wu(u32, scene_obj[0x40..0x44], 0, .little);
-            @memset(&bone_out, 0);
-            @memset(&bone_rt, 0);
-            for (0..BONE_COUNT) |i| {
-                const br = i * 0x118;
-                wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
-                wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
-            }
-            wu(u32, bone_rt[0x98..0x9C], 500, .little);
-            transformImpl_SSE(so, pm, pp, po, sb);
-
+            // Compare
             var diffs: u32 = 0;
-            for (0..bone_out.len) |i| {
-                if (bone_out[i] != snap_out[i]) diffs += 1;
-            }
-            for (0..bone_rt.len) |i| {
-                if (bone_rt[i] != snap_rt[i]) diffs += 1;
-            }
-            for (0..tex_anim_out.len) |i| {
-                if (tex_anim_out[i] != snap_tex[i]) diffs += 1;
+            off = 0;
+            for (bufs) |b| {
+                for (0..b.len) |i| {
+                    if (b.ptr[i] != snap[off + i]) diffs += 1;
+                }
+                off += b.len;
             }
             if (diffs == 0) {
-                print("  parity:   PASS (SSE == BASELINE)\n", .{});
+                print("  parity:   PASS (SSE == BASELINE, {d} bytes checked)\n", .{total_len});
             } else {
-                print("  parity:   FAIL ({d} byte diffs)\n", .{diffs});
+                print("  parity:   FAIL ({d} byte diffs across {d} bytes)\n", .{ diffs, total_len });
             }
         }
     }
