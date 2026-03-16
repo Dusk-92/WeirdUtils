@@ -466,6 +466,20 @@ inline fn crossVec3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) [3]f32
 // Output: indices[0] = lower index, [1] = upper index, [2] = interpolation t (float bits)
 // =============================================================================
 
+/// IsParticleBufferEmpty (0x7B5F60) — recursive tree check.
+/// Returns true if any node in the tree has active particles (this->0x64 != 0).
+fn isParticleBufferNotEmpty(ptr: u32) bool {
+    if (ru32(ptr + 0x64) != 0) return true;
+    const count = ru32(ptr + 0x7C);
+    if (count == 0) return false;
+    const children = ptr + 0x80;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        if (isParticleBufferNotEmpty(ru32(children + i * 4))) return true;
+    }
+    return false;
+}
+
 /// findInterpIdx: temporal-coherence keyframe search.
 /// Reimplementation of game function at 0x713D50 (334 bytes).
 /// Assembly-verified against t44_helpers_asm.txt.
@@ -2252,11 +2266,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (emitter_active != 0) {
                 buf_active = 1;
             } else {
-                // Call IsParticleBufferEmpty (0x7B5F60)
-                // Assembly: MOV ECX,[EBP-0x10]; CALL 0x7B5F60
-                // __thiscall(ECX=ptr), plain RET, returns 0 or 1 in EAX
-                const isEmptyFn: *const fn (u32) callconv(.{ .x86_fastcall = .{} }) u32 = @ptrFromInt(0x7B5F60);
-                if (isEmptyFn(local_14) != 0) {
+                if (isParticleBufferNotEmpty(local_14)) {
                     buf_active = 1;
                 }
             }

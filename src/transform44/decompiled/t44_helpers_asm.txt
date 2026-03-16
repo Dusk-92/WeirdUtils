@@ -775,3 +775,34 @@ OpenJDK 64-Bit Server VM (build 21.0.10+7, mixed mode)
   0x00454A0C  FSTP ST0
   0x00454A0E  RET << RET
 
+
+=== IsParticleBufferEmpty (0x007B5F60, 59 bytes) ===
+  0x007B5F60  8B 41 64                 MOV EAX,dword ptr [ECX + 0x64]
+  0x007B5F63  85 C0                    TEST EAX,EAX
+  0x007B5F65  53                       PUSH EBX
+  0x007B5F66  56                       PUSH ESI
+  0x007B5F67  57                       PUSH EDI
+  0x007B5F68  74 09                    JZ 0x007b5f73
+  0x007B5F6A  5F                       POP EDI
+  0x007B5F6B  5E                       POP ESI
+  0x007B5F6C  B8 01 00 00 00           MOV EAX,0x1
+  0x007B5F71  5B                       POP EBX
+  0x007B5F72  C3                       RET  << RET
+  0x007B5F73  8B 79 7C                 MOV EDI,dword ptr [ECX + 0x7c]
+  0x007B5F76  33 F6                    XOR ESI,ESI
+  0x007B5F78  85 FF                    TEST EDI,EDI
+  0x007B5F7A  76 19                    JBE 0x007b5f95
+  0x007B5F7C  8D 99 80 00 00 00        LEA EBX,[ECX + 0x80]
+  0x007B5F82  8B 0B                    MOV ECX,dword ptr [EBX]
+  0x007B5F84  E8 D7 FF FF FF           CALL 0x007b5f60 << CALL
+  0x007B5F89  85 C0                    TEST EAX,EAX
+  0x007B5F8B  75 DD                    JNZ 0x007b5f6a
+  0x007B5F8D  46                       INC ESI
+  0x007B5F8E  83 C3 04                 ADD EBX,0x4
+  0x007B5F91  3B F7                    CMP ESI,EDI
+  0x007B5F93  72 ED                    JC 0x007b5f82
+  0x007B5F95  5F                       POP EDI
+  0x007B5F96  5E                       POP ESI
+  0x007B5F97  33 C0                    XOR EAX,EAX
+  0x007B5F99  5B                       POP EBX
+  0x007B5F9A  C3                       RET  << RET
