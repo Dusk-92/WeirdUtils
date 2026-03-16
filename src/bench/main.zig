@@ -801,6 +801,104 @@ pub fn main() void {
         report("setParticleAlpha", t, s, ok);
     }
 
+    // =========================================================================
+    // transform44: SSE implementation benchmark
+    // =========================================================================
+    {
+        print("\n{s}\n", .{"-- transform44 (SSE only, 8 bones, 4 animated) --"});
+        const T44_ITERS: u64 = 200_000;
+
+        // Synthetic SceneObject with 8 bones: 4 rotation-animated, 2 translation-animated, 4 static
+        var scene_obj: [0x400]u8 align(16) = std.mem.zeroes([0x400]u8);
+        var anim_ctx_mem: [0x20]u8 = std.mem.zeroes([0x20]u8);
+        var model_ctr_mem: [0x140]u8 = std.mem.zeroes([0x140]u8);
+        const BONE_COUNT = 8;
+        var model_hdr_mem: [0x200]u8 = std.mem.zeroes([0x200]u8);
+        var bone_defs: [BONE_COUNT * 0x6C]u8 = std.mem.zeroes([BONE_COUNT * 0x6C]u8);
+        var bone_rt: [BONE_COUNT * 0x118]u8 = std.mem.zeroes([BONE_COUNT * 0x118]u8);
+        var bone_out: [BONE_COUNT * 0x40]u8 align(16) = std.mem.zeroes([BONE_COUNT * 0x40]u8);
+        var parent_mat: [64]u8 align(16) = undefined;
+        const ident = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        @memcpy(parent_mat[0..64], std.mem.asBytes(&ident));
+
+        var rot_ts = [2]u32{ 0, 1000 };
+        var rot_vals = [8]f32{ 0, 0, 0, 1, 0.383, 0, 0, 0.924 };
+        var trans_ts = [2]u32{ 0, 1000 };
+        var trans_vals = [6]f32{ 0, 0, 0, 1, 2, 3 };
+
+        const so = @intFromPtr(&scene_obj);
+        const wu = std.mem.writeInt;
+
+        wu(u32, scene_obj[0x10..0x14], 1, .little);
+        wu(u32, scene_obj[0x2C..0x30], @intFromPtr(&anim_ctx_mem), .little);
+        wu(u32, scene_obj[0x30..0x34], @intFromPtr(&model_ctr_mem), .little);
+        wu(u32, scene_obj[0x64..0x68], so + 0x300, .little);
+        wu(u32, scene_obj[0x90..0x94], @intFromPtr(&bone_rt), .little);
+        wu(u32, scene_obj[0x94..0x98], @intFromPtr(&bone_out), .little);
+        for ([_]u32{ 0x180, 0x184, 0x188, 0x18C }) |off| {
+            wu(u32, scene_obj[off..][0..4], @as(u32, @bitCast(@as(f32, 1.0))), .little);
+        }
+        @memcpy(scene_obj[0xFC..0x13C], std.mem.asBytes(&ident));
+        @memcpy(scene_obj[0xBC..0xFC], std.mem.asBytes(&ident));
+
+        wu(u32, anim_ctx_mem[0x0C..0x10], 500, .little);
+        wu(u32, anim_ctx_mem[0x10..0x14], 1, .little);
+        wu(u32, model_ctr_mem[0x130..0x134], @intFromPtr(&model_hdr_mem), .little);
+        wu(u32, model_hdr_mem[0x34..0x38], BONE_COUNT, .little);
+        wu(u32, model_hdr_mem[0x38..0x3C], @intFromPtr(&bone_defs), .little);
+
+        for (0..BONE_COUNT) |i| {
+            const bd = i * 0x6C;
+            wu(u16, bone_defs[bd + 0x08 ..][0..2], if (i == 0) 0xFFFF else @as(u16, @intCast(i - 1)), .little);
+            if (i < 4) {
+                wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little);
+                wu(u32, bone_defs[bd + 0x38 ..][0..4], @intFromPtr(&rot_ts), .little);
+                wu(u32, bone_defs[bd + 0x40 ..][0..4], @intFromPtr(&rot_vals), .little);
+            }
+            if (i < 2) {
+                wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
+                wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
+                wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
+                wu(u32, bone_defs[bd + 0x1C ..][0..4], @intFromPtr(&trans_ts), .little);
+                wu(u32, bone_defs[bd + 0x24 ..][0..4], @intFromPtr(&trans_vals), .little);
+            }
+            const br = i * 0x118;
+            wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+            wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+        }
+        wu(u32, bone_rt[0x98..0x9C], 500, .little);
+
+        const pos = [3]f32{ 0, 0, 0 };
+        const ofs = [3]f32{ 0, 0, 0 };
+        const sb: u32 = @bitCast(@as(f32, 1.0));
+
+        const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_SSE" });
+
+        // Warmup
+        for (0..1000) |_| {
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+        }
+
+        // Benchmark
+        var best: u64 = std.math.maxInt(u64);
+        for (0..5) |_| {
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            const t = rdtsc();
+            for (0..T44_ITERS) |_| {
+                wu(u32, scene_obj[0x40..0x44], 0, .little);
+                transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+            }
+            const elapsed = rdtsc() - t;
+            if (elapsed < best) best = elapsed;
+        }
+
+        const avg = best / T44_ITERS;
+        print("  {d} cycles/call (best of 5 runs, {d}K iterations)\n", .{ avg, T44_ITERS / 1000 });
+    }
+
     print("\n", .{});
 }
 
