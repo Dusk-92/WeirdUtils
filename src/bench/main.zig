@@ -864,13 +864,23 @@ pub fn main() void {
         const ident = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
         @memcpy(parent_mat[0..64], std.mem.asBytes(&ident));
 
-        // Keyframe data: shared across tracks
+        // Keyframe data — multiple sizes to exercise different findInterpIdx paths
+        // 2-kf tracks: forward scan hot path (1 step)
         var ts2 = [2]u32{ 0, 1000 };
+        // 8-kf tracks: forces binary search when cached index is stale
+        var ts8 = [8]u32{ 0, 125, 250, 375, 500, 625, 750, 1000 };
         var rot_vals = [8]f32{ 0, 0, 0, 1, 0.383, 0, 0, 0.924 };
+        // 8-kf rotation values (8 quats = 32 floats, stride 16)
+        var rot_vals8 = [32]f32{
+            0, 0, 0, 1, 0.1, 0, 0, 0.995, 0.2, 0, 0, 0.98, 0.3, 0, 0, 0.954,
+            0.383, 0, 0, 0.924, 0.3, 0, 0, 0.954, 0.2, 0, 0, 0.98, 0.1, 0, 0, 0.995,
+        };
         var trans_vals = [6]f32{ 0, 0, 0, 1.5, 2.0, -0.5 };
         var scale_vals = [6]f32{ 1, 1, 1, 1.2, 0.8, 1.1 };
         var short_vals = [4]i16{ 16383, 32767, 0, -16383 };
         var word_vals = [2]u16{ 100, 200 };
+        // Animation lookup table entry for anim_slot bones (0x44 bytes each)
+        var anim_entry: [0x44]u8 = std.mem.zeroes([0x44]u8);
 
         const so = @intFromPtr(&scene_obj);
 
@@ -914,45 +924,137 @@ pub fn main() void {
         wu(u32, mh[0x78..0x7C], @intFromPtr(&bkf_data), .little);
 
         // --- Bone defs: 12 bones ---
-        // 0-5: rotation, 0-3: translation, 2-3: scale, 4: billboard type 2
+        // Bone 0: root, rot(8kf)+trans(2kf), anim_slot=-1 (inherit)
+        // Bone 1: rot(8kf)+trans(2kf)+scale(2kf), anim_slot=-1
+        // Bone 2: rot(2kf)+trans(2kf)+scale(2kf), anim_slot=-1
+        // Bone 3: rot(2kf), crossfade active (blend_weight > 0)
+        // Bone 4: rot(2kf), GS-driven (time_index=0)
+        // Bone 5: rot(8kf), own anim_slot (exercises ftol path)
+        // Bone 6-11: static (copy parent)
+
+        // Set up anim_entry for bone 5's anim_slot
+        wu(u32, anim_entry[0x04..0x08], 0, .little); // anim_start
+        wu(u32, anim_entry[0x08..0x0C], 1000, .little); // anim_end
+
+        // Wire model_hdr anim_lookup pointer for anim_slot bones
+        wu(u32, model_hdr_mem[0x20..0x24], @intFromPtr(&anim_entry), .little);
+
         for (0..BONE_COUNT) |i| {
             const bd = i * 0x6C;
             wu(u16, bone_defs[bd + 0x08 ..][0..2], if (i == 0) 0xFFFF else @as(u16, @intCast(i - 1)), .little);
-            // Rotation (bones 0-5)
-            if (i < 6) {
-                wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little); // mode=lerp
-                wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little); // no GS
-                wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little); // kf_count
-                wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
-                wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
-            }
-            // Translation (bones 0-3)
-            if (i < 4) {
-                wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
-                wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
-                wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
-                wu(u32, bone_defs[bd + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
-                wu(u32, bone_defs[bd + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
-            }
-            // Scale (bones 2-3)
-            if (i >= 2 and i < 4) {
-                wu(u16, bone_defs[bd + 0x44 ..][0..2], 1, .little);
-                wu(u16, bone_defs[bd + 0x46 ..][0..2], 0xFFFF, .little);
-                wu(u32, bone_defs[bd + 0x50 ..][0..4], 2, .little);
-                wu(u32, bone_defs[bd + 0x44 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
-                wu(u32, bone_defs[bd + 0x44 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
-            }
-            // Pivot (all bones get a pivot)
+
+            // Pivot for all bones
             wu(u32, bone_defs[bd + 0x60 ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little);
             wu(u32, bone_defs[bd + 0x64 ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little);
-            wu(u32, bone_defs[bd + 0x68 ..][0..4], @as(u32, @bitCast(@as(f32, 0.0))), .little);
 
-            // Bone runtime
             const br = i * 0x118;
-            wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little); // anim_slot = -1
-            wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little); // sec_slot = -1
+
+            switch (i) {
+                0 => {
+                    // Rotation: 8 keyframes (exercises binary search on cold start)
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little); // lerp
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 8, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts8), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals8), .little);
+                    // Translation: 2 keyframes
+                    wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0x98 ..][0..4], 500, .little); // prim_time
+                },
+                1 => {
+                    // Rot(8kf) + Trans(2kf) + Scale(2kf)
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 8, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts8), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals8), .little);
+                    wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+                    wu(u16, bone_defs[bd + 0x44 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x46 ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x50 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x44 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x44 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                },
+                2 => {
+                    // Rot(2kf) + Trans(2kf) + Scale(2kf)
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+                    wu(u16, bone_defs[bd + 0x0C ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x0E ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x18 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x0C + 0x18 ..][0..4], @intFromPtr(&trans_vals), .little);
+                    wu(u16, bone_defs[bd + 0x44 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x46 ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x50 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x44 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x44 + 0x18 ..][0..4], @intFromPtr(&scale_vals), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                },
+                3 => {
+                    // Rot(2kf) + crossfade active
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    // Crossfade: sec_slot=0, blend_weight=0.5, sec_time=200, crossfade_end=far future
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0, .little); // sec_slot = 0 (active!)
+                    wu(u32, bone_rt[br + 0x10C ..][0..4], @as(u32, @bitCast(@as(f32, 0.5))), .little); // blend_weight
+                    wu(u32, bone_rt[br + 0xC4 ..][0..4], 200, .little); // sec_time
+                    wu(u32, bone_rt[br + 0xC8 ..][0..4], 0, .little); // sec_track
+                    wu(u32, bone_rt[br + 0x100 ..][0..4], 99999, .little); // crossfade_end (far future)
+                    wu(u32, bone_rt[br + 0x104 ..][0..4], @as(u32, @bitCast(@as(f32, 0.001))), .little); // crossfade_inv
+                    wu(u32, bone_rt[br + 0x108 ..][0..4], @as(u32, @bitCast(@as(f32, 1.0))), .little); // crossfade_weight
+                },
+                4 => {
+                    // Rot(2kf) with global sequence (time_index=0)
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0, .little); // time_index = 0 (GS!)
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 2, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts2), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                },
+                5 => {
+                    // Rot(8kf) with own anim_slot (exercises ftol time computation)
+                    wu(u16, bone_defs[bd + 0x28 ..][0..2], 1, .little);
+                    wu(u16, bone_defs[bd + 0x2A ..][0..2], 0xFFFF, .little);
+                    wu(u32, bone_defs[bd + 0x34 ..][0..4], 8, .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x10 ..][0..4], @intFromPtr(&ts8), .little);
+                    wu(u32, bone_defs[bd + 0x28 + 0x18 ..][0..4], @intFromPtr(&rot_vals8), .little);
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0, .little); // anim_slot = 0 (own slot!)
+                    wu(u32, bone_rt[br + 0xA8 ..][0..4], 0, .little); // sec_start
+                    wu(u32, bone_rt[br + 0xAC ..][0..4], 2000, .little); // sec_end
+                    wu(u32, bone_rt[br + 0xB0 ..][0..4], @as(u32, @bitCast(@as(f32, 1.0))), .little); // time_scale
+                    wu(u32, bone_rt[br + 0xB8 ..][0..4], 0, .little); // sec_anim_offset
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                },
+                else => {
+                    // Static bones 6-11: just inherit
+                    wu(u32, bone_rt[br + 0xA4 ..][0..4], 0xFFFFFFFF, .little);
+                    wu(u32, bone_rt[br + 0xD0 ..][0..4], 0xFFFFFFFF, .little);
+                },
+            }
         }
-        wu(u32, bone_rt[0x98..0x9C], 500, .little); // bone 0 prim_time
 
         // --- Texture animation data (2 entries, stride 0x38) ---
         // Entry 0: Vec3 track (kf_count at +0x0C)
@@ -1015,17 +1117,23 @@ pub fn main() void {
         @as(*align(1) u32, @ptrFromInt(0xCF0440)).* = 0x3F000000; // 0.5f
         @as(*align(1) u32, @ptrFromInt(0xCF0444)).* = 0x00000000; // 0.0f
 
-        // Warmup
-        for (0..1000) |_| {
+        // Warmup (varying timestamp to warm all findInterpIdx paths)
+        for (0..1000) |iter| {
+            const ts_val: u32 = @intCast((iter * 7) % 1000); // sweep 0-999
+            wu(u32, anim_ctx_mem[0x0C..0x10], ts_val, .little);
             wu(u32, scene_obj[0x40..0x44], 0, .little);
             transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
         }
 
-        // Benchmark
+        // Benchmark — vary timestamp each iteration to stress cached index
         var best: u64 = std.math.maxInt(u64);
         for (0..5) |_| {
             const t = rdtsc();
-            for (0..T44_ITERS) |_| {
+            for (0..T44_ITERS) |iter| {
+                // Advancing timestamp: simulates real frame-to-frame progression
+                // Cycles through 0-999 with small steps (cache-friendly) and occasional jumps
+                const ts_val: u32 = @intCast(if (iter % 50 == 0) (iter * 37) % 1000 else (iter * 3) % 1000);
+                wu(u32, anim_ctx_mem[0x0C..0x10], ts_val, .little);
                 wu(u32, scene_obj[0x40..0x44], 0, .little);
                 transformImpl_SSE(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
             }
