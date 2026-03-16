@@ -209,13 +209,13 @@ const OrigTransformFn = *const fn (u32, u32, u32, u32, u32) callconv(.c) void;
 // =============================================================================
 
 inline fn ru32(addr: u32) u32 {
-    return @as(*align(1) const u32, @ptrFromInt(addr)).*;
+    return @as(*const u32, @ptrFromInt(addr)).*;
 }
 inline fn ri32(addr: u32) i32 {
-    return @as(*align(1) const i32, @ptrFromInt(addr)).*;
+    return @as(*const i32, @ptrFromInt(addr)).*;
 }
 inline fn rf32(addr: u32) f32 {
-    return @as(*align(1) const f32, @ptrFromInt(addr)).*;
+    return @as(*const f32, @ptrFromInt(addr)).*;
 }
 inline fn ru16(addr: u32) u16 {
     return @as(*align(1) const u16, @ptrFromInt(addr)).*;
@@ -228,10 +228,10 @@ inline fn ru8(addr: u32) u8 {
 }
 
 inline fn wu32(addr: u32, v: u32) void {
-    @as(*align(1) u32, @ptrFromInt(addr)).* = v;
+    @as(*u32, @ptrFromInt(addr)).* = v;
 }
 inline fn wf32(addr: u32, v: f32) void {
-    @as(*align(1) f32, @ptrFromInt(addr)).* = v;
+    @as(*f32, @ptrFromInt(addr)).* = v;
 }
 inline fn wu16(addr: u32, v: u16) void {
     @as(*align(1) u16, @ptrFromInt(addr)).* = v;
