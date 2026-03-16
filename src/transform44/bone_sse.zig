@@ -466,17 +466,120 @@ inline fn crossVec3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) [3]f32
 // Output: indices[0] = lower index, [1] = upper index, [2] = interpolation t (float bits)
 // =============================================================================
 
-/// Calls game's findInterpolationIndices at 0x713D50.
-/// __thiscall(ECX=this, stack: search_value, track_index, anim_data, output)
-fn findInterpIdx(
-    this: u32,
-    search_value: u32,
-    track_index: u32,
-    anim_data: u32,
-    output: u32,
-) void {
-    const gameFn: *const fn (u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x713D50);
-    gameFn(this, 0, search_value, track_index, anim_data, output);
+/// findInterpIdx: temporal-coherence keyframe search.
+/// Reimplementation of game function at 0x713D50 (334 bytes).
+/// Assembly-verified against t44_helpers_asm.txt.
+fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) void {
+    const n_ranges = ru32(anim_data + AD.track_count_flag);
+
+    // Range selection: [start, last] not [start, count]
+    var range_start: u32 = undefined;
+    var range_last: u32 = undefined;
+    if (n_ranges != 0) {
+        const ranges = ru32(anim_data + AD.keyframe_ranges);
+        range_last = ru32(ranges + track_index * 8 + 4);
+        range_start = ru32(ranges + track_index * 8);
+    } else {
+        range_last = ru32(anim_data + AD.keyframe_count) -% 1;
+        range_start = 0;
+    }
+
+    if (range_start >= range_last) {
+        wu32(output, range_start);
+        wu32(output + 4, range_start);
+        wu32(output + 8, 0);
+        return;
+    }
+
+    // Global sequence override: CMP AX,0xFFFF
+    const time_idx_raw = ri16(anim_data + AD.time_index);
+    const search: u32 = if (time_idx_raw != -1) blk: {
+        const gs_vals = ru32(this + SO.gs_values_ptr);
+        break :blk ru32(gs_vals + @as(u32, @intCast(@as(u16, @bitCast(time_idx_raw)))) * 4);
+    } else search_value;
+
+    const ts_base = ru32(anim_data + AD.timestamps_ptr);
+    const cached = ru32(output);
+    const ts_cached = ru32(ts_base + cached * 4);
+    const delta: u32 = search -% ts_cached;
+
+    var result: u32 = undefined;
+
+    if (delta < 0x1F4) {
+        // Forward scan from cached
+        result = cached;
+        if (result < range_last) {
+            var ptr = ts_base + result * 4 + 4;
+            while (ru32(ptr) <= search) {
+                result += 1;
+                ptr += 4;
+                if (result >= range_last) break;
+            }
+        }
+    } else if (delta >= 0xFFFFFE0C) {
+        // Backward scan from cached
+        result = cached;
+        if (result > range_start) {
+            var ptr = ts_base + result * 4;
+            while (ru32(ptr) > search) {
+                result -= 1;
+                ptr -= 4;
+                if (result <= range_start) break;
+            }
+        }
+    } else {
+        // Check delta from range_start
+        const ts_first = ru32(ts_base + range_start * 4);
+        const delta_first: u32 = search -% ts_first;
+        if (delta_first < 0x1F4) {
+            result = range_start;
+            var ptr = ts_base + range_start * 4 + 4;
+            while (ru32(ptr) <= search) {
+                result += 1;
+                ptr += 4;
+                if (result >= range_last) break;
+            }
+        } else {
+            // Binary search
+            var lo = range_start;
+            var hi = range_last;
+            while (lo < hi) {
+                const mid = (hi +% lo) >> 1;
+                if (search < ru32(ts_base + mid * 4)) {
+                    hi = mid -% 1;
+                } else {
+                    if (search < ru32(ts_base + mid * 4 + 4)) {
+                        lo = mid;
+                        break;
+                    }
+                    lo = mid + 1;
+                }
+            }
+            result = lo;
+        }
+    }
+
+    // Post-search: bounds check against total keyframe_count
+    const kf_count = ru32(anim_data + AD.keyframe_count);
+    const next = result + 1;
+
+    if (next >= kf_count) {
+        wu32(output, result);
+        wu32(output + 4, result);
+        wu32(output + 8, 0);
+        return;
+    }
+
+    // Interpolation factor: FILD qword / FIDIV dword
+    const ts_lo = ru32(ts_base + result * 4);
+    const ts_hi = ru32(ts_base + next * 4);
+    const numer = search -% ts_lo;
+    const denom = ts_hi -% ts_lo;
+    const t: f32 = @floatCast(@as(f64, @floatFromInt(@as(i64, numer))) / @as(f64, @floatFromInt(@as(i32, @bitCast(denom)))));
+
+    wu32(output, result);
+    wu32(output + 4, next);
+    wu32(output + 8, @bitCast(t));
 }
 
 // =============================================================================
