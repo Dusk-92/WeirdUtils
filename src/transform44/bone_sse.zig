@@ -144,12 +144,21 @@ const BD = struct {
     const pivot_z: u32 = 0x68;
 };
 
-// Runtime constants read from game memory (patched at startup)
+// Runtime constants — ALL read from game memory (game patches these at startup)
 fn getShortToFloat() f32 {
-    return rf32(0x00811610);
+    return rf32(0x00811610); // ~1/32767, runtime 0x38000100
 }
 fn getBillboardEpsilon() f32 {
-    return rf32(0x008029d4);
+    return rf32(0x008029d4); // runtime 0x34800000
+}
+fn getHermite3() f32 {
+    return rf32(0x0080297c); // 3.0
+}
+fn getHermite5() f32 {
+    return rf32(0x00802990); // runtime 6.0 (Ghidra says 5.0 — wrong)
+}
+fn getBillboardSqEpsilon() f32 {
+    return getBillboardSqEpsilon(); // spherical billboard sqmag threshold
 }
 
 // =============================================================================
@@ -370,128 +379,194 @@ inline fn ftol(delta: i32, scale_addr: u32) i32 {
 // =============================================================================
 
 /// findInterpIdx: temporal-coherence keyframe search.
-/// Reimplements game function at 0x713D50 (334 bytes).
-/// Reads anim_data for timestamps/ranges, searches for bracket, computes t.
-/// output[0] = lower idx (also cached position), [1] = upper idx, [2] = t bits.
+/// Exact reimplementation of game function at 0x713D50 (334 bytes).
+/// Assembly-verified against t44_helpers_asm.txt.
+///
+/// Params: this=SceneObject, search_value=timestamp, track_index, anim_data, output
+/// output[0] = lower idx (cached), [1] = upper idx, [2] = interpolation t (float bits)
 fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) void {
     const n_ranges = ru32(anim_data + AD.track_count_flag);
-    const n_timestamps = ru32(anim_data + AD.keyframe_count);
-    const ts_base = ru32(anim_data + AD.timestamps_ptr);
 
-    // Global sequence override
-    const time_idx = ri16(anim_data + AD.time_index);
-    const search: u32 = if (time_idx >= 0) blk: {
+    // Range selection (asm 0x713D5C-0x713D7A)
+    // nRanges != 0: EDI = ranges[track*8+4] (last), EDX = ranges[track*8] (start)
+    // nRanges == 0: EDI = keyframe_count - 1, EDX = 0
+    var range_start: u32 = undefined;
+    var range_last: u32 = undefined;
+    if (n_ranges != 0) {
+        const ranges = ru32(anim_data + AD.keyframe_ranges);
+        range_last = ru32(ranges + track_index * 8 + 4);
+        range_start = ru32(ranges + track_index * 8);
+    } else {
+        range_last = ru32(anim_data + AD.keyframe_count) -% 1; // DEC EDI
+        range_start = 0;
+    }
+
+    // Early exit if start >= last (unsigned) — asm 0x713D7B: CMP EDX,EDI; JC
+    if (range_start >= range_last) {
+        wu32(output, range_start);
+        wu32(output + 4, range_start);
+        wu32(output + 8, 0);
+        return;
+    }
+
+    // Global sequence override (asm 0x713D96-0x713DAE)
+    const time_idx_raw = ri16(anim_data + AD.time_index);
+    const search: u32 = if (time_idx_raw != -1) blk: {
         const gs_vals = ru32(this + SO.gs_values_ptr);
-        break :blk ru32(gs_vals + @as(u32, @intCast(time_idx)) * 4);
+        break :blk ru32(gs_vals + @as(u32, @intCast(@as(u16, @bitCast(time_idx_raw)))) * 4);
     } else search_value;
 
-    // Determine range for this track
-    var range_start: u32 = 0;
-    var range_count: u32 = n_timestamps;
-    if (n_ranges != 0 and n_ranges > track_index) {
-        const ranges = ru32(anim_data + AD.keyframe_ranges);
-        range_start = ru32(ranges + track_index * 8);
-        range_count = ru32(ranges + track_index * 8 + 4);
-    }
+    // Cached index (asm 0x713DB5): EBX = output[0]
+    const ts_base = ru32(anim_data + AD.timestamps_ptr);
+    const cached = ru32(output);
 
-    if (range_count == 0) return;
-    if (range_count == 1) {
-        wu32(output, range_start);
-        wu32(output + 4, range_start);
-        wu32(output + 8, 0);
-        return;
-    }
+    // Read ts[cached] for delta computation (asm 0x713DB7)
+    const ts_cached = ru32(ts_base + cached * 4);
+    const delta: u32 = search -% ts_cached;
 
-    const last = range_start + range_count - 1;
-    const first_ts = ru32(ts_base + range_start * 4);
-    const last_ts = ru32(ts_base + last * 4);
+    // Three-tier search (asm 0x713DC2-0x713E43)
+    var result: u32 = undefined;
 
-    if (search <= first_ts) {
-        wu32(output, range_start);
-        wu32(output + 4, range_start);
-        wu32(output + 8, 0);
-        return;
-    }
-    if (search >= last_ts) {
-        wu32(output, last);
-        wu32(output + 4, last);
-        wu32(output + 8, 0);
-        return;
-    }
-
-    // Temporal coherence: start from cached index
-    var idx = ru32(output);
-    if (idx < range_start or idx >= last) idx = range_start;
-
-    // Forward scan (hot path — animations advance forward)
-    if (ru32(ts_base + idx * 4) <= search) {
-        while (idx < last and ru32(ts_base + (idx + 1) * 4) <= search) {
-            idx += 1;
+    if (delta < 0x1F4) {
+        // Forward scan from cached (asm 0x713DC9-0x713DDF)
+        result = cached;
+        if (result < range_last) {
+            var ptr = ts_base + result * 4 + 4;
+            while (ru32(ptr) <= search) {
+                result += 1;
+                ptr += 4;
+                if (result >= range_last) break;
+            }
+        }
+    } else if (delta >= 0xFFFFFE0C) {
+        // Backward scan from cached (asm 0x713DE8-0x713DFD)
+        result = cached;
+        if (result > range_start) {
+            var ptr = ts_base + result * 4;
+            while (ru32(ptr) > search) {
+                result -= 1;
+                ptr -= 4;
+                if (result <= range_start) break;
+            }
         }
     } else {
-        // Backward scan
-        while (idx > range_start and ru32(ts_base + idx * 4) > search) {
-            idx -= 1;
+        // Check delta from range_start (asm 0x713DFF-0x713E1F)
+        const ts_first = ru32(ts_base + range_start * 4);
+        const delta_first: u32 = search -% ts_first;
+        if (delta_first < 0x1F4) {
+            // Forward scan from range_start
+            result = range_start;
+            var ptr = ts_base + range_start * 4 + 4;
+            while (ru32(ptr) <= search) {
+                result += 1;
+                ptr += 4;
+                if (result >= range_last) break;
+            }
+        } else {
+            // Binary search (asm 0x713E21-0x713E43)
+            var lo = range_start;
+            var hi = range_last;
+            while (lo < hi) {
+                const mid = (hi +% lo) >> 1;
+                if (search < ru32(ts_base + mid * 4)) {
+                    hi = mid -% 1;
+                } else {
+                    if (search < ru32(ts_base + mid * 4 + 4)) {
+                        lo = mid;
+                        break;
+                    }
+                    lo = mid + 1;
+                }
+            }
+            result = lo;
         }
     }
 
-    // Compute interpolation factor
-    const ts_lo = ru32(ts_base + idx * 4);
-    const ts_hi = ru32(ts_base + (idx + 1) * 4);
-    const t: f32 = if (ts_hi > ts_lo)
-        @as(f32, @floatFromInt(search - ts_lo)) / @as(f32, @floatFromInt(ts_hi - ts_lo))
+    // Post-search: clamp and compute t (asm 0x713E45-0x713E9B)
+    // Reload keyframe_count (asm 0x713E48: MOV EDI,[ECX+0xC])
+    const kf_count = ru32(anim_data + AD.keyframe_count);
+    const next = result + 1;
+
+    if (next >= kf_count) {
+        // Past end: write result=result for both, t=0 (asm 0x713E87-0x713E9B)
+        wu32(output, result);
+        wu32(output + 4, result);
+        wu32(output + 8, 0);
+        return;
+    }
+
+    // Compute interpolation factor (asm 0x713E53-0x713E84)
+    // Uses FILD qword (64-bit int!) for numerator, FIDIV dword for denominator
+    const ts_lo = ru32(ts_base + result * 4);
+    const ts_hi = ru32(ts_base + next * 4);
+    const numer = search -% ts_lo;
+    const denom = ts_hi -% ts_lo;
+
+    // FILD qword [ebp-8] where [ebp-8] = {numer, 0} — effectively i64(numer)
+    // FIDIV dword [ebp-8] where [ebp-8] = denom — divides by i32(denom)
+    const t: f32 = if (denom != 0)
+        @as(f32, @floatFromInt(@as(i64, numer))) / @as(f32, @floatFromInt(@as(i32, @bitCast(denom))))
     else
         0.0;
 
-    wu32(output, idx);
-    wu32(output + 4, idx + 1);
+    wu32(output, result);
+    wu32(output + 4, next);
     wu32(output + 8, @bitCast(t));
 }
 
-/// Quaternion keyframe interpolation (replaces game's 0x713EA0).
-/// Reads CompQuat (4×i16, 8 bytes per keyframe), converts to float, lerps.
-/// Writes: output[0..2]=indices/t, output[3..6]=qx/qy/qz/qw, output[7..13]=secondary.
+/// Quaternion keyframe interpolation (replaces game's 0x713EA0, 337 bytes).
+/// Assembly-verified: keyframe stride is 16 bytes (4×float), NOT CompQuat.
+/// SHL EAX,0x4 at 0x713EC9 = idx * 16. Values are raw floats.
+/// Writes: output[0..2]=indices/t, output[0xC..0x18]=qx/qy/qz/qw.
+/// Crossfade: secondary interp then calls 0x74D114 for 4-component blend.
 fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) void {
     findInterpIdx(this, ru32(bone_rt + BR.prim_time), ru32(bone_rt + BR.prim_track), anim_data, output);
 
     const mode = ri16(anim_data + AD.interp_mode);
     const kf_base = ru32(anim_data + AD.keyframe_base);
-    const s2f = getShortToFloat();
 
+    // Mode 0: direct copy of 4 floats (16 bytes) at idx0 * 16
     if (mode == 0) {
-        const src = kf_base + ru32(output) * 8;
-        inline for (0..4) |i| {
-            wf32(output + 0x0C + @as(u32, @intCast(i)) * 4, @as(f32, @floatFromInt(@as(i32, ri16(src + @as(u32, @intCast(i)) * 2)))) * s2f);
-        }
+        const src = kf_base + ru32(output) * 16;
+        wu32(output + 0x0C, ru32(src));
+        wu32(output + 0x10, ru32(src + 4));
+        wu32(output + 0x14, ru32(src + 8));
+        wu32(output + 0x18, ru32(src + 12));
         return;
     }
 
-    // Lerp (mode 1+)
+    // Mode != 0: lerp 4 floats (asm 0x713EF7-0x713F3F)
     const t = ufloat(ru32(output + 8));
-    const src0 = kf_base + ru32(output) * 8;
-    const src1 = kf_base + ru32(output + 4) * 8;
+    const src0 = kf_base + ru32(output) * 16;
+    const src1 = kf_base + ru32(output + 4) * 16;
     inline for (0..4) |i| {
-        const off: u32 = @intCast(i * 2);
-        const a = @as(f32, @floatFromInt(@as(i32, ri16(src0 + off)))) * s2f;
-        const b = @as(f32, @floatFromInt(@as(i32, ri16(src1 + off)))) * s2f;
-        wf32(output + 0x0C + @as(u32, @intCast(i)) * 4, @mulAdd(f32, b - a, t, a));
+        const off: u32 = @intCast(i * 4);
+        const a = rf32(src0 + off);
+        const b = rf32(src1 + off);
+        wf32(output + 0x0C + off, @mulAdd(f32, b - a, t, a));
     }
 
-    // Crossfade
-    const bw = ufloat(ru32(bone_rt + BR.blend_weight));
+    // Crossfade (asm 0x713F41-0x713FE3)
+    const bw = rf32(bone_rt + BR.blend_weight);
     if (bw != 0.0 and ri16(anim_data + AD.time_index) == -1) {
         findInterpIdx(this, ru32(bone_rt + BR.sec_time), ru32(bone_rt + BR.sec_track), anim_data, output + 0x1C);
         const st = ufloat(ru32(output + 0x24));
-        const ssrc0 = kf_base + ru32(output + 0x1C) * 8;
-        const ssrc1 = kf_base + ru32(output + 0x20) * 8;
+        const ssrc0 = kf_base + ru32(output + 0x1C) * 16;
+        const ssrc1 = kf_base + ru32(output + 0x20) * 16;
+        // Secondary lerp (asm 0x713F82-0x713FD5)
         inline for (0..4) |i| {
-            const off: u32 = @intCast(i * 2);
-            const a = @as(f32, @floatFromInt(@as(i32, ri16(ssrc0 + off)))) * s2f;
-            const b = @as(f32, @floatFromInt(@as(i32, ri16(ssrc1 + off)))) * s2f;
-            const sec = @mulAdd(f32, b - a, st, a);
-            wf32(output + 0x28 + @as(u32, @intCast(i)) * 4, sec);
-            const pri = rf32(output + 0x0C + @as(u32, @intCast(i)) * 4);
-            wf32(output + 0x0C + @as(u32, @intCast(i)) * 4, @mulAdd(f32, sec - pri, bw, pri));
+            const off: u32 = @intCast(i * 4);
+            const a = rf32(ssrc0 + off);
+            const b = rf32(ssrc1 + off);
+            wf32(output + 0x28 + off, @mulAdd(f32, b - a, st, a));
+        }
+        // Blend primary with secondary (asm 0x713FD7-0x713FE3 calls 0x74D114)
+        // 0x74D114 does: primary = primary + (secondary - primary) * blend_weight
+        inline for (0..4) |i| {
+            const off: u32 = @intCast(i * 4);
+            const pri = rf32(output + 0x0C + off);
+            const sec = rf32(output + 0x28 + off);
+            wf32(output + 0x0C + off, @mulAdd(f32, sec - pri, bw, pri));
         }
     }
 }
@@ -565,24 +640,32 @@ inline fn interpFloatTrack(this: u32, bone_rt: u32, anim_data: u32, output: u32,
     }
 }
 
-/// Hermite basis functions
+/// Hermite basis functions — coefficients read from game memory to match original
 inline fn hermiteBasis(t: f32) struct { h1: f32, h2: f32, h3: f32, h4: f32 } {
+    const c3 = getHermite3(); // 3.0 from 0x80297C
     const t2 = t * t;
     const t3 = t2 * t;
     return .{
-        .h1 = @mulAdd(f32, 2, t3, @mulAdd(f32, -3, t2, 1)),
+        .h1 = @mulAdd(f32, 2, t3, @mulAdd(f32, -c3, t2, 1)),
         .h2 = @mulAdd(f32, t3, 1, @mulAdd(f32, -2, t2, t)),
-        .h3 = @mulAdd(f32, -2, t3, 3 * t2),
+        .h3 = @mulAdd(f32, -2, t3, c3 * t2),
         .h4 = t3 - t2,
     };
 }
 
-/// Bezier (Bernstein) basis functions
+/// Bezier (Bernstein) basis functions — coefficients from game memory
 inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
-    const u = 1.0 - t;
+    const c3 = getHermite3(); // 3.0 from 0x80297C
+    const c6 = getHermite5(); // 6.0 from 0x802990
     const t2 = t * t;
-    const u_sq = u * u;
-    return .{ .b0 = u_sq * u, .b1 = 3 * u_sq * t, .b2 = 3 * u * t2, .b3 = t2 * t };
+    const t3 = t2 * t;
+    // Assembly-matched: b0 = 1 - 3t + 3t² - t³, b1 = 3t³ - 6t² + 3t, b2 = 3t² - 3t³
+    return .{
+        .b0 = @mulAdd(f32, -t3, 1, @mulAdd(f32, c3, t2, @mulAdd(f32, -c3, t, 1))),
+        .b1 = @mulAdd(f32, c3, t3, @mulAdd(f32, -c6, t2, c3 * t)),
+        .b2 = c3 * t2 - c3 * t3,
+        .b3 = t3,
+    };
 }
 
 /// Vec3 track with 36-byte keyframes (pos+tangents), modes 0-3 + crossfade.
@@ -773,6 +856,12 @@ fn shortInterpToFloat(anim_data: u32, output: u32) f32 {
 // =============================================================================
 
 export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
+    // Thin thiscall wrapper — real work in a normal Zig function where the
+    // compiler controls the frame and can align the stack for AVX freely.
+    transformImpl(this, mat1, mat2, mat3, mat4);
+}
+
+fn transformImpl(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) void {
     @setEvalBranchQuota(50000);
 
     // =========================================================================
@@ -1065,7 +1154,7 @@ export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         // Spherical billboard
                         const cam_sq = vec3SqMag(this + SO.bb_row0);
                         var s0: f32 = 1.0;
-                        if (cam_sq > rf32(0x0080c5c8)) {
+                        if (cam_sq > getBillboardSqEpsilon()) {
                             s0 = @sqrt(vec3SqMagF(local_mat[0], local_mat[1], local_mat[2]) / cam_sq);
                         }
                         local_mat[0] = s0 * rf32(this + SO.bb_row0);
@@ -1074,7 +1163,7 @@ export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
 
                         const wt_sq = vec3SqMag(this + SO.world_xform);
                         var s1: f32 = 1.0;
-                        if (wt_sq > rf32(0x0080c5c8)) {
+                        if (wt_sq > getBillboardSqEpsilon()) {
                             s1 = @sqrt(vec3SqMagF(local_mat[4], local_mat[5], local_mat[6]) / wt_sq);
                         }
                         local_mat[4] = s1 * rf32(this + SO.world_xform);
@@ -1083,7 +1172,7 @@ export fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
 
                         const wt_sq2 = vec3SqMag(this + SO.world_xform + 16);
                         var s2: f32 = 1.0;
-                        if (wt_sq2 > rf32(0x0080c5c8)) {
+                        if (wt_sq2 > getBillboardSqEpsilon()) {
                             s2 = @sqrt(vec3SqMagF(local_mat[8], local_mat[9], local_mat[10]) / wt_sq2);
                         }
                         local_mat[8] = s2 * rf32(this + SO.world_xform + 16);
