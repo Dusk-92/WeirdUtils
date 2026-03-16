@@ -725,6 +725,196 @@ inline fn interpFloatTrack(
 }
 
 // =============================================================================
+// Hermite basis functions — used by particle emitter tracks (modes 2, 3)
+// h1 = 2t³ - 3t² + 1, h2 = t³ - 2t² + t, h3 = -2t³ + 3t², h4 = t³ - t²
+// =============================================================================
+
+inline fn hermiteBasis(t: f32) struct { h1: f32, h2: f32, h3: f32, h4: f32 } {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return .{
+        .h1 = 2 * t3 - 3 * t2 + 1,
+        .h2 = t3 - 2 * t2 + t,
+        .h3 = -2 * t3 + 3 * t2,
+        .h4 = t3 - t2,
+    };
+}
+
+inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
+    const u = 1.0 - t;
+    const t2 = t * t;
+    const u_sq = u * u;
+    return .{
+        .b0 = u_sq * u,
+        .b1 = 3 * u_sq * t,
+        .b2 = 3 * u * t2,
+        .b3 = t2 * t,
+    };
+}
+
+/// Vec3 interpolation with 36-byte keyframes and 4 modes (step/lerp/bezier/hermite).
+/// Keyframe layout: [pos Vec3 (12), in_tangent Vec3 (12), out_tangent Vec3 (12)] = 36 bytes.
+/// Used by 0x124 particle emitter tracks. Uses bone_rt_base (bone 0) for timing.
+fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+    findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
+
+    const mode = ri16(anim_data + AD.interp_mode);
+    const kf_base = ru32(anim_data + AD.keyframe_base);
+
+    if (mode == 0) {
+        // Step — copy Vec3 from keyframe at idx0*36
+        const src = kf_base + ru32(output) * 36;
+        wu32(output + 0x0C, ru32(src));
+        wu32(output + 0x10, ru32(src + 4));
+        wu32(output + 0x14, ru32(src + 8));
+        return;
+    }
+
+    const t = ufloat(ru32(output + 8));
+    const kf_a = kf_base + ru32(output) * 36;
+    const kf_b = kf_base + ru32(output + 4) * 36;
+
+    if (mode == 1) {
+        // Linear interpolation
+        const result = lerpVec3(kf_a, kf_b, t);
+        wu32(output + 0x0C, fbits(result[0]));
+        wu32(output + 0x10, fbits(result[1]));
+        wu32(output + 0x14, fbits(result[2]));
+    } else if (mode == 3) {
+        // Hermite: h1*p0 + h2*m0_out + h3*p1 + h4*m1_in
+        const h = hermiteBasis(t);
+        var i: u32 = 0;
+        while (i < 3) : (i += 1) {
+            const off = i * 4;
+            const p0 = rf32(kf_a + off);
+            const m0 = rf32(kf_a + 0x18 + off); // out_tangent
+            const p1 = rf32(kf_b + off);
+            const m1 = rf32(kf_b + 0x0C + off); // in_tangent
+            wf32(output + 0x0C + off, h.h1 * p0 + h.h2 * m0 + h.h3 * p1 + h.h4 * m1);
+        }
+    } else if (mode == 2) {
+        // Bezier: b0*p0 + b1*m0_out + b2*m1_in + b3*p1
+        const b = bezierBasis(t);
+        var i: u32 = 0;
+        while (i < 3) : (i += 1) {
+            const off = i * 4;
+            const p0 = rf32(kf_a + off);
+            const m0 = rf32(kf_a + 0x18 + off); // out_tangent (control point)
+            const p1 = rf32(kf_b + off);
+            const m1 = rf32(kf_b + 0x0C + off); // in_tangent (control point)
+            wf32(output + 0x0C + off, b.b0 * p0 + b.b1 * m0 + b.b2 * m1 + b.b3 * p1);
+        }
+    } else return; // mode 4+: no interp, leave output unchanged
+
+    // Crossfade blend
+    const blend = rf32(bone_rt_base + BR.blend_weight);
+    if (blend != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+        findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x18);
+
+        const st = ufloat(ru32(output + 0x20));
+        const skf_a = kf_base + ru32(output + 0x18) * 36;
+        const skf_b = kf_base + ru32(output + 0x1C) * 36;
+        const smode = ri16(anim_data + AD.interp_mode);
+
+        if (smode == 1) {
+            const sec = lerpVec3(skf_a, skf_b, st);
+            wu32(output + 0x24, fbits(sec[0]));
+            wu32(output + 0x28, fbits(sec[1]));
+            wu32(output + 0x2C, fbits(sec[2]));
+        } else if (smode == 3) {
+            const h = hermiteBasis(st);
+            var i: u32 = 0;
+            while (i < 3) : (i += 1) {
+                const off = i * 4;
+                wf32(output + 0x24 + off, h.h1 * rf32(skf_a + off) + h.h2 * rf32(skf_a + 0x18 + off) + h.h3 * rf32(skf_b + off) + h.h4 * rf32(skf_b + 0x0C + off));
+            }
+        } else if (smode == 2) {
+            const b = bezierBasis(st);
+            var i: u32 = 0;
+            while (i < 3) : (i += 1) {
+                const off = i * 4;
+                wf32(output + 0x24 + off, b.b0 * rf32(skf_a + off) + b.b1 * rf32(skf_a + 0x18 + off) + b.b2 * rf32(skf_b + 0x0C + off) + b.b3 * rf32(skf_b + off));
+            }
+        } else {
+            // Step for crossfade
+            wu32(output + 0x24, ru32(skf_a));
+            wu32(output + 0x28, ru32(skf_a + 4));
+            wu32(output + 0x2C, ru32(skf_a + 8));
+        }
+
+        // Blend: primary = primary + (secondary - primary) * blend
+        var i: u32 = 0;
+        while (i < 3) : (i += 1) {
+            const off = i * 4;
+            const pri = rf32(output + 0x0C + off);
+            const sec = rf32(output + 0x24 + off);
+            wf32(output + 0x0C + off, (sec - pri) * blend + pri);
+        }
+    }
+}
+
+/// Float interpolation with 12-byte keyframes and 4 modes (step/lerp/bezier/hermite).
+/// Keyframe layout: [value (4), in_tangent (4), out_tangent (4)] = 12 bytes.
+/// Used by 0x124 particle emitter Track 3. Uses bone_rt_base (bone 0) for timing.
+fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+    findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
+
+    const mode = ri16(anim_data + AD.interp_mode);
+    const kf_base = ru32(anim_data + AD.keyframe_base);
+
+    if (mode == 0) {
+        // Step — copy float from keyframe at idx0*12
+        wu32(output + 0x0C, ru32(kf_base + ru32(output) * 12));
+        return;
+    }
+
+    const t = ufloat(ru32(output + 8));
+    const kf_a = kf_base + ru32(output) * 12;
+    const kf_b = kf_base + ru32(output + 4) * 12;
+
+    if (mode == 1) {
+        const a = rf32(kf_a);
+        const b = rf32(kf_b);
+        wf32(output + 0x0C, (b - a) * t + a);
+    } else if (mode == 3) {
+        // Hermite: h1*p0 + h2*m0_out + h3*p1 + h4*m1_in
+        const h = hermiteBasis(t);
+        wf32(output + 0x0C, h.h1 * rf32(kf_a) + h.h2 * rf32(kf_a + 0x08) + h.h3 * rf32(kf_b) + h.h4 * rf32(kf_b + 0x04));
+    } else if (mode == 2) {
+        // Bezier: b0*p0 + b1*m0_out + b2*m1_in + b3*p1
+        const b = bezierBasis(t);
+        wf32(output + 0x0C, b.b0 * rf32(kf_a) + b.b1 * rf32(kf_a + 0x08) + b.b2 * rf32(kf_b + 0x04) + b.b3 * rf32(kf_b));
+    } else return;
+
+    // Crossfade
+    const blend = rf32(bone_rt_base + BR.blend_weight);
+    if (blend != 0.0 and ri16(anim_data + AD.time_index) == -1) {
+        findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
+
+        const st = ufloat(ru32(output + 0x18));
+        const skf_a = kf_base + ru32(output + 0x10) * 12;
+        const skf_b = kf_base + ru32(output + 0x14) * 12;
+        const smode = ri16(anim_data + AD.interp_mode);
+
+        var sec: f32 = undefined;
+        if (smode == 1) {
+            sec = (rf32(skf_b) - rf32(skf_a)) * st + rf32(skf_a);
+        } else if (smode == 3) {
+            const h = hermiteBasis(st);
+            sec = h.h1 * rf32(skf_a) + h.h2 * rf32(skf_a + 0x08) + h.h3 * rf32(skf_b) + h.h4 * rf32(skf_b + 0x04);
+        } else if (smode == 2) {
+            const bz = bezierBasis(st);
+            sec = bz.b0 * rf32(skf_a) + bz.b1 * rf32(skf_a + 0x08) + bz.b2 * rf32(skf_b + 0x04) + bz.b3 * rf32(skf_b);
+        } else {
+            sec = rf32(skf_a);
+        }
+        wf32(output + 0x1C, sec);
+        const pri = rf32(output + 0x0C);
+        wf32(output + 0x0C, (sec - pri) * blend + pri);
+    }
+}
+
+// =============================================================================
 // getInterpolatedFloat — reimplemented from 0x71af20
 // Same as interpFloatTrack but uses the bone_rt directly (different register mapping)
 // =============================================================================
@@ -1809,35 +1999,36 @@ fn particleEmitterLoop(this: u32, model_hdr: u32) void {
     const data_base = ru32(model_hdr + 0x128);
     const out_base = ru32(this + SO.particle1);
     const bone_rt_base = ru32(this + SO.bone_rt_base);
+    const frame_ctr = ru32(this + SO.anim_frame_ctr);
 
     var i: u32 = 0;
     var data_off: u32 = 0;
     var out_off: u32 = 0;
     while (i < count) : ({
         i += 1;
-        data_off += 0x7C;
-        out_off += 0x84;
+        data_off += 0x7C; // asm 0x717624: ADD EDI, 0x7C
+        out_off += 0x84; // asm 0x717627: ADD ESI, 0x84
     }) {
         const entry = data_base + data_off;
         const output = out_base + out_off;
-        const bone_idx = @as(u32, ru16(entry + 2));
-        const bone_rt = bone_rt_base + bone_idx * 0x118;
 
-        // All 3 tracks from assembly (0x716B00-0x717611):
-        // Track 1 (position): gate=entry+0x1C, AnimData=entry+0x10, output=+0x00
+        // Assembly uses bone_rt_base directly (bone 0) for ALL tracks — NOT per-entry bone_idx.
+        // Verified: 0x716B2E MOV EAX,[EBX+0x90]; 0x716F58 same; 0x7173B1 same.
+
+        // Track 1 (Vec3, 36-byte kf): gate=entry+0x1C, AD=entry+0x10, output=+0x00
         // Assembly: 0x716B19 CMP [EAX+0x1C]; 0x716B3B LEA ESI,[EDX+0x10]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x1C)) {
-            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
+        if (frame_ctr < ru32(entry + 0x1C)) {
+            interpVec3Track36(this, bone_rt_base, entry + 0x10, output);
         }
-        // Track 2: gate=entry+0x44, AnimData=entry+0x38, output=+0x30
+        // Track 2 (Vec3, 36-byte kf): gate=entry+0x44, AD=entry+0x38, output=+0x30
         // Assembly: 0x716F44 MOV EDX,[ECX+0x44]; 0x716F55 LEA ECX,[EAX+0x38]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x44)) {
-            interpVec3Track(this, bone_rt, entry + 0x38, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
+        if (frame_ctr < ru32(entry + 0x44)) {
+            interpVec3Track36(this, bone_rt_base, entry + 0x38, output + 0x30);
         }
-        // Track 3: gate=entry+0x6C, AnimData=entry+0x60, output=+0x60
+        // Track 3 (float, 12-byte kf): gate=entry+0x6C, AD=entry+0x60, output=+0x60
         // Assembly: 0x71739A MOV EDX,[ECX+0x6C]; 0x7173AE LEA EDI,[EAX+0x60]
-        if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x6C)) {
-            interpVec3Track(this, bone_rt, entry + 0x60, output + 0x60, ufloat(ru32(bone_rt + BR.blend_weight)));
+        if (frame_ctr < ru32(entry + 0x6C)) {
+            interpFloatTrack12(this, bone_rt_base, entry + 0x60, output + 0x60);
         }
     }
 }

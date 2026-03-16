@@ -692,7 +692,7 @@ fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) 
             const off = i * 4;
             wf32(output + 0x0C + off, b.b0 * rf32(kf_a + off) + b.b1 * rf32(kf_a + 0x18 + off) + b.b2 * rf32(kf_b + 0x0C + off) + b.b3 * rf32(kf_b + off));
         }
-    } else return;
+    } else {} // Unknown mode: skip primary interp, fall through to crossfade (asm 0x716B98: JNZ crossfade_check)
 
     const blend = rf32(bone_rt_base + BR.blend_weight);
     if (blend != 0.0 and ri16(anim_data + AD.time_index) == -1) {
@@ -763,7 +763,7 @@ fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32)
     } else if (mode == 2) {
         const b = bezierBasis(t);
         wf32(output + 0x0C, b.b0 * rf32(kf_a) + b.b1 * rf32(kf_a + 0x08) + b.b2 * rf32(kf_b + 0x04) + b.b3 * rf32(kf_b));
-    } else return;
+    } else {} // Unknown mode: skip primary interp, fall through to crossfade
 
     const blend = rf32(bone_rt_base + BR.blend_weight);
     if (blend != 0.0 and ri16(anim_data + AD.time_index) == -1) {
@@ -1074,6 +1074,9 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xB0);
                         const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8)) % (anim_end -% anim_start);
                         wu32(brt + 0x98, anim_start +% frame); // prim_time
+                    } else {
+                        // Assembly 0x714631: MOV EDX,EAX — fallback to anim_start
+                        wu32(brt + 0x98, anim_start);
                     }
                 } else {
                     // Clamped: assembly at 0x71458E-0x7145E3
@@ -1083,20 +1086,18 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                     // Check if sec_end has passed (sec_end - cur_time <= 0 signed)
                     if (sec_end_val != cur_time and @as(i32, @bitCast(sec_end_val -% cur_time)) > 0) {
                         // sec_end hasn't passed yet
-                        if (sec_start_val != cur_time and @as(i32, @bitCast(sec_start_val -% cur_time)) > 0) {
-                            // Before start: use sec_start as time
-                            // Actually assembly jumps to looping path LAB_007145f1
-                            // which reads anim_entry+0x08, anim_entry+0x04
-                            // Fallthrough: use cur_time (no write to prim_time)
-                        }
+                        // Assembly 0x7145E5: clamp cur_time to sec_start if sec_start > cur_time
+                        const effective_time = if (@as(i32, @bitCast(sec_start_val -% cur_time)) > 0) sec_start_val else cur_time;
                         // goto looping path
                         const anim_end = ru32(anim_entry + 0x08);
                         const anim_start = ru32(anim_entry + 0x04);
                         if (@as(i32, @bitCast(anim_start)) < @as(i32, @bitCast(anim_end))) {
-                            const delta = cur_time -% ru32(brt + 0xA8);
+                            const delta = effective_time -% ru32(brt + 0xA8);
                             const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xB0);
                             const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8)) % (anim_end -% anim_start);
                             wu32(brt + 0x98, anim_start +% frame);
+                        } else {
+                            wu32(brt + 0x98, anim_start);
                         }
                     } else {
                         // sec_end has passed — compute clamped position
@@ -1164,6 +1165,8 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                         const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xDC);
                         const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4)) % (anim_end -% anim_start);
                         wu32(brt + 0xC4, anim_start +% frame); // sec_time
+                    } else {
+                        wu32(brt + 0xC4, anim_start);
                     }
                 } else {
                     // Clamped
@@ -1171,16 +1174,17 @@ export fn transformMatrix4x4_REF(this: u32, mat1: u32, mat2: u32, mat3: u32, mat
                     const sec_start_val = ru32(brt + 0xD4);
 
                     if (sec_end_val != sec_cur_time and @as(i32, @bitCast(sec_end_val -% sec_cur_time)) > 0) {
-                        if (sec_start_val != sec_cur_time and @as(i32, @bitCast(sec_start_val -% sec_cur_time)) > 0) {
-                            // use sec_start
-                        }
+                        // Assembly 0x71474B: clamp sec_cur_time to sec_start if sec_start > sec_cur_time
+                        const effective_time = if (@as(i32, @bitCast(sec_start_val -% sec_cur_time)) > 0) sec_start_val else sec_cur_time;
                         const anim_end = ru32(sec_anim_entry + 0x08);
                         const anim_start = ru32(sec_anim_entry + 0x04);
                         if (@as(i32, @bitCast(anim_start)) < @as(i32, @bitCast(anim_end))) {
-                            const delta = sec_cur_time -% ru32(brt + 0xD4);
+                            const delta = effective_time -% ru32(brt + 0xD4);
                             const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xDC);
                             const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4)) % (anim_end -% anim_start);
                             wu32(brt + 0xC4, anim_start +% frame);
+                        } else {
+                            wu32(brt + 0xC4, anim_start);
                         }
                     } else {
                         const dur = sec_end_val -% sec_start_val;
@@ -1687,7 +1691,7 @@ fn texAnimLoop(this: u32, model_hdr: u32) void {
                 // Crossfade (assembly 0x715BAF-0x715C5E)
                 // Only runs for mode != 0 — mode 0 JMPs past this
                 const bw = rf32(bone_rt_base + BR.blend_weight);
-                if (bw > 0.0 and ri16(alpha_anim + 0x02) == -1) {
+                if (bw != 0.0 and ri16(alpha_anim + 0x02) == -1) {
                     findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), alpha_anim, alpha_out + 0x10);
                     const secondary = shortInterpToFloat(alpha_anim, alpha_out + 0x10);
                     wf32(alpha_out + 0x1C, secondary);
@@ -1748,7 +1752,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32) void {
 
                 // Crossfade (assembly 0x715D6B-0x715E1B)
                 const bw = rf32(bone_rt_base + BR.blend_weight);
-                if (bw > 0.0 and ri16(anim_data + 0x02) == -1) {
+                if (bw != 0.0 and ri16(anim_data + 0x02) == -1) {
                     findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
                     const secondary = shortInterpToFloat(anim_data, output + 0x10);
                     wf32(output + 0x1C, secondary);
@@ -1793,7 +1797,7 @@ fn wordAnimLoop(this: u32, model_hdr: u32) void {
                 // mode 0: no crossfade, skip
             } else {
                 const bw = rf32(bone_rt_base + BR.blend_weight);
-                if (bw > 0.0 and ri16(anim_data + 0x02) == -1) {
+                if (bw != 0.0 and ri16(anim_data + 0x02) == -1) {
                     findInterpIdx(this, ru32(bone_rt_base + BR.sec_time), ru32(bone_rt_base + BR.sec_track), anim_data, output + 0x10);
                     const sec_idx = ru32(output + 0x10);
                     wu16(output + 0x1C, ru16(kf_data + sec_idx * 2));
@@ -1941,12 +1945,12 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
 
         // ---- Track A (float): gate=entry+0x38, AD=entry+0x2C, output+0x30 ----
         if (frame_ctr < ru32(entry + 0x38)) {
-            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30, 0.0);
+            interpFloatTrack(this, bone_rt, entry + 0x2C, output + 0x30, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
 
         // ---- Track B (Vec3): gate=entry+0x1C, AD=entry+0x10, output+0x00 ----
         if (frame_ctr < ru32(entry + 0x1C)) {
-            interpVec3Track(this, bone_rt, entry + 0x10, output, 0.0); // no crossfade for particles
+            interpVec3Track(this, bone_rt, entry + 0x10, output, ufloat(ru32(bone_rt + BR.blend_weight)));
             // Post-processing 1 (asm 0x71678A-0x7167CE)
             const scale1 = rf32(output + 0x3C) * rf32(this + SO.render_scale_z);
             wf32(output + 0x134, rf32(output + 0x0C) * scale1);
@@ -1956,12 +1960,12 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32) void {
 
         // ---- Track C (float): gate=entry+0x70, AD=entry+0x64, output+0x80 ----
         if (frame_ctr < ru32(entry + 0x70)) {
-            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80, 0.0);
+            interpFloatTrack(this, bone_rt, entry + 0x64, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
         }
 
         // ---- Track D (Vec3): gate=entry+0x54, AD=entry+0x48, output+0x50 ----
         if (frame_ctr < ru32(entry + 0x54)) {
-            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, 0.0); // no crossfade for particles
+            interpVec3Track(this, bone_rt, entry + 0x48, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
             // Post-processing 2 (asm 0x716A67-0x716AA6)
             const scale2 = rf32(output + 0x8C) * rf32(this + SO.render_scale_z);
             wf32(output + 0x140, rf32(output + 0x5C) * scale2);
@@ -2055,7 +2059,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x30)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpVec3Track(this, bone_rt, entry + 0x24, output, 0.0); // no crossfade for particles
+                interpVec3Track(this, bone_rt, entry + 0x24, output, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Alpha track: entry+0x40 vs entry+0x4C
@@ -2081,14 +2085,14 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x68)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50, 0.0);
+                interpFloatTrack(this, bone_rt, entry + 0x5C, output + 0x50, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Emission rate: entry+0x78 vs entry+0x84
             if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x84)) {
                 const bone_idx = @as(u32, ru16(entry + 0x04));
                 const bone_rt = bone_rt_base + bone_idx * 0x118;
-                interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70, 0.0);
+                interpFloatTrack(this, bone_rt, entry + 0x78, output + 0x70, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
 
             // Scale track: entry+0xA4 vs entry+0xB0
@@ -2184,27 +2188,27 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
             if (vis_byte != 0 or ru32(this + SO.anim_frame_ctr) == 0) {
                 // Track 1: emission rate — gate=+0x40, AnimData=+0x34, output=+0x00
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x40)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x34, output, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0x34, output, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 2: speed — gate=+0x5C, AnimData=+0x50, output=+0x20
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x5C)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0x50, output + 0x20, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 3: color — gate=+0x78, AnimData=+0x6C, output=+0x40
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x78)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0x6C, output + 0x40, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 4 — gate=+0x94, AnimData=+0x88, output=+0x60
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x94)) {
-                    interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0x88, output + 0x60, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 5 (Vec3 spline) — gate=+0xB0, AnimData=+0xA4, output=+0x80
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xB0)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0xA4, output + 0x80, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 6 — gate=+0xCC, AnimData=+0xC0, output=+0xA0
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xCC)) {
-                    interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, 0.0);
+                    interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
                 // Track 7 — gate=+0xE8, AnimData=+0xDC, output=+0xC0
                 // Uses getInterpolatedFloat (0x71AF20)
@@ -2232,11 +2236,13 @@ fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32) void {
     const hierarchy = ru32(this + SO.hierarchy_ptr);
     if (hierarchy == 0) return;
 
+    // Attachment byte animation loop — skipped when attach_count==0 but
+    // child recursion below MUST still run. Original JBE 0x718657 jumps
+    // past this loop to the child section, NOT to the function exit.
     const attach_count = ru32(model_hdr + 0x104);
-    if (attach_count == 0) return;
     const attach_data = ru32(model_hdr + 0x108);
 
-    // Process attachment byte animations
+    // Process attachment byte animations (only when attach_count > 0)
     var att_i: u32 = 0;
     var att_off: u32 = 0;
     while (att_i < attach_count) : ({
