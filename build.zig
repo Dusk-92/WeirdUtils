@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86,
         .os_tag = .windows,
         .abi = .msvc,
-        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
+        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
     });
     const bone_sse_obj = b.addObject(.{
         .name = "bone_sse",

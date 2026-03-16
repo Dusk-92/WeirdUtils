@@ -396,20 +396,31 @@ inline fn copyMat4(dst: u32, src: u32) void {
 }
 
 /// 4x4 matrix multiply: dst = a * b (row-major). Safe for dst==a or dst==b.
-/// Uses f64 intermediates for precision. Scalar — no alignment requirements.
+/// Uses V4 + @mulAdd (FMA): 1 mul + 3 FMA per row = 16 SIMD ops total.
 fn matMul4x4(dst: u32, a: u32, b: u32) void {
-    var m: [16]f64 = undefined;
-    inline for (0..4) |row| {
-        inline for (0..4) |col| {
-            const i = row * 4 + col;
-            m[i] = @as(f64, rf32(a + @as(u32, @intCast(row)) * 16)) * @as(f64, rf32(b + @as(u32, @intCast(col)) * 4)) +
-                @as(f64, rf32(a + @as(u32, @intCast(row)) * 16 + 4)) * @as(f64, rf32(b + @as(u32, @intCast(col)) * 4 + 16)) +
-                @as(f64, rf32(a + @as(u32, @intCast(row)) * 16 + 8)) * @as(f64, rf32(b + @as(u32, @intCast(col)) * 4 + 32)) +
-                @as(f64, rf32(a + @as(u32, @intCast(row)) * 16 + 12)) * @as(f64, rf32(b + @as(u32, @intCast(col)) * 4 + 48));
-        }
-    }
-    inline for (0..16) |i| {
-        wf32(dst + @as(u32, @intCast(i)) * 4, @floatCast(m[i]));
+    // Pre-load all rows of B
+    const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
+    const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
+    const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
+    const b3 = V4{ rf32(b + 48), rf32(b + 52), rf32(b + 56), rf32(b + 60) };
+    // Pre-load all rows of A (in case dst aliases a)
+    const a0 = V4{ rf32(a), rf32(a + 4), rf32(a + 8), rf32(a + 12) };
+    const a1 = V4{ rf32(a + 16), rf32(a + 20), rf32(a + 24), rf32(a + 28) };
+    const a2 = V4{ rf32(a + 32), rf32(a + 36), rf32(a + 40), rf32(a + 44) };
+    const a3 = V4{ rf32(a + 48), rf32(a + 52), rf32(a + 56), rf32(a + 60) };
+    const rows = [4]V4{ a0, a1, a2, a3 };
+    // Compute: each output row = broadcast(a[row][col]) * b_row, accumulated with FMA
+    inline for (0..4) |i| {
+        const s0: V4 = @splat(rows[i][0]);
+        const s1: V4 = @splat(rows[i][1]);
+        const s2: V4 = @splat(rows[i][2]);
+        const s3: V4 = @splat(rows[i][3]);
+        const row = @mulAdd(V4, s3, b3, @mulAdd(V4, s2, b2, @mulAdd(V4, s1, b1, s0 * b0)));
+        const off: u32 = @intCast(i * 16);
+        wf32(dst + off, row[0]);
+        wf32(dst + off + 4, row[1]);
+        wf32(dst + off + 8, row[2]);
+        wf32(dst + off + 12, row[3]);
     }
 }
 
