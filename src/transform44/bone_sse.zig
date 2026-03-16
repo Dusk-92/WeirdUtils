@@ -1953,42 +1953,22 @@ fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
         // Rotation: AnimData at kf_entry+0x1C, gate at kf_entry+0x28
         // Assembly at 0x715FDB: CMP [ECX+0x28], 0; AnimData at EDX+0x1C
         if (ru32(kf_data + 0x28) != 0) {
-            // Assembly: CALL 0x713EA0 — interpAnimKF
-            const interpKF: *const fn (u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x713EA0);
-            interpKF(this, bone_rt_base, kf_data + 0x1C, output + 0x30);
-            // Assembly: PUSH 0xCF043C, MOV ECX=mat, CALL 0x7BDC40 — applyTranslation
-            const applyTrans: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDC40);
-            applyTrans(mat_out, 0, 0xCF043C);
-            // Assembly: PUSH quat_ptr, MOV ECX=mat, CALL 0x7BDDB0 — rotateByQuaternion
-            const rotateQuat: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDDB0);
-            rotateQuat(mat_out, 0, output + 0x3C);
-            // Assembly: negate 0xCF043C values to stack, PUSH, CALL 0x7BDC40
-            var neg_trans: [3]f32 = .{ -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444) };
-            applyTrans(mat_out, 0, @intFromPtr(&neg_trans));
+            interpAnimKF(this, bone_rt_base, kf_data + 0x1C, output + 0x30);
+            applyTranslation(mat_out, rf32(0xCF043C), rf32(0xCF0440), rf32(0xCF0444));
+            rotateByQuaternion(mat_out, rf32(output + 0x3C), rf32(output + 0x40), rf32(output + 0x44), rf32(output + 0x48));
+            applyTranslation(mat_out, -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444));
         }
 
-        // Scale: AnimData at kf_entry+0x38, gate at kf_entry+0x44
-        // Assembly at 0x716052: CMP [ECX+0x44], 0; AnimData at EDX+0x38
         if (ru32(kf_data + 0x44) != 0) {
             interpVec3Track(this, bone_rt_base, kf_data + 0x38, output + 0x68, ufloat(ru32(bone_rt_base + BR.blend_weight)));
-            // Assembly: PUSH 0xCF043C, MOV ECX=mat, CALL 0x7BDC40
-            const applyTrans2: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDC40);
-            applyTrans2(mat_out, 0, 0xCF043C);
-            // Assembly: PUSH scale_vec, MOV ECX=mat, CALL 0x7BDCA0
-            const scaleMat2: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDCA0);
-            scaleMat2(mat_out, 0, output + 0x74);
-            // Assembly: negate, CALL 0x7BDC40
-            var neg_trans2: [3]f32 = .{ -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444) };
-            applyTrans2(mat_out, 0, @intFromPtr(&neg_trans2));
+            applyTranslation(mat_out, rf32(0xCF043C), rf32(0xCF0440), rf32(0xCF0444));
+            scaleMatrix3x3(mat_out, rf32(output + 0x74), rf32(output + 0x78), rf32(output + 0x7C));
+            applyTranslation(mat_out, -rf32(0xCF043C), -rf32(0xCF0440), -rf32(0xCF0444));
         }
 
-        // Translation: AnimData at kf_entry+0x00, gate at kf_entry+0x0C
-        // Assembly at 0x716216: CMP [ECX+0x0C], 0; AnimData at kf_entry+0x00
         if (ru32(kf_data + 0x0C) != 0) {
             interpVec3Track(this, bone_rt_base, kf_data, output, ufloat(ru32(bone_rt_base + BR.blend_weight)));
-            // Assembly: PUSH trans_vec, MOV ECX=mat, CALL 0x7BDC40
-            const applyTrans3: *const fn (u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x7BDC40);
-            applyTrans3(mat_out, 0, output + 0x0C);
+            applyTranslation(mat_out, rf32(output + 0x0C), rf32(output + 0x10), rf32(output + 0x14));
         }
     }
 }
@@ -2310,23 +2290,15 @@ fn additionalParticleLoops(this: u32, model_hdr: u32) void {
                 if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xCC)) {
                     interpFloatTrack(this, bone_rt, entry + 0xC0, output + 0xA0, ufloat(ru32(bone_rt + BR.blend_weight)));
                 }
-                // Track 7 — gate=+0xE8, AnimData=+0xDC, output=+0xC0
-                // Uses getInterpolatedFloat (0x71AF20)
-                // Tracks 7-10: CALL 0x71AF20 — getInterpolatedFloat
-                // __fastcall(ECX=this, EDX=bone_rt, stack: anim_data, output)
-                const getInterpFloat: *const fn (u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x71AF20);
-                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xE8)) {
-                    getInterpFloat(this, bone_rt, entry + 0xDC, output + 0xC0);
-                }
-                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x104)) {
-                    getInterpFloat(this, bone_rt, entry + 0xF8, output + 0xE0);
-                }
-                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x120)) {
-                    getInterpFloat(this, bone_rt, entry + 0x114, output + 0x100);
-                }
-                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x13C)) {
-                    getInterpFloat(this, bone_rt, entry + 0x130, output + 0x120);
-                }
+                // Tracks 7-10: same as interpFloatTrack (0x71AF20 is identical logic)
+                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0xE8))
+                    interpFloatTrack(this, bone_rt, entry + 0xDC, output + 0xC0, ufloat(ru32(bone_rt + BR.blend_weight)));
+                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x104))
+                    interpFloatTrack(this, bone_rt, entry + 0xF8, output + 0xE0, ufloat(ru32(bone_rt + BR.blend_weight)));
+                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x120))
+                    interpFloatTrack(this, bone_rt, entry + 0x114, output + 0x100, ufloat(ru32(bone_rt + BR.blend_weight)));
+                if (ru32(this + SO.anim_frame_ctr) < ru32(entry + 0x13C))
+                    interpFloatTrack(this, bone_rt, entry + 0x130, output + 0x120, ufloat(ru32(bone_rt + BR.blend_weight)));
             }
         }
     }
@@ -2353,10 +2325,10 @@ fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32) void {
         if (ru32(this + SO.anim_frame_ctr) < ru32(att_entry + 0x20)) {
             const bone_idx = @as(u32, ru16(att_entry + 4));
             const bone_rt = ru32(this + SO.bone_rt_base) + bone_idx * 0x118;
-            // Assembly: CALL 0x71AE90 — extractAnimationByteFromKeyframes
-            // __fastcall(ECX=this, EDX=bone_rt, stack: anim_data, output)
-            const extractByte: *const fn (u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x71AE90);
-            extractByte(this, bone_rt, att_entry + 0x14, hierarchy + att_i * 0x20);
+            const anim_data = att_entry + 0x14;
+            const att_output = hierarchy + att_i * 0x20;
+            findInterpIdx(this, ru32(bone_rt + 0x98), ru32(bone_rt + 0x9C), anim_data, att_output);
+            wu8(att_output + 0x0C, ru8(ru32(anim_data + AD.keyframe_base) + ru32(att_output)));
         }
     }
 
@@ -2388,10 +2360,8 @@ fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32) void {
                 local_1a0[13] += local_1a0[1] * ox + local_1a0[5] * oy + local_1a0[9] * oz;
                 local_1a0[14] += local_1a0[2] * ox + local_1a0[6] * oy + local_1a0[10] * oz;
 
-                // Recursive call through 0x714260, matching original's CALL 0x714260.
-                // Goes through hook → detour → REF for child SceneObjects.
-                const callThrough: *const fn (u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) void = @ptrFromInt(0x714260);
-                callThrough(child, 0, @intFromPtr(&local_1a0), this + SO.world_pos, this + SO.render_pri, ru32(this + SO.render_scale_z));
+                // Direct recursion — no hook overhead
+                transformImpl_SSE(child, @intFromPtr(&local_1a0), this + SO.world_pos, this + SO.render_pri, ru32(this + SO.render_scale_z));
             }
         }
 
