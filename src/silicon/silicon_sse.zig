@@ -184,7 +184,7 @@ export fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) u3
 }
 
 // --- 0x6DC5A0: checkBoxLineIntersect (2.7M/7.5s) ---
-// Slab-method AABB-line intersection. Uses @mulAdd for t computation.
+// Slab AABB test. Branchless min/max for t0/t1 swap and tmin/tmax accumulation.
 export fn si_checkBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32) u32 {
     const bmin: [*]const f32 = @ptrFromInt(box_ptr);
     const bmax: [*]const f32 = @ptrFromInt(box_ptr + 0xC);
@@ -198,11 +198,11 @@ export fn si_checkBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32)
             if (start[i] < bmin[i] or start[i] > bmax[i]) return 0;
         } else {
             const inv_dir = 1.0 / dir;
-            var t0 = (bmin[i] - start[i]) * inv_dir;
-            var t1 = (bmax[i] - start[i]) * inv_dir;
-            if (t0 > t1) { const tmp = t0; t0 = t1; t1 = tmp; }
-            if (t0 > tmin) tmin = t0;
-            if (t1 < tmax) tmax = t1;
+            const ta = (bmin[i] - start[i]) * inv_dir;
+            const tb = (bmax[i] - start[i]) * inv_dir;
+            // Branchless swap: vminss/vmaxss instead of compare+branch
+            tmin = @max(tmin, @min(ta, tb));
+            tmax = @min(tmax, @max(ta, tb));
             if (tmin > tmax) return 0;
         }
     }
@@ -450,17 +450,17 @@ export fn si_addToColorAccumulator(this: u32, color: u32) void {
 }
 
 // --- 0x7B7A80: packParticleColor (2K/7.5s) ---
-// V4 multiply + clamp + convert for all 3 channels simultaneously
+// V4 multiply + clamp, then packed round+convert via @Vector(4, i32) for all channels at once.
 export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) void {
     const base: [*]u8 = @ptrFromInt(obj);
     const out: *align(1) u32 = @ptrCast(base + 0x12C);
     const alpha = base[0x12F];
     const rgb = V4{ @bitCast(r_bits), @bitCast(g_bits), @bitCast(b_bits), 0 } * @as(V4, @splat(@as(f32, 255.0)));
     const clamped = @min(@max(rgb, @as(V4, @splat(@as(f32, 0.0)))), @as(V4, @splat(@as(f32, 255.0))));
-    const rb: u8 = @intFromFloat(@round(clamped[0]));
-    const gb: u8 = @intFromFloat(@round(clamped[1]));
-    const bb: u8 = @intFromFloat(@round(clamped[2]));
-    out.* = @as(u32, alpha) << 24 | @as(u32, rb) << 16 | @as(u32, gb) << 8 | @as(u32, bb);
+    // Packed round + convert: single roundps + cvtps2dq (SSE4.1)
+    const rounded = @round(clamped);
+    const ints: @Vector(4, i32) = @intFromFloat(rounded);
+    out.* = @as(u32, alpha) << 24 | @as(u32, @intCast(ints[0])) << 16 | @as(u32, @intCast(ints[1])) << 8 | @as(u32, @intCast(ints[2]));
 }
 
 // --- 0x7B7B10: setParticleAlpha (2K/7.5s) ---
