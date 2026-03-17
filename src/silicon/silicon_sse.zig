@@ -40,21 +40,41 @@ export fn si_normalizeVec3(vec: u32, length_bits: u32) void {
 // --- 0x7BAE60: mulMat3x4 ---
 // out = A * B (3x4 layout: 3x3 rotation + 3 translation)
 // Layout: [r0c0 r0c1 r0c2 | r1c0 r1c1 r1c2 | r2c0 r2c1 r2c2 | tx ty tz]
-// Use @mulAdd for FMA chains
+// V4 per row: broadcast b[row*3+k], multiply with a's columns, accumulate.
 export fn si_mulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) u32 {
     const dst: [*]f32 = @ptrFromInt(out);
-    const a: [*]const f32 = @ptrFromInt(a_ptr);
+    const aa: [*]const f32 = @ptrFromInt(a_ptr);
     const b: [*]const f32 = @ptrFromInt(b_ptr);
-    // Rotation block: dst[row*3+col] = a[col]*b[row*3] + a[col+3]*b[row*3+1] + a[col+6]*b[row*3+2]
+
+    // a is row-major 3x3. a[0..2] = row 0, a[3..5] = row 1, a[6..8] = row 2.
+    // The formula: dst[row*3+col] = a[col]*b[row*3] + a[col+3]*b[row*3+1] + a[col+6]*b[row*3+2]
+    // This means: for each output row, we broadcast b's row elements and dot with a's "columns"
+    // a's "column k" is {a[k], a[k+3], a[k+6]} — that's picking one element from each of a's rows.
+
+    // Load a's columns (stride 3)
+    const ac0 = V4{ aa[0], aa[3], aa[6], aa[9] };  // col 0 of a (+ translation x)
+    const ac1 = V4{ aa[1], aa[4], aa[7], aa[10] }; // col 1 of a (+ translation y)
+    const ac2 = V4{ aa[2], aa[5], aa[8], aa[11] }; // col 2 of a (+ translation z)
+
+    // Rotation: 3 output rows
     inline for (0..3) |row| {
-        inline for (0..3) |col| {
-            dst[row * 3 + col] = @mulAdd(f32, a[col + 6], b[row * 3 + 2], @mulAdd(f32, a[col + 3], b[row * 3 + 1], a[col] * b[row * 3]));
-        }
+        const br0: V4 = @splat(b[row * 3]);
+        const br1: V4 = @splat(b[row * 3 + 1]);
+        const br2: V4 = @splat(b[row * 3 + 2]);
+        const result = @mulAdd(V4, ac2, br2, @mulAdd(V4, ac1, br1, ac0 * br0));
+        dst[row * 3] = result[0];
+        dst[row * 3 + 1] = result[1];
+        dst[row * 3 + 2] = result[2];
     }
-    // Translation: dst[9+col] = a[9]*b[col] + a[10]*b[col+3] + a[11]*b[col+6] + b[9+col]
+
+    // Translation: dst[9+i] = a_trans dot b_col_i + b_trans[i]
+    // = ac0[3]*b[i] + ac1[3]*b[i+3] + ac2[3]*b[i+6] + b[9+i]
+    // Using the V4 approach: broadcast b elements, same ac columns, take lane 3 + add b_trans
+    // Translation: scalar @mulAdd (b's columns don't align for V4)
     inline for (0..3) |col| {
-        dst[9 + col] = @mulAdd(f32, a[11], b[col + 6], @mulAdd(f32, a[10], b[col + 3], @mulAdd(f32, a[9], b[col], b[9 + col])));
+        dst[9 + col] = @mulAdd(f32, aa[11], b[col + 6], @mulAdd(f32, aa[10], b[col + 3], @mulAdd(f32, aa[9], b[col], b[9 + col])));
     }
+
     return out;
 }
 
@@ -338,19 +358,33 @@ export fn si_transposeMat4x4(src: u32, dst: u32) u32 {
 }
 
 // --- 0x7BB420: mulMat3x4InPlace ---
-// this = this * matB. Uses @mulAdd.
+// this = this * matB. V4 column approach: load a's columns (stride 3), broadcast b's row elements.
 export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) u32 {
     const a: [*]f32 = @ptrFromInt(mat_a);
     const b: [*]const f32 = @ptrFromInt(mat_b);
+
+    // Load a's columns (stride 3, including translation row)
+    const ac0 = V4{ a[0], a[3], a[6], a[9] };
+    const ac1 = V4{ a[1], a[4], a[7], a[10] };
+    const ac2 = V4{ a[2], a[5], a[8], a[11] };
+
+    // Rotation: 3 output rows via V4 broadcast+FMA
     var tmp: [12]f32 = undefined;
     inline for (0..3) |row| {
-        inline for (0..3) |col| {
-            tmp[row * 3 + col] = @mulAdd(f32, a[col + 6], b[row * 3 + 2], @mulAdd(f32, a[col + 3], b[row * 3 + 1], a[col] * b[row * 3]));
-        }
+        const br0: V4 = @splat(b[row * 3]);
+        const br1: V4 = @splat(b[row * 3 + 1]);
+        const br2: V4 = @splat(b[row * 3 + 2]);
+        const result = @mulAdd(V4, ac2, br2, @mulAdd(V4, ac1, br1, ac0 * br0));
+        tmp[row * 3] = result[0];
+        tmp[row * 3 + 1] = result[1];
+        tmp[row * 3 + 2] = result[2];
     }
+
+    // Translation: scalar @mulAdd
     inline for (0..3) |col| {
         tmp[9 + col] = @mulAdd(f32, a[11], b[col + 6], @mulAdd(f32, a[10], b[col + 3], @mulAdd(f32, a[9], b[col], b[9 + col])));
     }
+
     inline for (0..12) |i| { a[i] = tmp[i]; }
     return mat_a;
 }

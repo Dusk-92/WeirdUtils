@@ -169,6 +169,21 @@ fn report(name: []const u8, orig_cyc: u64, sse_cyc: u64, ok: bool) void {
     });
 }
 
+/// Run a function ITERS times, return best-of-5 cycle count.
+fn bench5(comptime func: anytype, args: anytype) u64 {
+    var best: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const t0 = rdtsc();
+        for (0..ITERS) |_| {
+            const r = @call(.never_inline, func, args);
+            std.mem.doNotOptimizeAway(r);
+        }
+        const elapsed = rdtsc() - t0;
+        if (elapsed < best) best = elapsed;
+    }
+    return best;
+}
+
 // =========================================================================
 // Calling convention types for original x87 functions (game binary)
 // =========================================================================
@@ -249,8 +264,8 @@ pub fn main() void {
         _ = of(a(&do), fb);
         _ = vec3MulAssign(a(&ds), fb);
         const ok = cmpSlice(&do, &ds);
-        var t = rdtsc(); for (0..ITERS) |_| { do = tmpl; _ = of(a(&do), fb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { ds = tmpl; _ = vec3MulAssign(a(&ds), fb); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { do = tmpl; _ = of(a(&do), fb); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { ds = tmpl; _ = vec3MulAssign(a(&ds), fb); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("vec3MulAssign", t, s, ok);
     }
 
@@ -270,8 +285,8 @@ pub fn main() void {
         of(a(&mo), fb);
         scaleMatrix3x3ByScalar(a(&ms), fb);
         const ok = cmpSlice(&mo, &ms);
-        var t = rdtsc(); for (0..ITERS) |_| { mo = tmpl; of(a(&mo), fb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { ms = tmpl; scaleMatrix3x3ByScalar(a(&ms), fb); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { mo = tmpl; of(a(&mo), fb); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { ms = tmpl; scaleMatrix3x3ByScalar(a(&ms), fb); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("scaleByScalar", t, s, ok);
     }
 
@@ -288,8 +303,8 @@ pub fn main() void {
         _ = of(a(&ro), a(&axis), ab, 1);
         _ = createAxisAngleRotMat3x3(a(&rs), a(&axis), ab, 1);
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis), ab, 1); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = createAxisAngleRotMat3x3(a(&rs), a(&axis), ab, 1); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis), ab, 1); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = createAxisAngleRotMat3x3(a(&rs), a(&axis), ab, 1); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("rotMat3x3", t, s, ok);
     }
 
@@ -303,8 +318,8 @@ pub fn main() void {
         _ = of(a(&ro), a(&axis), ab, 1);
         _ = createAxisAngleRotMat4x4(a(&rs), a(&axis), ab, 1);
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis), ab, 1); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = createAxisAngleRotMat4x4(a(&rs), a(&axis), ab, 1); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis), ab, 1); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = createAxisAngleRotMat4x4(a(&rs), a(&axis), ab, 1); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("rotMat4x4", t, s, ok);
     }
 
@@ -319,8 +334,8 @@ pub fn main() void {
         const ov = of(a(&va), a(&vb));
         const sv = dotProduct(a(&va), a(&vb));
         const ok = @abs(ov - sv) < 1e-4;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va), a(&vb)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = dotProduct(a(&va), a(&vb)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va), a(&vb)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = dotProduct(a(&va), a(&vb)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("dotProduct", t, s, ok);
     }
 
@@ -331,8 +346,8 @@ pub fn main() void {
         const ov = of(a(&v));
         const sv = squaredMagnitude(a(&v));
         const ok = @abs(ov - sv) < 1e-4;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&v)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = squaredMagnitude(a(&v)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&v)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = squaredMagnitude(a(&v)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("squaredMagnitude", t, s, ok);
     }
 
@@ -344,8 +359,8 @@ pub fn main() void {
         const ov = of(3, a(&coeffs), fb);
         const sv = evaluatePolynomial(3, a(&coeffs), fb);
         const ok = @abs(ov - sv) < 1e-4;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(3, a(&coeffs), fb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = evaluatePolynomial(3, a(&coeffs), fb); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(3, a(&coeffs), fb); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = evaluatePolynomial(3, a(&coeffs), fb); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("evaluatePolynomial", t, s, ok);
     }
 
@@ -360,8 +375,8 @@ pub fn main() void {
         of(a(&ro), a(&p1), a(&p2), a(&p3));
         calculatePlaneNormal(a(&rs), a(&p1), a(&p2), a(&p3));
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&ro), a(&p1), a(&p2), a(&p3)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { calculatePlaneNormal(a(&rs), a(&p1), a(&p2), a(&p3)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&ro), a(&p1), a(&p2), a(&p3)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { calculatePlaneNormal(a(&rs), a(&p1), a(&p2), a(&p3)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("planeNormal", t, s, ok);
     }
 
@@ -377,8 +392,8 @@ pub fn main() void {
         of(a(&mat), a(&va), a(&vb), a(&box_in), a(&bo));
         transformAABox(a(&mat), a(&va), a(&vb), a(&box_in), a(&bs));
         const ok = cmpSlice(&bo, &bs);
-        var t = rdtsc(); for (0..ITERS) |_| { bo = .{ 0, 0, 0, 0, 0, 0 }; of(a(&mat), a(&va), a(&vb), a(&box_in), a(&bo)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { bs = .{ 0, 0, 0, 0, 0, 0 }; transformAABox(a(&mat), a(&va), a(&vb), a(&box_in), a(&bs)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { bo = .{ 0, 0, 0, 0, 0, 0 }; of(a(&mat), a(&va), a(&vb), a(&box_in), a(&bo)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { bs = .{ 0, 0, 0, 0, 0, 0 }; transformAABox(a(&mat), a(&va), a(&vb), a(&box_in), a(&bs)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("transformAABox", t, s, ok);
     }
 
@@ -397,12 +412,12 @@ pub fn main() void {
         inline_x87_dot(&va2, &vb2, &rx);
         inline_sse_dot(&va2, &vb2, &rs);
         const ok = compareF32(rx, rs);
-        var t = rdtsc();
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_x87_dot(&va2, &vb2, &rx);
-        t = rdtsc() - t;
-        var s = rdtsc();
+        const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_sse_dot(&va2, &vb2, &rs);
-        s = rdtsc() - s;
+        const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("dotProduct(inlined)", t, s, ok);
     }
 
@@ -414,12 +429,12 @@ pub fn main() void {
         inline_x87_sqmag(&v, &rx);
         inline_sse_sqmag(&v, &rs);
         const ok = compareF32(rx, rs);
-        var t = rdtsc();
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_x87_sqmag(&v, &rx);
-        t = rdtsc() - t;
-        var s = rdtsc();
+        const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_sse_sqmag(&v, &rs);
-        s = rdtsc() - s;
+        const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("squaredMag(inlined)", t, s, ok);
     }
 
@@ -432,12 +447,12 @@ pub fn main() void {
         inline_x87_v3scale(&vec, &factor, &ro);
         inline_sse_v3scale(&vec, factor, &rs2);
         const ok = cmpSlice(&ro, &rs2);
-        var t = rdtsc();
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_x87_v3scale(&vec, &factor, &ro);
-        t = rdtsc() - t;
-        var s = rdtsc();
+        const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_sse_v3scale(&vec, factor, &rs2);
-        s = rdtsc() - s;
+        const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("vec3MulScalar(inlined)", t, s, ok);
     }
 
@@ -450,12 +465,12 @@ pub fn main() void {
         inline_x87_horner(&coeffs, &factor, &rx);
         inline_sse_horner(&coeffs, factor, &rs);
         const ok = compareF32(rx, rs);
-        var t = rdtsc();
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_x87_horner(&coeffs, &factor, &rx);
-        t = rdtsc() - t;
-        var s = rdtsc();
+        const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
         for (0..ITERS) |_| inline_sse_horner(&coeffs, factor, &rs);
-        s = rdtsc() - s;
+        const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("evalPoly(inlined)", t, s, ok);
     }
 
@@ -547,8 +562,8 @@ pub fn main() void {
         const ov = callDot(0x602630, a(&va2), a(&vb2));
         const sv = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2));
         const ok = @abs(ov - sv) < 1e-4;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = callDot(0x602630, a(&va2), a(&vb2)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = callDot(0x602630, a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("si_vec3Dot", t, s, ok);
     }
 
@@ -560,8 +575,8 @@ pub fn main() void {
         of(a(&vo));
         si_normalizeVec3InPlace(a(&vs));
         const ok = cmpSlice(&vo, &vs);
-        var t = rdtsc(); for (0..ITERS) |_| { vo = tv3(); of(a(&vo)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { vs = tv3(); si_normalizeVec3InPlace(a(&vs)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { vo = tv3(); of(a(&vo)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { vs = tv3(); si_normalizeVec3InPlace(a(&vs)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("normalizeVec3InPlace", t, s, ok);
     }
 
@@ -577,8 +592,8 @@ pub fn main() void {
         const ov = of(a(&pt), a(&plane), a(&dir));
         const sv = sf(a(&pt), a(&plane), a(&dir));
         const ok = @abs(ov - sv) < 1e-2;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&pt), a(&plane), a(&dir)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = sf(a(&pt), a(&plane), a(&dir)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&pt), a(&plane), a(&dir)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = sf(a(&pt), a(&plane), a(&dir)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("distanceToPlane", t, s, ok);
     }
 
@@ -591,8 +606,8 @@ pub fn main() void {
         const ov = of(a(&box), a(&ls), a(&le));
         const sv = si_checkBoxLineIntersect(a(&box), a(&ls), a(&le));
         const ok = ov == sv;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&box), a(&ls), a(&le)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_checkBoxLineIntersect(a(&box), a(&ls), a(&le)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&box), a(&ls), a(&le)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_checkBoxLineIntersect(a(&box), a(&ls), a(&le)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("checkBoxLineIntersect", t, s, ok);
     }
 
@@ -609,8 +624,8 @@ pub fn main() void {
         _ = of(a(&planes), a(&pt), a(&mask_o));
         _ = si_classifyPointFrustum(a(&planes), a(&pt), a(&mask_s));
         const ok = mask_o == mask_s;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&pt), a(&mask_o)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_classifyPointFrustum(a(&planes), a(&pt), a(&mask_s)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&pt), a(&mask_o)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_classifyPointFrustum(a(&planes), a(&pt), a(&mask_s)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("classifyPointFrustum", t, s, ok);
     }
 
@@ -624,8 +639,8 @@ pub fn main() void {
         const ov = of(a(&planes), a(&sphere));
         const sv = si_testSphereFrustum(a(&planes), a(&sphere));
         const ok = ov == sv;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&sphere)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_testSphereFrustum(a(&planes), a(&sphere)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&sphere)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_testSphereFrustum(a(&planes), a(&sphere)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("testSphereFrustum", t, s, ok);
     }
 
@@ -638,8 +653,8 @@ pub fn main() void {
         _ = of(a(&src), a(&dst_o));
         _ = si_transposeMat4x4(a(&src), a(&dst_s));
         const ok = cmpSlice(&dst_o, &dst_s);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&src), a(&dst_o)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_transposeMat4x4(a(&src), a(&dst_s)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&src), a(&dst_o)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_transposeMat4x4(a(&src), a(&dst_s)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("transposeMat4x4", t, s, ok);
     }
 
@@ -654,8 +669,8 @@ pub fn main() void {
         _ = of(a(&ro), a(&qa), tb, a(&qb));
         _ = si_quatSlerp(a(&rs), a(&qa), tb, a(&qb));
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&qa), tb, a(&qb)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_quatSlerp(a(&rs), a(&qa), tb, a(&qb)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&qa), tb, a(&qb)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_quatSlerp(a(&rs), a(&qa), tb, a(&qb)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("quatSlerp", t, s, ok);
     }
 
@@ -668,8 +683,8 @@ pub fn main() void {
         _ = of(a(&ro), ab2);
         _ = si_createZRotMat3x3(a(&rs), ab2);
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), ab2); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_createZRotMat3x3(a(&rs), ab2); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), ab2); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_createZRotMat3x3(a(&rs), ab2); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("createZRotMat3x3", t, s, ok);
     }
 
@@ -691,8 +706,8 @@ pub fn main() void {
                 }
             }
         }
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&ma), a(&mb)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&ma), a(&mb)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_mulMat3x4(a(&rs), a(&ma), a(&mb)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("mulMat3x4", t, s, ok);
     }
 
@@ -706,8 +721,8 @@ pub fn main() void {
         _ = si_rotateMatByQuat(a(&ms), a(&quat2));
         const ok = cmpSlice(&mo, &ms);
         mo = tm4(); ms = tm4();
-        var t = rdtsc(); for (0..ITERS) |_| { mo = tm4(); _ = of(a(&mo), a(&quat2)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { ms = tm4(); _ = si_rotateMatByQuat(a(&ms), a(&quat2)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { mo = tm4(); _ = of(a(&mo), a(&quat2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { ms = tm4(); _ = si_rotateMatByQuat(a(&ms), a(&quat2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("rotateMatByQuat", t, s, ok);
     }
 
@@ -721,8 +736,8 @@ pub fn main() void {
         _ = of(a(&ro), a(&axis2), ab2, 1);
         _ = si_createRotMat3x4(a(&rs), a(&axis2), ab2, 1);
         const ok = cmpSlice(&ro, &rs);
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis2), ab2, 1); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_createRotMat3x4(a(&rs), a(&axis2), ab2, 1); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&ro), a(&axis2), ab2, 1); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_createRotMat3x4(a(&rs), a(&axis2), ab2, 1); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("createRotMat3x4", t, s, ok);
     }
 
@@ -744,8 +759,8 @@ pub fn main() void {
                 }
             }
         }
-        var t = rdtsc(); for (0..ITERS) |_| { mo2 = tmpl2; _ = of(a(&mo2), a(&mb2)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { ms2 = tmpl2; _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { mo2 = tmpl2; _ = of(a(&mo2), a(&mb2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { ms2 = tmpl2; _ = si_mulMat3x4InPlace(a(&ms2), a(&mb2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("mulMat3x4InPlace", t, s, ok);
     }
 
@@ -760,8 +775,8 @@ pub fn main() void {
         of(a(&vo), lb);
         si_normalizeVec3(a(&vs), lb);
         const ok = cmpSlice(&vo, &vs);
-        var t = rdtsc(); for (0..ITERS) |_| { vo = tmpl3; of(a(&vo), lb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { vs = tmpl3; si_normalizeVec3(a(&vs), lb); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { vo = tmpl3; of(a(&vo), lb); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { vs = tmpl3; si_normalizeVec3(a(&vs), lb); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("normalizeVec3", t, s, ok);
     }
 
@@ -777,8 +792,8 @@ pub fn main() void {
         const ov = of(a(&planes), a(&aabb), a(&rot), a(&trans));
         const sv = si_testOBBFrustum(a(&planes), a(&aabb), a(&rot), a(&trans));
         const ok = ov == sv;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&aabb), a(&rot), a(&trans)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_testOBBFrustum(a(&planes), a(&aabb), a(&rot), a(&trans)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&planes), a(&aabb), a(&rot), a(&trans)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_testOBBFrustum(a(&planes), a(&aabb), a(&rot), a(&trans)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("testOBBFrustum", t, s, ok);
     }
 
@@ -794,8 +809,8 @@ pub fn main() void {
         of(ab2, a(&sin_o), a(&cos_o));
         si_calculateSinCos(ab2, a(&sin_s), a(&cos_s));
         const ok = compareF32(sin_o, sin_s) and compareF32(cos_o, cos_s);
-        var t = rdtsc(); for (0..ITERS) |_| { of(ab2, a(&sin_o), a(&cos_o)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { si_calculateSinCos(ab2, a(&sin_s), a(&cos_s)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(ab2, a(&sin_o), a(&cos_o)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_calculateSinCos(ab2, a(&sin_s), a(&cos_s)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("calculateSinCos", t, s, ok);
     }
 
@@ -829,8 +844,8 @@ pub fn main() void {
         var obj_bench_o = obj_o;
         var obj_bench_s = obj_s;
         const zero_off = Vec3{ 0.001, -0.001, 0.001 }; // tiny offset to avoid overflow
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_bench_o), a(&zero_off)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { si_translateBoundingVol(a(&obj_bench_s), a(&zero_off)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&obj_bench_o), a(&zero_off)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_translateBoundingVol(a(&obj_bench_s), a(&zero_off)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("translateBoundingVol", t, s, ok);
     }
 
@@ -843,8 +858,8 @@ pub fn main() void {
         of(a(&obj_o), a(&color));
         si_addToColorAccumulator(a(&obj_s), a(&color));
         const ok = compareF32(obj_o[27], obj_s[27]) and compareF32(obj_o[28], obj_s[28]) and compareF32(obj_o[29], obj_s[29]);
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), a(&color)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { si_addToColorAccumulator(a(&obj_s), a(&color)); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), a(&color)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_addToColorAccumulator(a(&obj_s), a(&color)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("addToColorAccum", t, s, ok);
     }
 
@@ -869,8 +884,8 @@ pub fn main() void {
             print("    orig bytes: [{x} {x} {x} {x}]\n", .{ obj_o[0x12C], obj_o[0x12D], obj_o[0x12E], obj_o[0x12F] });
             print("    sse  bytes: [{x} {x} {x} {x}]\n", .{ obj_s[0x12C], obj_s[0x12D], obj_s[0x12E], obj_s[0x12F] });
         }
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, rb, gb, bb); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { si_packParticleColor(a(&obj_s), rb, gb, bb); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, rb, gb, bb); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_packParticleColor(a(&obj_s), rb, gb, bb); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("packParticleColor", t, s, ok);
     }
 
@@ -883,8 +898,8 @@ pub fn main() void {
         of(a(&obj_o), 0, ab2);
         si_setParticleAlpha(a(&obj_s), ab2);
         const ok = obj_o[0x12F] == obj_s[0x12F];
-        var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, ab2); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), ab2); } s = rdtsc() - s;
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, ab2); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), ab2); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("setParticleAlpha", t, s, ok);
     }
 
@@ -1842,12 +1857,12 @@ fn bench_fc3r(
     _ = sse_fn(a(&rs), a(&param_a), a(&param_b));
     const ok = cmpSlice(ro[0..result_len], rs[0..result_len]);
 
-    var t = rdtsc();
+    var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
     for (0..ITERS) |_| { _ = of(a(&ro), a(&param_a), a(&param_b)); }
-    t = rdtsc() - t;
-    var s = rdtsc();
+    const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+    var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
     for (0..ITERS) |_| { _ = sse_fn(a(&rs), a(&param_a), a(&param_b)); }
-    s = rdtsc() - s;
+    const _te = rdtsc() - _t0; if (_te < s) s = _te; }
     report(name, t, s, ok);
 }
 
@@ -1872,12 +1887,12 @@ fn bench_tc2r(
     _ = sse_fn(a(&ss), a(&param));
     const ok = cmpSlice(@as([*]const f32, @ptrCast(&so))[0..result_len], @as([*]const f32, @ptrCast(&ss))[0..result_len]);
 
-    var t = rdtsc();
+    var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
     for (0..ITERS) |_| { so = self_init; _ = of(a(&so), a(&param)); }
-    t = rdtsc() - t;
-    var s = rdtsc();
+    const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+    var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc();
     for (0..ITERS) |_| { ss = self_init; _ = sse_fn(a(&ss), a(&param)); }
-    s = rdtsc() - s;
+    const _te = rdtsc() - _t0; if (_te < s) s = _te; }
     report(name, t, s, ok);
 }
 
