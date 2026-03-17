@@ -358,34 +358,33 @@ export fn si_transposeMat4x4(src: u32, dst: u32) u32 {
 }
 
 // --- 0x7BB420: mulMat3x4InPlace ---
-// this = this * matB. V4 column approach: load a's columns (stride 3), broadcast b's row elements.
+// this = this * matB. V4 columns loaded upfront, write directly back (no tmp needed).
 export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) u32 {
     const a: [*]f32 = @ptrFromInt(mat_a);
     const b: [*]const f32 = @ptrFromInt(mat_b);
 
-    // Load a's columns (stride 3, including translation row)
+    // Load everything into locals to eliminate aliasing
     const ac0 = V4{ a[0], a[3], a[6], a[9] };
     const ac1 = V4{ a[1], a[4], a[7], a[10] };
     const ac2 = V4{ a[2], a[5], a[8], a[11] };
+    const b_local: [12]f32 = .{ b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11] };
 
-    // Rotation: 3 output rows via V4 broadcast+FMA
-    var tmp: [12]f32 = undefined;
+    // Rotation: write directly back to a
     inline for (0..3) |row| {
-        const br0: V4 = @splat(b[row * 3]);
-        const br1: V4 = @splat(b[row * 3 + 1]);
-        const br2: V4 = @splat(b[row * 3 + 2]);
+        const br0: V4 = @splat(b_local[row * 3]);
+        const br1: V4 = @splat(b_local[row * 3 + 1]);
+        const br2: V4 = @splat(b_local[row * 3 + 2]);
         const result = @mulAdd(V4, ac2, br2, @mulAdd(V4, ac1, br1, ac0 * br0));
-        tmp[row * 3] = result[0];
-        tmp[row * 3 + 1] = result[1];
-        tmp[row * 3 + 2] = result[2];
+        a[row * 3] = result[0];
+        a[row * 3 + 1] = result[1];
+        a[row * 3 + 2] = result[2];
     }
 
-    // Translation: scalar @mulAdd
+    // Translation
     inline for (0..3) |col| {
-        tmp[9 + col] = @mulAdd(f32, a[11], b[col + 6], @mulAdd(f32, a[10], b[col + 3], @mulAdd(f32, a[9], b[col], b[9 + col])));
+        a[9 + col] = @mulAdd(f32, ac2[3], b_local[col + 6], @mulAdd(f32, ac1[3], b_local[col + 3], @mulAdd(f32, ac0[3], b_local[col], b_local[9 + col])));
     }
 
-    inline for (0..12) |i| { a[i] = tmp[i]; }
     return mat_a;
 }
 
