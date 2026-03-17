@@ -35,7 +35,7 @@ extern fn si_normalizeVec3(u32, u32) void;
 extern fn si_mulMat3x4(u32, u32, u32) u32;
 extern fn si_rotateMatByQuat(u32, u32) u32;
 extern fn si_createRotMat3x4(u32, u32, u32, u32) u32;
-extern fn si_distanceToPlane(u32, u32, u32) f64;
+extern fn si_distanceToPlane() callconv(.naked) void; // naked: ECX=point, EDX=plane, stack=dir, returns ST(0), RET 4
 extern fn si_classifyPointFrustum(u32, u32, u32) u32;
 extern fn si_checkBoxLineIntersect(u32, u32, u32) u32;
 extern fn si_testOBBFrustum(u32, u32, u32, u32) u32;
@@ -47,7 +47,7 @@ extern fn si_createZRotMat3x3(u32, u32) u32;
 extern fn si_transposeMat4x4(u32, u32) u32;
 extern fn si_mulMat3x4InPlace(u32, u32) u32;
 extern fn si_normalizeVec3InPlace(u32) void;
-extern fn si_vec3Dot(u32, u32) f64;
+extern fn si_vec3Dot() callconv(.naked) void; // naked: ECX=a, EDX=b, returns ST(0)
 extern fn si_translateBoundingVol(u32, u32) void;
 extern fn si_addVec3ToAccumulator(u32, u32, u32) void;
 extern fn si_addToColorAccumulator(u32, u32) void;
@@ -477,16 +477,32 @@ pub fn main() void {
         report("isPointInsideBounds", t, s, ok);
     }
 
-    // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> f64
+    // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> ST(0)
+    // Both original and SSE are naked/fastcall, call via asm
     {
         const va2 = tv3();
         const vb2 = tv3b();
-        const of = origFn(fn (u32, u32) callconv(cc_fc) f64, 0x602630);
-        const ov = of(a(&va2), a(&vb2));
-        const sv = si_vec3Dot(a(&va2), a(&vb2));
+        const callDot = struct {
+            fn call(func: u32, va_ptr: u32, vb_ptr: u32) f64 {
+                var result: f64 = undefined;
+                var eax_trash: u32 = undefined;
+                asm volatile (
+                    \\call *%[func]
+                    \\fstpl (%[out])
+                    : [eax_out] "={eax}" (eax_trash),
+                    : [func] "r" (func),
+                      [out] "r" (&result),
+                      [_ecx] "{ecx}" (va_ptr),
+                      [_edx] "{edx}" (vb_ptr),
+                );
+                return result;
+            }
+        }.call;
+        const ov = callDot(0x602630, a(&va2), a(&vb2));
+        const sv = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2));
         const ok = @abs(ov - sv) < 1e-4;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_vec3Dot(a(&va2), a(&vb2)); } s = rdtsc() - s;
+        var t = rdtsc(); for (0..ITERS) |_| { _ = callDot(0x602630, a(&va2), a(&vb2)); } t = rdtsc() - t;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2)); } s = rdtsc() - s;
         report("si_vec3Dot", t, s, ok);
     }
 
@@ -503,17 +519,20 @@ pub fn main() void {
         report("normalizeVec3InPlace", t, s, ok);
     }
 
-    // si_distanceToPlane (525K/7.5s) -- fastcall(point_ECX, plane_EDX, dir_stack) -> f64
+    // si_distanceToPlane (525K/7.5s) -- fastcall(point_ECX, plane_EDX, dir_stack) -> ST(0), RET 4
+    // Both original and SSE version use same CC — call via function pointer cast
     {
         const pt = tv3();
         const plane = [4]f32{ 0.0, 1.0, 0.0, -5.0 }; // y=5 plane
         const dir = Vec3{ 0.0, -1.0, 0.0 }; // pointing down
-        const of: *const fn (u32, u32, u32) callconv(cc_fc) f64 = origFn(fn (u32, u32, u32) callconv(cc_fc) f64, 0x6329E0);
+        const FnType = fn (u32, u32, u32) callconv(cc_fc) f64;
+        const of: *const FnType = origFn(FnType, 0x6329E0);
+        const sf: *const FnType = @ptrCast(&si_distanceToPlane);
         const ov = of(a(&pt), a(&plane), a(&dir));
-        const sv = si_distanceToPlane(a(&pt), a(&plane), a(&dir));
+        const sv = sf(a(&pt), a(&plane), a(&dir));
         const ok = @abs(ov - sv) < 1e-2;
         var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&pt), a(&plane), a(&dir)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_distanceToPlane(a(&pt), a(&plane), a(&dir)); } s = rdtsc() - s;
+        var s = rdtsc(); for (0..ITERS) |_| { _ = sf(a(&pt), a(&plane), a(&dir)); } s = rdtsc() - s;
         report("distanceToPlane", t, s, ok);
     }
 
