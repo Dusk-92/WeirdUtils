@@ -52,7 +52,7 @@ extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
 extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_fc) void;
-extern fn si_setParticleAlpha(u32, u32) callconv(cc_fc) void;
+extern fn si_setParticleAlpha(u32, u32, u32) callconv(cc_fc) void; // fastcall(ECX=obj, EDX=unused, stack=alpha)
 extern fn si_ftol() callconv(.naked) void;
 
 // =========================================================================
@@ -832,10 +832,10 @@ pub fn main() void {
         const ab2: u32 = @bitCast(@as(f32, 0.75));
         const of = origFn(fn (u32, u32, u32) callconv(cc_fc) void, 0x7B7B10);
         of(a(&obj_o), 0, ab2);
-        si_setParticleAlpha(a(&obj_s), ab2);
+        si_setParticleAlpha(a(&obj_s), 0, ab2);
         const ok = obj_o[0x12F] == obj_s[0x12F];
         var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, ab2); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
-        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), ab2); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), 0, ab2); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("setParticleAlpha", t, s, ok);
     }
 

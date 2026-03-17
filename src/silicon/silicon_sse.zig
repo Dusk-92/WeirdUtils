@@ -31,14 +31,25 @@ inline fn dot4v(a: V4, b: V4) f32 {
 }
 
 // --- 0x4549C0: normalizeVec3 (137K/7.5s) ---
-// 9cy (1.8x). Reciprocal + 3 muls. Division latency is the floor.
-export fn si_normalizeVec3(vec: u32, length_bits: u32) callconv(TC) void {
-    const v: [*]f32 = @ptrFromInt(vec);
-    const length: f32 = @bitCast(length_bits);
-    const scale = 1.0 / length;
-    v[0] *= scale;
-    v[1] *= scale;
-    v[2] *= scale;
+// Naked thiscall: ECX=vec, [ESP+4]=length_bits. RET 4. Original: 38 bytes.
+// rcpss + NR for fast reciprocal, then 3 multiplies.
+export fn si_normalizeVec3() callconv(.naked) void {
+    asm volatile (
+        // xmm0 = 1.0 / length (via rcpss + Newton-Raphson)
+        \\vmovss 4(%%esp), %%xmm0
+        \\vrcpss %%xmm0, %%xmm0, %%xmm1
+        \\vmulss %%xmm1, %%xmm0, %%xmm2
+        \\vaddss %%xmm1, %%xmm1, %%xmm0
+        \\vfnmadd231ss %%xmm1, %%xmm2, %%xmm0
+        // xmm0 = refined 1/length. Multiply 3 components.
+        \\vmulss (%%ecx), %%xmm0, %%xmm1
+        \\vmovss %%xmm1, (%%ecx)
+        \\vmulss 4(%%ecx), %%xmm0, %%xmm1
+        \\vmovss %%xmm1, 4(%%ecx)
+        \\vmulss 8(%%ecx), %%xmm0, %%xmm1
+        \\vmovss %%xmm1, 8(%%ecx)
+        \\ret $4
+    );
 }
 
 // --- 0x7BAE60: mulMat3x4 ---
@@ -252,8 +263,7 @@ export fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_
 }
 
 // --- 0x686B80: testSphereFrustum (375K/7.5s) ---
-// Serial dot4v with early-out per plane. Gather-based batching tested — slower
-// due to stride-16 loads. Early-out is valuable here (most spheres pass all planes).
+// Zig thiscall: naked asm tested at 10cy (vhaddps slow), Zig dot4v at 8cy.
 export fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
     const s: [*]const f32 = @ptrFromInt(sphere);
     const center = V4{ s[0], s[1], s[2], 1.0 };
@@ -264,6 +274,7 @@ export fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
     }
     return 3;
 }
+
 
 // --- 0x7C0570: quatSlerp ---
 // V4 for final blend, @mulAdd for dot product
@@ -322,30 +333,35 @@ export fn si_createZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
 }
 
 // --- 0x7BCEF0: transposeMat4x4 ---
-// Uses V4 loads + @shuffle for efficient transpose
-export fn si_transposeMat4x4(src: u32, dst: u32) callconv(TC) u32 {
-    const r0 = loadV4(src);
-    const r1 = loadV4(src + 16);
-    const r2 = loadV4(src + 32);
-    const r3 = loadV4(src + 48);
-
-    // Interleave low/high pairs
-    const t0 = @shuffle(f32, r0, r1, [4]i32{ 0, -1, 2, -3 }); // r0[0] r1[0] r0[2] r1[2]
-    const t1 = @shuffle(f32, r0, r1, [4]i32{ 1, -2, 3, -4 }); // r0[1] r1[1] r0[3] r1[3]
-    const t2 = @shuffle(f32, r2, r3, [4]i32{ 0, -1, 2, -3 }); // r2[0] r3[0] r2[2] r3[2]
-    const t3 = @shuffle(f32, r2, r3, [4]i32{ 1, -2, 3, -4 }); // r2[1] r3[1] r2[3] r3[3]
-
-    const d: [*]f32 = @ptrFromInt(dst);
-    // Final columns
-    const c0 = @shuffle(f32, t0, t2, [4]i32{ 0, 1, -1, -2 }); // col 0: r0[0] r1[0] r2[0] r3[0]
-    const c1 = @shuffle(f32, t1, t3, [4]i32{ 0, 1, -1, -2 }); // col 1
-    const c2 = @shuffle(f32, t0, t2, [4]i32{ 2, 3, -3, -4 }); // col 2
-    const c3 = @shuffle(f32, t1, t3, [4]i32{ 2, 3, -3, -4 }); // col 3
-    inline for (0..4) |i| { d[i] = c0[i]; }
-    inline for (0..4) |i| { d[4 + i] = c1[i]; }
-    inline for (0..4) |i| { d[8 + i] = c2[i]; }
-    inline for (0..4) |i| { d[12 + i] = c3[i]; }
-    return src;
+// Naked thiscall: ECX=src, [ESP+4]=dst. RET 4. Original: 156 bytes.
+// SSE unpacklo/unpackhi transpose: 4 loads + 4 shuffles + 4 stores.
+export fn si_transposeMat4x4() callconv(.naked) void {
+    asm volatile (
+        \\mov 4(%%esp), %%eax
+        // Load 4 rows from src (ECX)
+        \\vmovups (%%ecx), %%xmm0
+        \\vmovups 16(%%ecx), %%xmm1
+        \\vmovups 32(%%ecx), %%xmm2
+        \\vmovups 48(%%ecx), %%xmm3
+        // Transpose via unpacklo/unpackhi
+        \\vunpcklps %%xmm1, %%xmm0, %%xmm4
+        \\vunpckhps %%xmm1, %%xmm0, %%xmm5
+        \\vunpcklps %%xmm3, %%xmm2, %%xmm6
+        \\vunpckhps %%xmm3, %%xmm2, %%xmm7
+        // Combine into final columns
+        \\vmovlhps %%xmm6, %%xmm4, %%xmm0
+        \\vmovhlps %%xmm4, %%xmm6, %%xmm1
+        \\vmovlhps %%xmm7, %%xmm5, %%xmm2
+        \\vmovhlps %%xmm5, %%xmm7, %%xmm3
+        // Store to dst (EAX)
+        \\vmovups %%xmm0, (%%eax)
+        \\vmovups %%xmm1, 16(%%eax)
+        \\vmovups %%xmm2, 32(%%eax)
+        \\vmovups %%xmm3, 48(%%eax)
+        // Return src in EAX
+        \\mov %%ecx, %%eax
+        \\ret $4
+    );
 }
 
 // --- 0x7BB420: mulMat3x4InPlace ---
@@ -406,14 +422,23 @@ export fn si_addVec3ToAccumulator(this: u32, vec: u32, scale_addr: u32) callconv
     obj[51] = @mulAdd(f32, v[2], scale, obj[51]);
 }
 
-// --- 0x71BF60: addToColorAccumulator (10K/7.5s, 0.003ms total) ---
-// 3 scalar float adds. At parity with original (9-10cy). Not worth optimizing further.
-export fn si_addToColorAccumulator(this: u32, color: u32) callconv(TC) void {
-    const obj: [*]f32 = @ptrFromInt(this);
-    const c: [*]const f32 = @ptrFromInt(color);
-    obj[27] += c[0];
-    obj[28] += c[1];
-    obj[29] += c[2];
+// --- 0x71BF60: addToColorAccumulator (10K/7.5s) ---
+// Naked thiscall: ECX=this, [ESP+4]=color_ptr. RET 4. Original: 34 bytes.
+// 3 SSE adds at this+0x6C from color[0..2].
+export fn si_addToColorAccumulator() callconv(.naked) void {
+    asm volatile (
+        \\mov 4(%%esp), %%eax
+        \\vmovss (%%eax), %%xmm0
+        \\vaddss 0x6C(%%ecx), %%xmm0, %%xmm0
+        \\vmovss %%xmm0, 0x6C(%%ecx)
+        \\vmovss 4(%%eax), %%xmm0
+        \\vaddss 0x70(%%ecx), %%xmm0, %%xmm0
+        \\vmovss %%xmm0, 0x70(%%ecx)
+        \\vmovss 8(%%eax), %%xmm0
+        \\vaddss 0x74(%%ecx), %%xmm0, %%xmm0
+        \\vmovss %%xmm0, 0x74(%%ecx)
+        \\ret $4
+    );
 }
 
 // --- 0x7B7A80: packParticleColor (2K/7.5s) ---
@@ -431,11 +456,23 @@ export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) 
 }
 
 // --- 0x7B7B10: setParticleAlpha (2K/7.5s) ---
-export fn si_setParticleAlpha(obj: u32, alpha_bits: u32) callconv(FC) void {
-    const base: [*]u8 = @ptrFromInt(obj);
-    const alpha: f32 = @bitCast(alpha_bits);
-    base[0x12F] = @intFromFloat(@min(@max(alpha * 255.0, 0.0), 255.0));
+// Naked fastcall: ECX=obj, [ESP+4]=alpha_bits. RET 4.
+// Clamp alpha*255 to [0,255], write byte to obj+0x12F.
+export fn si_setParticleAlpha() callconv(.naked) void {
+    asm volatile (
+        \\vmovss 4(%%esp), %%xmm0
+        \\mov $0x437F0000, %%eax
+        \\vmovd %%eax, %%xmm1
+        \\vmulss %%xmm1, %%xmm0, %%xmm0
+        \\vxorps %%xmm2, %%xmm2, %%xmm2
+        \\vmaxss %%xmm2, %%xmm0, %%xmm0
+        \\vminss %%xmm1, %%xmm0, %%xmm0
+        \\vcvtss2si %%xmm0, %%eax
+        \\mov %%al, 0x12F(%%ecx)
+        \\ret $4
+    );
 }
+
 
 // --- 0x40A2B0: __ftol ---
 // Drop-in binary replacement. Input: ST(0). Output: EAX:EDX (i64).
