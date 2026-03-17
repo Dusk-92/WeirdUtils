@@ -1390,9 +1390,9 @@ fn isEnergizeEffect(e: u32) bool {
 /// SPELL_AURA_SPLIT_DAMAGE_PCT=81, SPLIT_DAMAGE_FLAT=153, SPLIT_DAMAGE_GROUP_PCT=193
 fn isDamageSplitSpell(spell_id: u32) bool {
     if (getSpellRecord(spell_id)) |rec| {
-        // EffectApplyAuraName[0..2] at offset 0x178, 0x17C, 0x180
+        // EffectApplyAuraName[0..2] at offset 0x16C, 0x170, 0x174 (client Spell.dbc layout)
         inline for (0..3) |i| {
-            const aura = hook.readMem(u32, rec + 0x178 + @as(u32, @intCast(i)) * 4);
+            const aura = hook.readMem(u32, rec + 0x16C + @as(u32, @intCast(i)) * 4);
             if (aura == 81 or aura == 153 or aura == 193) return true;
         }
     }
