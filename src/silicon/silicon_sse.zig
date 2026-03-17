@@ -144,7 +144,8 @@ export fn si_distanceToPlane() callconv(.naked) void {
 
 // --- 0x686C20: classifyPointFrustum (3.2M/7.5s) ---
 // Tests point against 6 frustum planes, produces 6-bit bitmask.
-// Uses V4 dot product: load plane as V4, point as {x,y,z,1}, dot4.
+// Scalar @mulAdd dot4 per plane — the FMA chain has best throughput for this pattern.
+// Tried: V4 batch 4 planes (gather kills it), V4 hsum (shuffle overhead kills it).
 export fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) u32 {
     const mask: *u32 = @ptrFromInt(out_mask);
     const pt = loadV3_1(point);
@@ -152,7 +153,8 @@ export fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) u3
     inline for (0..6) |i| {
         const pl = loadV4(planes_ptr + i * 16);
         const dist = dot4v(pt, pl);
-        if (dist < 0) bits |= (@as(u32, 1) << @intCast(i));
+        // Branchless: extract sign bit via bit cast
+        bits |= (@as(u32, @bitCast(dist)) >> 31) << i;
     }
     mask.* = bits;
     return planes_ptr;
@@ -363,7 +365,8 @@ export fn si_addVec3ToAccumulator(this: u32, vec: u32, scale_addr: u32) void {
     obj[51] = @mulAdd(f32, v[2], scale, obj[51]);
 }
 
-// --- 0x71BF60: addToColorAccumulator (10K/7.5s) ---
+// --- 0x71BF60: addToColorAccumulator (10K/7.5s, 0.003ms total) ---
+// 3 scalar float adds. At parity with original (9-10cy). Not worth optimizing further.
 export fn si_addToColorAccumulator(this: u32, color: u32) void {
     const obj: [*]f32 = @ptrFromInt(this);
     const c: [*]const f32 = @ptrFromInt(color);
