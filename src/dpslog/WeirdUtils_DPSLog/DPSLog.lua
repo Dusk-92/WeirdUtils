@@ -57,62 +57,98 @@ end
 -- Subevent definitions — ordered list of all 34
 -- ============================================================================
 
+-- Each entry: { displayName, subevent, [variantField], [variantValue] }
+-- variantField: which arg to check for the variant (nil = any occurrence)
+-- variantValue: specific value to match (string or number)
 local SUBEVENTS = {
-    -- Pattern A: fireCombatLog (sub, src, dst, n1..n7)
-    "SPELL_DAMAGE",
-    "RANGE_DAMAGE",
-    "SPELL_PERIODIC_DAMAGE",
-    "DAMAGE_SHIELD",
-    "SWING_DAMAGE",
-    "SPELL_HEAL",
-    "SPELL_PERIODIC_HEAL",
-    "SPELL_ENERGIZE",
-    "SPELL_PERIODIC_ENERGIZE",
-    "SPELL_PERIODIC_LEECH",
-    "SPELL_PERIODIC_DRAIN",
-    "SPELL_EXTRA_ATTACKS",
-    -- Pattern B: fireSwingMissed (sub, src, dst, missType)
-    "SWING_MISSED",
-    -- Pattern C: fireSpellStr (sub, src, dst, spellId, school, strArg)
-    "SPELL_MISSED",
-    "SPELL_PERIODIC_MISSED",
-    "DAMAGE_SHIELD_MISSED",
-    "RANGE_MISSED",
-    "SPELL_AURA_APPLIED",
-    "SPELL_AURA_REMOVED",
-    "SPELL_AURA_REFRESH",
-    "SPELL_AURA_BROKEN",
-    "SPELL_CAST_FAILED",
-    -- Pattern D: fireSpell (sub, src, dst, spellId, school)
-    "SPELL_CAST_START",
-    "SPELL_CAST_SUCCESS",
-    "SPELL_SUMMON",
-    "SPELL_RESURRECT",
-    "SPELL_INSTAKILL",
-    -- Pattern E: fireBase (sub, src, dst)
-    "UNIT_DIED",
-    "PARTY_KILL",
-    -- Pattern F: fireSpellStrD (sub, src, dst, spellId, school, strArg, amount)
-    "SPELL_AURA_APPLIED_DOSE",
-    "SPELL_AURA_REMOVED_DOSE",
-    -- Pattern G: fireSpellDispel (sub, src, dst, spellId, school, extraId, extraSchool, auraType)
-    "SPELL_DISPEL",
-    "SPELL_INTERRUPT",
-    "SPELL_AURA_BROKEN_SPELL",
-    -- Pattern H: fireEnvDamage (sub, src, dst, envStr, amount, school, absorbed, 0, 0)
-    "ENVIRONMENTAL_DAMAGE",
-    -- New: damage split, dispel failed, unit destroyed
-    "DAMAGE_SPLIT",
-    "SPELL_DISPEL_FAILED",
-    "UNIT_DESTROYED",
+    -- Damage
+    { "SPELL_DAMAGE",            "SPELL_DAMAGE" },
+    { "SPELL_DAMAGE (crit)",     "SPELL_DAMAGE",          10, 1 },
+    { "RANGE_DAMAGE",            "RANGE_DAMAGE" },
+    { "RANGE_DAMAGE (crit)",     "RANGE_DAMAGE",          10, 1 },
+    { "SPELL_PERIODIC_DAMAGE",   "SPELL_PERIODIC_DAMAGE" },
+    { "DAMAGE_SHIELD",           "DAMAGE_SHIELD" },
+    { "DAMAGE_SPLIT",            "DAMAGE_SPLIT" },
+    { "SWING_DAMAGE",            "SWING_DAMAGE" },
+    { "SWING_DAMAGE (crit)",     "SWING_DAMAGE",          9, 1 },
+    { "SWING_DAMAGE (glancing)", "SWING_DAMAGE",          10, 1 },  -- flags bit 0
+    { "SWING_DAMAGE (crushing)", "SWING_DAMAGE",          10, 2 },  -- flags bit 1
+    { "SWING_DAMAGE (offhand)",  "SWING_DAMAGE",          10, 4 },  -- flags bit 2
+    { "ENVIRONMENTAL (DROWNING)",  "ENVIRONMENTAL_DAMAGE", 4, "DROWNING" },
+    { "ENVIRONMENTAL (FALLING)",   "ENVIRONMENTAL_DAMAGE", 4, "FALLING" },
+    { "ENVIRONMENTAL (LAVA)",      "ENVIRONMENTAL_DAMAGE", 4, "LAVA" },
+    { "ENVIRONMENTAL (SLIME)",     "ENVIRONMENTAL_DAMAGE", 4, "SLIME" },
+    { "ENVIRONMENTAL (FIRE)",      "ENVIRONMENTAL_DAMAGE", 4, "FIRE" },
+    { "ENVIRONMENTAL (EXHAUSTED)", "ENVIRONMENTAL_DAMAGE", 4, "EXHAUSTED" },
+    -- Misses — swing
+    { "SWING_MISSED (MISS)",     "SWING_MISSED",    4, "MISS" },
+    { "SWING_MISSED (DODGE)",    "SWING_MISSED",    4, "DODGE" },
+    { "SWING_MISSED (PARRY)",    "SWING_MISSED",    4, "PARRY" },
+    { "SWING_MISSED (BLOCK)",    "SWING_MISSED",    4, "BLOCK" },
+    { "SWING_MISSED (EVADE)",    "SWING_MISSED",    4, "EVADE" },
+    { "SWING_MISSED (IMMUNE)",   "SWING_MISSED",    4, "IMMUNE" },
+    { "SWING_MISSED (DEFLECT)",  "SWING_MISSED",    4, "DEFLECT" },
+    { "SWING_MISSED (RESIST)",   "SWING_MISSED",    4, "RESIST" },
+    { "SWING_MISSED (ABSORB)",   "SWING_MISSED",    4, "ABSORB" },
+    -- Misses — spell/range
+    { "SPELL_MISSED (MISS)",     "SPELL_MISSED",    6, "MISS" },
+    { "SPELL_MISSED (DODGE)",    "SPELL_MISSED",    6, "DODGE" },
+    { "SPELL_MISSED (PARRY)",    "SPELL_MISSED",    6, "PARRY" },
+    { "SPELL_MISSED (IMMUNE)",   "SPELL_MISSED",    6, "IMMUNE" },
+    { "SPELL_MISSED (RESIST)",   "SPELL_MISSED",    6, "RESIST" },
+    { "SPELL_MISSED (ABSORB)",   "SPELL_MISSED",    6, "ABSORB" },
+    { "SPELL_MISSED (REFLECT)",  "SPELL_MISSED",    6, "REFLECT" },
+    { "RANGE_MISSED",            "RANGE_MISSED" },
+    { "SPELL_PERIODIC_MISSED",   "SPELL_PERIODIC_MISSED" },
+    { "DAMAGE_SHIELD_MISSED",    "DAMAGE_SHIELD_MISSED" },
+    -- Heals
+    { "SPELL_HEAL",              "SPELL_HEAL" },
+    { "SPELL_HEAL (crit)",       "SPELL_HEAL",      8, 1 },
+    { "SPELL_PERIODIC_HEAL",     "SPELL_PERIODIC_HEAL" },
+    -- Power
+    { "SPELL_ENERGIZE (Mana)",   "SPELL_ENERGIZE" },   -- amount=0 from hook, can't distinguish
+    { "SPELL_PERIODIC_ENERGIZE", "SPELL_PERIODIC_ENERGIZE" },
+    { "SPELL_PERIODIC_DRAIN",    "SPELL_PERIODIC_DRAIN" },
+    { "SPELL_PERIODIC_LEECH",    "SPELL_PERIODIC_LEECH" },
+    -- Auras
+    { "SPELL_AURA_APPLIED (BUFF)",   "SPELL_AURA_APPLIED",  6, "BUFF" },
+    { "SPELL_AURA_APPLIED (DEBUFF)", "SPELL_AURA_APPLIED",  6, "DEBUFF" },
+    { "SPELL_AURA_REMOVED (BUFF)",   "SPELL_AURA_REMOVED",  6, "BUFF" },
+    { "SPELL_AURA_REMOVED (DEBUFF)", "SPELL_AURA_REMOVED",  6, "DEBUFF" },
+    { "SPELL_AURA_APPLIED_DOSE",     "SPELL_AURA_APPLIED_DOSE" },
+    { "SPELL_AURA_REMOVED_DOSE",     "SPELL_AURA_REMOVED_DOSE" },
+    { "SPELL_AURA_REFRESH",          "SPELL_AURA_REFRESH" },
+    { "SPELL_AURA_BROKEN",           "SPELL_AURA_BROKEN" },
+    { "SPELL_AURA_BROKEN_SPELL",     "SPELL_AURA_BROKEN_SPELL" },
+    -- Casts
+    { "SPELL_CAST_START",        "SPELL_CAST_START" },
+    { "SPELL_CAST_SUCCESS",      "SPELL_CAST_SUCCESS" },
+    { "SPELL_CAST_FAILED",       "SPELL_CAST_FAILED" },
+    -- Misc spell
+    { "SPELL_INTERRUPT",         "SPELL_INTERRUPT" },
+    { "SPELL_DISPEL",            "SPELL_DISPEL" },
+    { "SPELL_DISPEL_FAILED",     "SPELL_DISPEL_FAILED" },
+    { "SPELL_EXTRA_ATTACKS",     "SPELL_EXTRA_ATTACKS" },
+    { "SPELL_SUMMON",            "SPELL_SUMMON" },
+    { "SPELL_RESURRECT",         "SPELL_RESURRECT" },
+    { "SPELL_INSTAKILL",         "SPELL_INSTAKILL" },
+    -- Deaths
+    { "UNIT_DIED",               "UNIT_DIED" },
+    { "UNIT_DESTROYED",          "UNIT_DESTROYED" },
+    { "PARTY_KILL",              "PARTY_KILL" },
 }
 
-local NUM_SUBEVENTS = 37
+local NUM_SUBEVENTS = table.getn(SUBEVENTS)
 
--- Reverse lookup: subevent name -> index
-local subeventIndex = {}
+-- Build reverse lookup: for each subevent name, list all indices that match it
+-- (one subevent may have multiple variant entries)
+local subeventIndices = {} -- [subeventName] = { idx1, idx2, ... }
 for i = 1, NUM_SUBEVENTS do
-    subeventIndex[SUBEVENTS[i]] = i
+    local name = SUBEVENTS[i][2]
+    if not subeventIndices[name] then
+        subeventIndices[name] = {}
+    end
+    table.insert(subeventIndices[name], i)
 end
 
 -- Tracking state
@@ -361,7 +397,7 @@ end
 
 local ROW_HEIGHT = 14
 local FRAME_WIDTH = 420
-local VISIBLE_ROWS = 20
+local VISIBLE_ROWS = 25
 local FRAME_HEIGHT = ROW_HEIGHT * VISIBLE_ROWS + 52  -- title + counter + padding
 
 local main = CreateFrame("Frame", "DPSLogTracker", UIParent)
@@ -439,17 +475,18 @@ local function updateRows()
         local row = rows[i]
         if idx <= NUM_SUBEVENTS then
             row:Show()
+            local displayName = SUBEVENTS[idx][1]
             if seen[idx] then
                 row.check:SetText("|cff00ff00x|r")
                 local argStr = seenArgs[idx]
                 if argStr and argStr ~= "" then
-                    row.nameStr:SetText("|cffffffff" .. SUBEVENTS[idx] .. "|r |cffaaaaaa" .. argStr .. "|r")
+                    row.nameStr:SetText("|cffffffff" .. displayName .. "|r |cffaaaaaa" .. argStr .. "|r")
                 else
-                    row.nameStr:SetText("|cffffffff" .. SUBEVENTS[idx] .. "|r")
+                    row.nameStr:SetText("|cffffffff" .. displayName .. "|r")
                 end
             else
                 row.check:SetText("|cff666666-|r")
-                row.nameStr:SetText("|cff666666" .. SUBEVENTS[idx] .. "|r")
+                row.nameStr:SetText("|cff666666" .. displayName .. "|r")
             end
         else
             row:Hide()
@@ -502,24 +539,57 @@ eventFrame:SetScript("OnEvent", function()
     local subevent = arg1
     if not subevent then return end
 
-    -- Tracker update (first encounter only)
-    local idx = subeventIndex[subevent]
-    if idx and not seen[idx] then
-        -- Chat output (first occurrence only)
-        local chatHandler = chatHandlers[subevent]
-        if chatHandler then
-            chatHandler(arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
-        else
-            DEFAULT_CHAT_FRAME:AddMessage(format("|cffccccccUNHANDLED|r %s", subevent))
+    -- Collect args into a table for variant field lookup
+    local args = { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10 }
+
+    -- Check all variant entries for this subevent
+    local indices = subeventIndices[subevent]
+    if not indices then return end
+
+    local any_new = false
+    for _, idx in ipairs(indices) do
+        if not seen[idx] then
+            local entry = SUBEVENTS[idx]
+            local varField = entry[3]
+            local varValue = entry[4]
+
+            local matches = true
+            if varField then
+                -- Check specific arg matches variant value
+                -- For swing flags (bitfield), check if the bit is set
+                if subevent == "SWING_DAMAGE" and varField == 10 then
+                    -- flags is arg10, check bitfield
+                    local flags = args[varField] or 0
+                    if varValue == 1 then matches = (math.mod(flags, 2) == 1) -- glancing
+                    elseif varValue == 2 then matches = (math.mod(math.floor(flags / 2), 2) == 1) -- crushing
+                    elseif varValue == 4 then matches = (math.mod(math.floor(flags / 4), 2) == 1) -- offhand
+                    else matches = false end
+                else
+                    matches = (args[varField] == varValue)
+                end
+            end
+
+            if matches then
+                seen[idx] = true
+                seenCount = seenCount + 1
+                local formatter = argFormatters[subevent]
+                if formatter then
+                    seenArgs[idx] = formatter(arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+                else
+                    seenArgs[idx] = ""
+                end
+                any_new = true
+
+                -- Chat output (first occurrence of this variant)
+                local chatHandler = chatHandlers[subevent]
+                if chatHandler then
+                    chatHandler(arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10)
+                end
+            end
         end
-        seen[idx] = true
-        seenCount = seenCount + 1
-        local formatter = argFormatters[subevent]
-        if formatter then
-            seenArgs[idx] = formatter(arg4, arg5, arg6, arg7, arg8, arg9, arg10)
-        else
-            seenArgs[idx] = ""
-        end
+    end
+
+    if any_new then
         updateCounter()
         updateRows()
     end
