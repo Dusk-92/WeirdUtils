@@ -41,7 +41,7 @@ extern fn si_checkBoxLineIntersect(u32, u32, u32) u32;
 extern fn si_testOBBFrustum(u32, u32, u32, u32) u32;
 extern fn si_testSphereFrustum(u32, u32) u32;
 extern fn si_quatSlerp(u32, u32, u32, u32) u32;
-extern fn si_isPointInsideBounds(u32, u32) u32;
+extern fn si_isPointInsideBounds() callconv(.naked) void;
 extern fn si_calculateSinCos(u32, u32, u32) void;
 extern fn si_createZRotMat3x3(u32, u32) u32;
 extern fn si_transposeMat4x4(u32, u32) u32;
@@ -465,16 +465,62 @@ pub fn main() void {
     print("\n{s}\n", .{"--- SILICON SSE functions ---"});
 
     // si_isPointInsideBounds (1.7M/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> u32
+    // Patch-in-place test: overwrite bytes at 0x699330 with SSE version
     {
         const va2 = tv3();
         const vb2 = Vec3{ 1.0, -3.0, 0.5 }; // all <= va
-        const of: *const fn (u32, u32) callconv(cc_fc) u32 = origFn(fn (u32, u32) callconv(cc_fc) u32, 0x699330);
-        const ov = of(a(&va2), a(&vb2));
-        const sv = si_isPointInsideBounds(a(&va2), a(&vb2));
+        const FnType = fn (u32, u32) callconv(cc_fc) u32;
+        const target: [*]u8 = @ptrFromInt(0x699330);
+        const si_ptr: [*]const u8 = @ptrFromInt(@intFromPtr(&si_isPointInsideBounds));
+
+        // Find patch size (scan for RET after the first RET — 2 exit paths)
+        var patch_size: usize = 0;
+        var rets: u32 = 0;
+        while (patch_size < 46) : (patch_size += 1) {
+            if (si_ptr[patch_size] == 0xC3) {
+                rets += 1;
+                if (rets == 2) { patch_size += 1; break; }
+            }
+        }
+
+        var orig_bytes: [46]u8 = undefined;
+        @memcpy(&orig_bytes, target[0..46]);
+
+        // Parity: original
+        const f: *const FnType = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(0x699330))));
+        const ov = f(a(&va2), a(&vb2));
+
+        // Patch + test
+        @memcpy(target[0..patch_size], si_ptr[0..patch_size]);
+        const sv = f(a(&va2), a(&vb2));
         const ok = ov == sv;
-        var t = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } t = rdtsc() - t;
-        var s = rdtsc(); for (0..ITERS) |_| { _ = si_isPointInsideBounds(a(&va2), a(&vb2)); } s = rdtsc() - s;
-        report("isPointInsideBounds", t, s, ok);
+
+        // Bench original
+        @memcpy(target[0..46], &orig_bytes);
+        var t_best: u64 = std.math.maxInt(u64);
+        for (0..5) |_| {
+            var sum: u32 = 0;
+            const t0 = rdtsc();
+            for (0..ITERS) |_| { sum +%= f(a(&va2), a(&vb2)); }
+            const elapsed = rdtsc() - t0;
+            if (elapsed < t_best) t_best = elapsed;
+            std.mem.doNotOptimizeAway(sum);
+        }
+
+        // Bench patched
+        @memcpy(target[0..patch_size], si_ptr[0..patch_size]);
+        var s_best: u64 = std.math.maxInt(u64);
+        for (0..5) |_| {
+            var sum: u32 = 0;
+            const s0 = rdtsc();
+            for (0..ITERS) |_| { sum +%= f(a(&va2), a(&vb2)); }
+            const elapsed = rdtsc() - s0;
+            if (elapsed < s_best) s_best = elapsed;
+            std.mem.doNotOptimizeAway(sum);
+        }
+
+        @memcpy(target[0..46], &orig_bytes);
+        report("isPointInsideBounds", t_best, s_best, ok);
     }
 
     // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> ST(0)

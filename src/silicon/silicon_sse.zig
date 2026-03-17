@@ -267,11 +267,27 @@ export fn si_quatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) u32 {
 }
 
 // --- 0x699330: isPointInsideBounds (1.7M/7.5s) ---
-export fn si_isPointInsideBounds(a: u32, b: u32) u32 {
-    const va: [*]const f32 = @ptrFromInt(a);
-    const vb: [*]const f32 = @ptrFromInt(b);
-    if (vb[0] <= va[0] and vb[1] <= va[1] and vb[2] <= va[2]) return 1;
-    return 0;
+// Original: __fastcall(ECX=a, EDX=b), RET. 46 bytes, 6cy.
+// Naked SSE: comiss replaces x87 FCOMP+FNSTSW+TEST (3 insns -> 1 insn per compare).
+// Binary patch candidate: fits in 46 bytes.
+export fn si_isPointInsideBounds() callconv(.naked) void {
+    // ECX = a, EDX = b. Return EAX = 1 if b[0..2] <= a[0..2], else 0.
+    asm volatile (
+        \\vmovss (%%edx), %%xmm0
+        \\vucomiss (%%ecx), %%xmm0
+        \\ja 1f
+        \\vmovss 4(%%edx), %%xmm0
+        \\vucomiss 4(%%ecx), %%xmm0
+        \\ja 1f
+        \\vmovss 8(%%edx), %%xmm0
+        \\vucomiss 8(%%ecx), %%xmm0
+        \\ja 1f
+        \\mov $1, %%eax
+        \\ret
+        \\1:
+        \\xor %%eax, %%eax
+        \\ret
+    );
 }
 
 // --- 0x749280: calculateSinCos ---
