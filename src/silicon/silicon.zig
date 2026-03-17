@@ -1477,9 +1477,15 @@ fn sseCreateZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
     const angle: f32 = @bitCast(angle_bits);
     const c = @cos(angle);
     const s = @sin(angle);
-    m[0] = c;  m[1] = s;  m[2] = 0;
-    m[3] = -s; m[4] = c;  m[5] = 0;
-    m[6] = 0;  m[7] = 0;  m[8] = 1;
+    m[0] = c;
+    m[1] = s;
+    m[2] = 0;
+    m[3] = -s;
+    m[4] = c;
+    m[5] = 0;
+    m[6] = 0;
+    m[7] = 0;
+    m[8] = 1;
     return out;
 }
 
@@ -1677,7 +1683,6 @@ fn sseTransformBoundingVol(this: u32, mat: u32) callconv(TC) u32 {
 // Probe infrastructure (for functions not yet SSE-replaced)
 // =============================================================================
 
-
 fn probeDetour(
     comptime FnType: type,
     comptime detour_hook: *hook.Detour(FnType),
@@ -1850,8 +1855,8 @@ var h95: hook.Detour(TC4v) = .{}; // 0x7B8890 GenerateSphereParticle
 var h96: hook.Detour(TC4v) = .{}; // 0x7B8D70 updateRibbonParticle
 var h97: hook.Detour(TC4v) = .{}; // 0x7BA200 generateRandomParticle
 // --- Batch 3: newly explored + previously skipped ---
-var h98: hook.Detour(SC3v) = .{};  // 0x749280 calculateSinCos
-var h99: hook.Detour(TC2r) = .{};  // 0x7BE5B0 createZRotationMatrix3x3
+var h98: hook.Detour(SC3v) = .{}; // 0x749280 calculateSinCos
+var h99: hook.Detour(TC2r) = .{}; // 0x7BE5B0 createZRotationMatrix3x3
 var h100: hook.Detour(FC3r) = .{}; // 0x76D680 SetupModelLighting
 var h101: hook.Detour(TC2r) = .{}; // 0x7786A0 SetModelLighting (UI model ctor)
 var h102: hook.Detour(FC5r) = .{}; // 0x69BFF0 CMap::VectorIntersect
@@ -1868,8 +1873,8 @@ var h112: hook.Detour(FC1v) = .{}; // 0x6720F0 NormalizeVector3_InPlace
 // RenderTextToVertexBuffer: __thiscall, 10 params total (ECX + 9 stack)
 const TC10r = fn (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(TC) u32;
 var h113: hook.Detour(TC10r) = .{}; // 0x5C8710 RenderTextToVertexBuffer
-var h114: hook.Detour(SC2r) = .{};  // 0x40CF81 GetFPUControlWord
-var h115: hook.Detour(CD0r) = .{};  // 0x40A2B0 __ftol (real)
+var h114: hook.Detour(SC2r) = .{}; // 0x40CF81 GetFPUControlWord
+var h115: hook.Detour(CD0r) = .{}; // 0x40A2B0 __ftol (real)
 
 /// Hand-written __ftol probe. ST(0) holds the implicit float input and must be
 /// preserved across the counter increment. Saves/restores EAX as scratch to
@@ -1889,6 +1894,70 @@ fn ftolProbe() callconv(.naked) void {
           [orig] "i" (&h115.inner.trampoline),
     );
 }
+
+/// SSE2 __ftol compare mode. Calls original, computes SSE2 result, logs mismatches.
+fn ftolSSE2() callconv(.naked) void {
+    asm volatile (
+        // Count calls
+        \\mov %[cnt], %%eax
+        \\lock addl $1, (%%eax)
+        // Duplicate ST(0) for both paths
+        \\sub $16, %%esp
+        \\fld %%st(0)
+        // Call original via trampoline (consumes one ST(0) copy, result in EAX:EDX)
+        \\mov %[orig], %%eax
+        \\mov (%%eax), %%eax
+        \\call *%%eax
+        // EAX = original result. Save it.
+        \\mov %%eax, 8(%%esp)
+        \\mov %%edx, 12(%%esp)
+        // Now compute SSE2 result from saved copy
+        \\fstpl (%%esp)
+        \\movsd (%%esp), %%xmm0
+        \\cvttsd2si %%xmm0, %%ecx
+        // Compare
+        \\cmp %%ecx, 8(%%esp)
+        \\jne 1f
+        // Match: return original result
+        \\mov 8(%%esp), %%eax
+        \\mov 12(%%esp), %%edx
+        \\add $16, %%esp
+        \\ret
+        // Mismatch: log it, return original
+        \\1:
+        \\mov %[miss], %%eax
+        \\lock addl $1, (%%eax)
+        // Push args for logFtolMismatch(original_i32, sse2_i32, f64_lo, f64_hi)
+        \\push 4(%%esp)
+        \\push 4(%%esp)
+        \\push %%ecx
+        \\push 20(%%esp)
+        \\call %[logfn]
+        \\add $16, %%esp
+        // Return original result
+        \\mov 8(%%esp), %%eax
+        \\mov 12(%%esp), %%edx
+        \\add $16, %%esp
+        \\ret
+        :
+        : [orig] "i" (&h115.inner.trampoline),
+          [miss] "i" (&ftol_mismatch_count),
+          [cnt] "i" (&cnt[115]),
+          [logfn] "i" (&logFtolMismatch),
+    );
+}
+
+fn logFtolMismatch(original: i32, sse2: i32, f64_lo: u32, f64_hi: u32) callconv(.c) void {
+    const S = struct { var count: u32 = 0; };
+    if (S.count < 50) {
+        S.count += 1;
+        const bits: u64 = @as(u64, f64_hi) << 32 | f64_lo;
+        const val: f64 = @bitCast(bits);
+        log_state.fmt("[ftol_cmp] orig={d} sse2={d} val={d}\n", .{ original, sse2, @as(i64, @intFromFloat(val)) });
+    }
+}
+
+var ftol_mismatch_count: u32 = 0;
 
 const ProbeInfo = struct { name: [*:0]const u8, idx: u32 };
 
@@ -2035,7 +2104,9 @@ fn worldUpdateDetour(frame_count: u32) callconv(FC) void {
 // Module lifecycle
 // =============================================================================
 
-pub fn isActive() bool { return g_is_hook_owner; }
+pub fn isActive() bool {
+    return g_is_hook_owner;
+}
 
 pub fn installHooks() void {
     const result = mod_mutex.acquire(module_name);
@@ -2052,136 +2123,142 @@ pub fn lateInit() void {
 
     var installed: u32 = 0;
 
-    // Cat 1: Scalar math — SSE replacements
-    if (h00.attach(0x4549C0, &sseNormalizeVec3) == .ok) installed += 1;   // 137K/7.5s
-    if (h01.attach(0x41AE40, probeDetour(SC1d, &h01, &cnt[1])) == .ok) installed += 1;
-    if (h02.attach(0x41AE50, probeDetour(SC1d, &h02, &cnt[2])) == .ok) installed += 1;
-    if (h03.attach(0x41AE60, probeDetour(SC1d, &h03, &cnt[3])) == .ok) installed += 1;
-    if (h04.attach(0x41AE70, probeDetour(SC1d, &h04, &cnt[4])) == .ok) installed += 1;
-    // Cat 4: Matrix — SSE replacements
-    if (h05.attach(0x7BCA80, &sseTransformVec3Mat4) == .ok) installed += 1; // 10.8M/7.5s
-    if (h06.attach(0x7BCB40, &sseTransformVec4Mat4) == .ok) installed += 1; // 120K/7.5s
-    if (h07.attach(0x7BAE60, &sseMulMat3x4) == .ok) installed += 1;
-    if (h08.attach(0x7BDFC0, &sseMulMat3x3) == .ok) installed += 1;
-    if (h09.attach(0x7BDB00, &sseCreateAxisAngleRotMat4) == .ok) installed += 1; // 304K/7.5s
-    if (h10.attach(0x7BDC40, &sseApplyTranslation) == .ok) installed += 1; // 182K/7.5s
-    if (h11.attach(0x7BDCA0, &sseScaleMat3x3) == .ok) installed += 1;      // 1.3M/7.5s
-    if (h12.attach(0x7BDDB0, &sseRotateMatByQuat) == .ok) installed += 1;
-    if (h13.attach(0x7BE490, &sseCreateAxisAngleRotMat3x3) == .ok) installed += 1; // 13K/7.5s
-    if (h14.attach(0x7BB860, &sseCreateRotMat3x4) == .ok) installed += 1;
-    // Cat 5: Collision/spatial — SSE replacements
-    if (h15.attach(0x632830, probeDetour(FC5r, &h15, &cnt[15])) == .ok) installed += 1; // RayPolygonIntersect — complex, keep probe
-    if (h16.attach(0x6329E0, &sseDistanceToPlane) == .ok) installed += 1;   // 525K/7.5s
-    if (h17.attach(0x632F80, probeDetour(FC5r, &h17, &cnt[17])) == .ok) installed += 1;
-    if (h18.attach(0x6335D0, probeDetour(FC2r, &h18, &cnt[18])) == .ok) installed += 1;
-    if (h19.attach(0x681B50, probeDetour(FC5r, &h19, &cnt[19])) == .ok) installed += 1;
-    if (h20.attach(0x686C20, &sseClassifyPointFrustum) == .ok) installed += 1; // 3.2M/7.5s
-    if (h21.attach(0x6856C0, probeDetour(FC2r, &h21, &cnt[21])) == .ok) installed += 1;
-    if (h22.attach(0x686000, probeDetour(FC3r, &h22, &cnt[22])) == .ok) installed += 1;
-    if (h23.attach(0x686180, probeDetour(FC2r, &h23, &cnt[23])) == .ok) installed += 1;
-    if (h24.attach(0x6DC5A0, &sseCheckBoxLineIntersect) == .ok) installed += 1; // 2.7M/7.5s
-    if (h25.attach(0x50A840, probeDetour(FC4r, &h25, &cnt[25])) == .ok) installed += 1;
-    if (h26.attach(0x509220, probeDetour(FC4r, &h26, &cnt[26])) == .ok) installed += 1;
-    if (h27.attach(0x6869C0, &sseTestOBBFrustum) == .ok) installed += 1;
-    if (h28.attach(0x686B80, &sseTestSphereFrustum) == .ok) installed += 1; // 375K/7.5s
-    // Cat 6: Rendering
-    if (h29.attach(0x6ABC40, probeDetour(FC4r, &h29, &cnt[29])) == .ok) installed += 1;
-    if (h30.attach(0x6ABE60, probeDetour(FC4r, &h30, &cnt[30])) == .ok) installed += 1;
-    if (h31.attach(0x6AD7E0, probeDetour(FC4r, &h31, &cnt[31])) == .ok) installed += 1;
-    if (h32.attach(0x6AFAD0, probeDetour(FC1v, &h32, &cnt[32])) == .ok) installed += 1;
-    if (h33.attach(0x6B7070, probeDetour(FC3r, &h33, &cnt[33])) == .ok) installed += 1;
-    if (h34.attach(0x6B8B70, probeDetour(FC4r, &h34, &cnt[34])) == .ok) installed += 1;
-    if (h35.attach(0x6B88E0, probeDetour(TC3r, &h35, &cnt[35])) == .ok) installed += 1;
-    if (h36.attach(0x6B8C60, probeDetour(TC3r, &h36, &cnt[36])) == .ok) installed += 1;
-    if (h37.attach(0x6BC370, probeDetour(TC4v, &h37, &cnt[37])) == .ok) installed += 1;
-    if (h38.attach(0x6C15D0, probeDetour(FC1v, &h38, &cnt[38])) == .ok) installed += 1;
-    // Cat 7: Bone/model
-    if (h39.attach(0x71AE90, probeDetour(FC4r, &h39, &cnt[39])) == .ok) installed += 1;
-    if (h40.attach(0x71AF20, probeDetour(FC4r, &h40, &cnt[40])) == .ok) installed += 1;
-    if (h41.attach(0x71B6A0, probeDetour(TC2v, &h41, &cnt[41])) == .ok) installed += 1;
-    if (h42.attach(0x71BC70, &sseAddVec3ToAccumulator) == .ok) installed += 1; // 136K/7.5s
-    if (h43.attach(0x71BF60, &sseAddToColorAccumulator) == .ok) installed += 1;
-    if (h44.attach(0x71C160, probeDetour(FC1v, &h44, &cnt[44])) == .ok) installed += 1;
-    if (h45.attach(0x71C2F0, probeDetour(FC1v, &h45, &cnt[45])) == .ok) installed += 1;
-    if (h46.attach(0x71C4E0, probeDetour(TC2r, &h46, &cnt[46])) == .ok) installed += 1;
-    if (h47.attach(0x718960, probeDetour(TC1v, &h47, &cnt[47])) == .ok) installed += 1;
-    if (h48.attach(0x719370, probeDetour(TC2v, &h48, &cnt[48])) == .ok) installed += 1;
-    if (h49.attach(0x712D50, probeDetour(TC3r, &h49, &cnt[49])) == .ok) installed += 1;
-    if (h50.attach(0x713680, probeDetour(TC2r, &h50, &cnt[50])) == .ok) installed += 1;
-    // Cat 8: Particle
-    if (h51.attach(0x7B3A10, probeDetour(TC2r, &h51, &cnt[51])) == .ok) installed += 1;
-    if (h52.attach(0x7B5A10, probeDetour(TC3v, &h52, &cnt[52])) == .ok) installed += 1;
-    if (h53.attach(0x7B7E60, probeDetour(TC3v, &h53, &cnt[53])) == .ok) installed += 1;
-    // Cat 9: Geometry
-    if (h54.attach(0x7C0570, &sseQuatSlerp) == .ok) installed += 1;
-    if (h55.attach(0x7C2040, probeDetour(FC3r, &h55, &cnt[55])) == .ok) installed += 1;
-    if (h56.attach(0x7C22B0, probeDetour(FC5r, &h56, &cnt[56])) == .ok) installed += 1;
-    if (h57.attach(0x7C5880, probeDetour(FC1v, &h57, &cnt[57])) == .ok) installed += 1;
-    // Misc
-    if (h58.attach(0x70A060, probeDetour(FC3r, &h58, &cnt[58])) == .ok) installed += 1;
-    if (h59.attach(0x70AE10, probeDetour(FC3r, &h59, &cnt[59])) == .ok) installed += 1;
-    // Batch 2: remaining explored functions
-    if (h60.attach(0x4183D0, probeDetour(TC2r, &h60, &cnt[60])) == .ok) installed += 1;
-    if (h61.attach(0x453480, probeDetour(TC4r, &h61, &cnt[61])) == .ok) installed += 1;
-    if (h62.attach(0x453580, probeDetour(TC5v, &h62, &cnt[62])) == .ok) installed += 1;
-    if (h63.attach(0x4541B0, probeDetour(TC4r, &h63, &cnt[63])) == .ok) installed += 1;
-    if (h64.attach(0x483340, probeDetour(FC5r, &h64, &cnt[64])) == .ok) installed += 1;
-    if (h65.attach(0x509BF0, probeDetour(FC6r, &h65, &cnt[65])) == .ok) installed += 1;
-    if (h66.attach(0x593040, probeDetour(TC2r, &h66, &cnt[66])) == .ok) installed += 1;
-    if (h67.attach(0x5C7010, probeDetour(TC2d, &h67, &cnt[67])) == .ok) installed += 1;
-    if (h68.attach(0x5E22D0, probeDetour(FC2r, &h68, &cnt[68])) == .ok) installed += 1;
-    if (h69.attach(0x5F6280, probeDetour(TC3r, &h69, &cnt[69])) == .ok) installed += 1;
-    if (h70.attach(0x5F8DC0, probeDetour(TC6v, &h70, &cnt[70])) == .ok) installed += 1;
-    if (h71.attach(0x614CD0, probeDetour(FC3r, &h71, &cnt[71])) == .ok) installed += 1;
-    if (h72.attach(0x616AF0, probeDetour(TC4r, &h72, &cnt[72])) == .ok) installed += 1;
-    if (h73.attach(0x616BF0, probeDetour(FC1r, &h73, &cnt[73])) == .ok) installed += 1;
-    if (h74.attach(0x618920, probeDetour(FC1r, &h74, &cnt[74])) == .ok) installed += 1;
-    if (h75.attach(0x675AC0, probeDetour(FC1v, &h75, &cnt[75])) == .ok) installed += 1;
-    if (h76.attach(0x67C820, probeDetour(TC2d, &h76, &cnt[76])) == .ok) installed += 1;
-    if (h77.attach(0x67CA00, probeDetour(TC2d, &h77, &cnt[77])) == .ok) installed += 1;
-    if (h78.attach(0x67CA90, probeDetour(TC3v, &h78, &cnt[78])) == .ok) installed += 1;
-    if (h79.attach(0x67CB60, probeDetour(TC4r, &h79, &cnt[79])) == .ok) installed += 1;
-    if (h80.attach(0x6818B0, probeDetour(FC2v, &h80, &cnt[80])) == .ok) installed += 1;
-    if (h81.attach(0x683F80, probeDetour(SC0v, &h81, &cnt[81])) == .ok) installed += 1;
-    if (h82.attach(0x68B0D0, probeDetour(TC6v, &h82, &cnt[82])) == .ok) installed += 1;
-    if (h83.attach(0x68D540, probeDetour(FC1v, &h83, &cnt[83])) == .ok) installed += 1;
-    if (h84.attach(0x699330, &sseIsPointInsideBounds) == .ok) installed += 1; // 1.7M/7.5s
-    if (h85.attach(0x69B1C0, probeDetour(FC2r, &h85, &cnt[85])) == .ok) installed += 1;
-    if (h86.attach(0x69B6D0, probeDetour(FC5r, &h86, &cnt[86])) == .ok) installed += 1;
-    if (h87.attach(0x6A8050, probeDetour(TC2r, &h87, &cnt[87])) == .ok) installed += 1;
-    if (h88.attach(0x6AADC0, probeDetour(FC6r, &h88, &cnt[88])) == .ok) installed += 1;
-    if (h89.attach(0x6CF6C0, probeDetour(FC3d, &h89, &cnt[89])) == .ok) installed += 1;
-    if (h90.attach(0x6FA1A0, probeDetour(FC2r, &h90, &cnt[90])) == .ok) installed += 1;
-    if (h91.attach(0x6FA700, probeDetour(FC2r, &h91, &cnt[91])) == .ok) installed += 1;
-    if (h92.attach(0x6FA7A0, probeDetour(FC2r, &h92, &cnt[92])) == .ok) installed += 1;
-    if (h93.attach(0x7B4BF0, probeDetour(TC2r, &h93, &cnt[93])) == .ok) installed += 1;
-    if (h94.attach(0x7B76C0, probeDetour(TC4v, &h94, &cnt[94])) == .ok) installed += 1;
-    if (h95.attach(0x7B8890, probeDetour(TC4v, &h95, &cnt[95])) == .ok) installed += 1;
-    if (h96.attach(0x7B8D70, probeDetour(TC4v, &h96, &cnt[96])) == .ok) installed += 1;
-    if (h97.attach(0x7BA200, probeDetour(TC4v, &h97, &cnt[97])) == .ok) installed += 1;
+    // Debug: only install ftol to isolate visual issues
+    const FTOL_ONLY = true;
 
-    // Batch 3: newly explored + previously skipped
-    if (h98.attach(0x749280, &sseCalculateSinCos) == .ok) installed += 1;
-    if (h99.attach(0x7BE5B0, &sseCreateZRotMat3x3) == .ok) installed += 1;
-    if (h100.attach(0x76D680, probeDetour(FC3r, &h100, &cnt[100])) == .ok) installed += 1;
-    if (h101.attach(0x7786A0, probeDetour(TC2r, &h101, &cnt[101])) == .ok) installed += 1;
-    if (h102.attach(0x69BFF0, probeDetour(FC5r, &h102, &cnt[102])) == .ok) installed += 1;
-    if (h103.attach(0x7BCEF0, &sseTransposeMat4x4) == .ok) installed += 1;
-    if (h104.attach(0x7BB420, &sseMulMat3x4InPlace) == .ok) installed += 1;
-    if (h105.attach(0x7B2A50, probeDetour(TC3r, &h105, &cnt[105])) == .ok) installed += 1;
-    if (h106.attach(0x7B7A80, &ssePackParticleColor) == .ok) installed += 1;
-    if (h107.attach(0x7B7B10, &sseSetParticleAlpha) == .ok) installed += 1;
-    if (h108.attach(0x602630, &sseVec3Dot) == .ok) installed += 1;
-    if (h109.attach(0x686640, probeDetour(FC1v, &h109, &cnt[109])) == .ok) installed += 1;
-    if (h110.attach(0x686820, &sseTranslateBoundingVol) == .ok) installed += 1;
-    if (h111.attach(0x6868E0, &sseTransformBoundingVol) == .ok) installed += 1;
-    if (h112.attach(0x6720F0, &sseNormalizeVec3InPlace) == .ok) installed += 1;
-    if (h113.attach(0x5C8710, probeDetour(TC10r, &h113, &cnt[113])) == .ok) installed += 1;
-    // h114 (GetFPUControlWord 0x40CF81) — modifies FPU control word via FLDCW as side
-    // effect; generic probe callOriginal wrapper may emit FPU instructions that corrupt
-    // the control word state after the original returns. Needs naked asm like ftol.
-    // if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
-    if (h115.attach(0x40A2B0, @ptrCast(&ftolProbe)) == .ok) installed += 1;
+    // Cat 1: Scalar math — SSE replacements
+    if (!FTOL_ONLY) {
+        if (h00.attach(0x4549C0, &sseNormalizeVec3) == .ok) installed += 1; // 137K/7.5s
+        if (h01.attach(0x41AE40, probeDetour(SC1d, &h01, &cnt[1])) == .ok) installed += 1;
+        if (h02.attach(0x41AE50, probeDetour(SC1d, &h02, &cnt[2])) == .ok) installed += 1;
+        if (h03.attach(0x41AE60, probeDetour(SC1d, &h03, &cnt[3])) == .ok) installed += 1;
+        if (h04.attach(0x41AE70, probeDetour(SC1d, &h04, &cnt[4])) == .ok) installed += 1;
+        // Cat 4: Matrix — SSE replacements
+        if (h05.attach(0x7BCA80, &sseTransformVec3Mat4) == .ok) installed += 1; // 10.8M/7.5s
+        if (h06.attach(0x7BCB40, &sseTransformVec4Mat4) == .ok) installed += 1; // 120K/7.5s
+        if (h07.attach(0x7BAE60, &sseMulMat3x4) == .ok) installed += 1;
+        if (h08.attach(0x7BDFC0, &sseMulMat3x3) == .ok) installed += 1;
+        if (h09.attach(0x7BDB00, &sseCreateAxisAngleRotMat4) == .ok) installed += 1; // 304K/7.5s
+        if (h10.attach(0x7BDC40, &sseApplyTranslation) == .ok) installed += 1; // 182K/7.5s
+        if (h11.attach(0x7BDCA0, &sseScaleMat3x3) == .ok) installed += 1; // 1.3M/7.5s
+        if (h12.attach(0x7BDDB0, &sseRotateMatByQuat) == .ok) installed += 1;
+        if (h13.attach(0x7BE490, &sseCreateAxisAngleRotMat3x3) == .ok) installed += 1; // 13K/7.5s
+        if (h14.attach(0x7BB860, &sseCreateRotMat3x4) == .ok) installed += 1;
+        // Cat 5: Collision/spatial — SSE replacements
+        if (h15.attach(0x632830, probeDetour(FC5r, &h15, &cnt[15])) == .ok) installed += 1; // RayPolygonIntersect — complex, keep probe
+        if (h16.attach(0x6329E0, &sseDistanceToPlane) == .ok) installed += 1; // 525K/7.5s
+        if (h17.attach(0x632F80, probeDetour(FC5r, &h17, &cnt[17])) == .ok) installed += 1;
+        if (h18.attach(0x6335D0, probeDetour(FC2r, &h18, &cnt[18])) == .ok) installed += 1;
+        if (h19.attach(0x681B50, probeDetour(FC5r, &h19, &cnt[19])) == .ok) installed += 1;
+        if (h20.attach(0x686C20, &sseClassifyPointFrustum) == .ok) installed += 1; // 3.2M/7.5s
+        if (h21.attach(0x6856C0, probeDetour(FC2r, &h21, &cnt[21])) == .ok) installed += 1;
+        if (h22.attach(0x686000, probeDetour(FC3r, &h22, &cnt[22])) == .ok) installed += 1;
+        if (h23.attach(0x686180, probeDetour(FC2r, &h23, &cnt[23])) == .ok) installed += 1;
+        if (h24.attach(0x6DC5A0, &sseCheckBoxLineIntersect) == .ok) installed += 1; // 2.7M/7.5s
+        if (h25.attach(0x50A840, probeDetour(FC4r, &h25, &cnt[25])) == .ok) installed += 1;
+        if (h26.attach(0x509220, probeDetour(FC4r, &h26, &cnt[26])) == .ok) installed += 1;
+        if (h27.attach(0x6869C0, &sseTestOBBFrustum) == .ok) installed += 1;
+        if (h28.attach(0x686B80, &sseTestSphereFrustum) == .ok) installed += 1; // 375K/7.5s
+        // Cat 6: Rendering
+        if (h29.attach(0x6ABC40, probeDetour(FC4r, &h29, &cnt[29])) == .ok) installed += 1;
+        if (h30.attach(0x6ABE60, probeDetour(FC4r, &h30, &cnt[30])) == .ok) installed += 1;
+        if (h31.attach(0x6AD7E0, probeDetour(FC4r, &h31, &cnt[31])) == .ok) installed += 1;
+        if (h32.attach(0x6AFAD0, probeDetour(FC1v, &h32, &cnt[32])) == .ok) installed += 1;
+        if (h33.attach(0x6B7070, probeDetour(FC3r, &h33, &cnt[33])) == .ok) installed += 1;
+        if (h34.attach(0x6B8B70, probeDetour(FC4r, &h34, &cnt[34])) == .ok) installed += 1;
+        if (h35.attach(0x6B88E0, probeDetour(TC3r, &h35, &cnt[35])) == .ok) installed += 1;
+        if (h36.attach(0x6B8C60, probeDetour(TC3r, &h36, &cnt[36])) == .ok) installed += 1;
+        if (h37.attach(0x6BC370, probeDetour(TC4v, &h37, &cnt[37])) == .ok) installed += 1;
+        if (h38.attach(0x6C15D0, probeDetour(FC1v, &h38, &cnt[38])) == .ok) installed += 1;
+        // Cat 7: Bone/model
+        if (h39.attach(0x71AE90, probeDetour(FC4r, &h39, &cnt[39])) == .ok) installed += 1;
+        if (h40.attach(0x71AF20, probeDetour(FC4r, &h40, &cnt[40])) == .ok) installed += 1;
+        if (h41.attach(0x71B6A0, probeDetour(TC2v, &h41, &cnt[41])) == .ok) installed += 1;
+        if (h42.attach(0x71BC70, &sseAddVec3ToAccumulator) == .ok) installed += 1; // 136K/7.5s
+        if (h43.attach(0x71BF60, &sseAddToColorAccumulator) == .ok) installed += 1;
+        if (h44.attach(0x71C160, probeDetour(FC1v, &h44, &cnt[44])) == .ok) installed += 1;
+        if (h45.attach(0x71C2F0, probeDetour(FC1v, &h45, &cnt[45])) == .ok) installed += 1;
+        if (h46.attach(0x71C4E0, probeDetour(TC2r, &h46, &cnt[46])) == .ok) installed += 1;
+        if (h47.attach(0x718960, probeDetour(TC1v, &h47, &cnt[47])) == .ok) installed += 1;
+        if (h48.attach(0x719370, probeDetour(TC2v, &h48, &cnt[48])) == .ok) installed += 1;
+        if (h49.attach(0x712D50, probeDetour(TC3r, &h49, &cnt[49])) == .ok) installed += 1;
+        if (h50.attach(0x713680, probeDetour(TC2r, &h50, &cnt[50])) == .ok) installed += 1;
+        // Cat 8: Particle
+        if (h51.attach(0x7B3A10, probeDetour(TC2r, &h51, &cnt[51])) == .ok) installed += 1;
+        if (h52.attach(0x7B5A10, probeDetour(TC3v, &h52, &cnt[52])) == .ok) installed += 1;
+        if (h53.attach(0x7B7E60, probeDetour(TC3v, &h53, &cnt[53])) == .ok) installed += 1;
+        // Cat 9: Geometry
+        if (h54.attach(0x7C0570, &sseQuatSlerp) == .ok) installed += 1;
+        if (h55.attach(0x7C2040, probeDetour(FC3r, &h55, &cnt[55])) == .ok) installed += 1;
+        if (h56.attach(0x7C22B0, probeDetour(FC5r, &h56, &cnt[56])) == .ok) installed += 1;
+        if (h57.attach(0x7C5880, probeDetour(FC1v, &h57, &cnt[57])) == .ok) installed += 1;
+        // Misc
+        if (h58.attach(0x70A060, probeDetour(FC3r, &h58, &cnt[58])) == .ok) installed += 1;
+        if (h59.attach(0x70AE10, probeDetour(FC3r, &h59, &cnt[59])) == .ok) installed += 1;
+        // Batch 2: remaining explored functions
+        if (h60.attach(0x4183D0, probeDetour(TC2r, &h60, &cnt[60])) == .ok) installed += 1;
+        if (h61.attach(0x453480, probeDetour(TC4r, &h61, &cnt[61])) == .ok) installed += 1;
+        if (h62.attach(0x453580, probeDetour(TC5v, &h62, &cnt[62])) == .ok) installed += 1;
+        if (h63.attach(0x4541B0, probeDetour(TC4r, &h63, &cnt[63])) == .ok) installed += 1;
+        if (h64.attach(0x483340, probeDetour(FC5r, &h64, &cnt[64])) == .ok) installed += 1;
+        if (h65.attach(0x509BF0, probeDetour(FC6r, &h65, &cnt[65])) == .ok) installed += 1;
+        if (h66.attach(0x593040, probeDetour(TC2r, &h66, &cnt[66])) == .ok) installed += 1;
+        // h67 disabled: 0x5C7010 ConvertPixelsToScreenAlt called with ECX=0 (valid), crashes thiscall probe
+        // if (h67.attach(0x5C7010, probeDetour(TC2d, &h67, &cnt[67])) == .ok) installed += 1;
+        if (h68.attach(0x5E22D0, probeDetour(FC2r, &h68, &cnt[68])) == .ok) installed += 1;
+        if (h69.attach(0x5F6280, probeDetour(TC3r, &h69, &cnt[69])) == .ok) installed += 1;
+        if (h70.attach(0x5F8DC0, probeDetour(TC6v, &h70, &cnt[70])) == .ok) installed += 1;
+        if (h71.attach(0x614CD0, probeDetour(FC3r, &h71, &cnt[71])) == .ok) installed += 1;
+        if (h72.attach(0x616AF0, probeDetour(TC4r, &h72, &cnt[72])) == .ok) installed += 1;
+        if (h73.attach(0x616BF0, probeDetour(FC1r, &h73, &cnt[73])) == .ok) installed += 1;
+        if (h74.attach(0x618920, probeDetour(FC1r, &h74, &cnt[74])) == .ok) installed += 1;
+        if (h75.attach(0x675AC0, probeDetour(FC1v, &h75, &cnt[75])) == .ok) installed += 1;
+        if (h76.attach(0x67C820, probeDetour(TC2d, &h76, &cnt[76])) == .ok) installed += 1;
+        if (h77.attach(0x67CA00, probeDetour(TC2d, &h77, &cnt[77])) == .ok) installed += 1;
+        if (h78.attach(0x67CA90, probeDetour(TC3v, &h78, &cnt[78])) == .ok) installed += 1;
+        if (h79.attach(0x67CB60, probeDetour(TC4r, &h79, &cnt[79])) == .ok) installed += 1;
+        if (h80.attach(0x6818B0, probeDetour(FC2v, &h80, &cnt[80])) == .ok) installed += 1;
+        if (h81.attach(0x683F80, probeDetour(SC0v, &h81, &cnt[81])) == .ok) installed += 1;
+        if (h82.attach(0x68B0D0, probeDetour(TC6v, &h82, &cnt[82])) == .ok) installed += 1;
+        if (h83.attach(0x68D540, probeDetour(FC1v, &h83, &cnt[83])) == .ok) installed += 1;
+        if (h84.attach(0x699330, &sseIsPointInsideBounds) == .ok) installed += 1; // 1.7M/7.5s
+        if (h85.attach(0x69B1C0, probeDetour(FC2r, &h85, &cnt[85])) == .ok) installed += 1;
+        if (h86.attach(0x69B6D0, probeDetour(FC5r, &h86, &cnt[86])) == .ok) installed += 1;
+        if (h87.attach(0x6A8050, probeDetour(TC2r, &h87, &cnt[87])) == .ok) installed += 1;
+        if (h88.attach(0x6AADC0, probeDetour(FC6r, &h88, &cnt[88])) == .ok) installed += 1;
+        if (h89.attach(0x6CF6C0, probeDetour(FC3d, &h89, &cnt[89])) == .ok) installed += 1;
+        if (h90.attach(0x6FA1A0, probeDetour(FC2r, &h90, &cnt[90])) == .ok) installed += 1;
+        if (h91.attach(0x6FA700, probeDetour(FC2r, &h91, &cnt[91])) == .ok) installed += 1;
+        if (h92.attach(0x6FA7A0, probeDetour(FC2r, &h92, &cnt[92])) == .ok) installed += 1;
+        if (h93.attach(0x7B4BF0, probeDetour(TC2r, &h93, &cnt[93])) == .ok) installed += 1;
+        if (h94.attach(0x7B76C0, probeDetour(TC4v, &h94, &cnt[94])) == .ok) installed += 1;
+        if (h95.attach(0x7B8890, probeDetour(TC4v, &h95, &cnt[95])) == .ok) installed += 1;
+        if (h96.attach(0x7B8D70, probeDetour(TC4v, &h96, &cnt[96])) == .ok) installed += 1;
+        if (h97.attach(0x7BA200, probeDetour(TC4v, &h97, &cnt[97])) == .ok) installed += 1;
+
+        // Batch 3: newly explored + previously skipped
+        if (h98.attach(0x749280, &sseCalculateSinCos) == .ok) installed += 1;
+        if (h99.attach(0x7BE5B0, &sseCreateZRotMat3x3) == .ok) installed += 1;
+        if (h100.attach(0x76D680, probeDetour(FC3r, &h100, &cnt[100])) == .ok) installed += 1;
+        if (h101.attach(0x7786A0, probeDetour(TC2r, &h101, &cnt[101])) == .ok) installed += 1;
+        if (h102.attach(0x69BFF0, probeDetour(FC5r, &h102, &cnt[102])) == .ok) installed += 1;
+        if (h103.attach(0x7BCEF0, &sseTransposeMat4x4) == .ok) installed += 1;
+        if (h104.attach(0x7BB420, &sseMulMat3x4InPlace) == .ok) installed += 1;
+        if (h105.attach(0x7B2A50, probeDetour(TC3r, &h105, &cnt[105])) == .ok) installed += 1;
+        if (h106.attach(0x7B7A80, &ssePackParticleColor) == .ok) installed += 1;
+        if (h107.attach(0x7B7B10, &sseSetParticleAlpha) == .ok) installed += 1;
+        if (h108.attach(0x602630, &sseVec3Dot) == .ok) installed += 1;
+        if (h109.attach(0x686640, probeDetour(FC1v, &h109, &cnt[109])) == .ok) installed += 1;
+        if (h110.attach(0x686820, &sseTranslateBoundingVol) == .ok) installed += 1;
+        if (h111.attach(0x6868E0, &sseTransformBoundingVol) == .ok) installed += 1;
+        if (h112.attach(0x6720F0, &sseNormalizeVec3InPlace) == .ok) installed += 1;
+        if (h113.attach(0x5C8710, probeDetour(TC10r, &h113, &cnt[113])) == .ok) installed += 1;
+        // h114 (GetFPUControlWord 0x40CF81) — modifies FPU control word via FLDCW as side
+        // effect; generic probe callOriginal wrapper may emit FPU instructions that corrupt
+        // the control word state after the original returns. Needs naked asm like ftol.
+        // if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
+    }
+    if (h115.attach(0x40A2B0, @ptrCast(&ftolSSE2)) == .ok) installed += 1;
 
     // Periodic reporting hook
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) {
@@ -2201,6 +2278,10 @@ fn reportProbes() void {
             log_state.fmt("  {s}: {d}\n", .{ info.name, c });
         }
     }
+    const miss = @atomicRmw(u32, &ftol_mismatch_count, .Xchg, 0, .monotonic);
+    // cnt[115] already read+reset by the probe loop above, so use the value from probe_infos
+    // Just report the mismatch count — the call count is in the probe list as "__ftol"
+    log_state.fmt("  __ftol SSE2 mismatches: {d}\n", .{miss});
 }
 
 pub fn removeHooks() void {
