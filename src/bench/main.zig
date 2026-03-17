@@ -31,28 +31,28 @@ extern fn calculatePlaneNormal(u32, u32, u32, u32) void;
 extern fn transformAABox(u32, u32, u32, u32, u32) void;
 
 // silicon_sse.zig exports
-extern fn si_normalizeVec3(u32, u32) void;
-extern fn si_mulMat3x4(u32, u32, u32) u32;
-extern fn si_rotateMatByQuat(u32, u32) u32;
-extern fn si_createRotMat3x4(u32, u32, u32, u32) u32;
+extern fn si_normalizeVec3(u32, u32) callconv(cc_tc) void;
+extern fn si_mulMat3x4(u32, u32, u32) callconv(cc_fc) u32;
+extern fn si_rotateMatByQuat(u32, u32) callconv(cc_tc) u32;
+extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_distanceToPlane() callconv(.naked) void; // naked: ECX=point, EDX=plane, stack=dir, returns ST(0), RET 4
-extern fn si_classifyPointFrustum(u32, u32, u32) u32;
-extern fn si_checkBoxLineIntersect(u32, u32, u32) u32;
-extern fn si_testOBBFrustum(u32, u32, u32, u32) u32;
-extern fn si_testSphereFrustum(u32, u32) u32;
-extern fn si_quatSlerp(u32, u32, u32, u32) u32;
+extern fn si_classifyPointFrustum(u32, u32, u32) callconv(cc_tc) u32;
+extern fn si_checkBoxLineIntersect(u32, u32, u32) callconv(cc_fc) u32;
+extern fn si_testOBBFrustum(u32, u32, u32, u32) callconv(cc_tc) u32;
+extern fn si_testSphereFrustum(u32, u32) callconv(cc_tc) u32;
+extern fn si_quatSlerp(u32, u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_isPointInsideBounds() callconv(.naked) void;
-extern fn si_calculateSinCos(u32, u32, u32) void;
-extern fn si_createZRotMat3x3(u32, u32) u32;
-extern fn si_transposeMat4x4(u32, u32) u32;
-extern fn si_mulMat3x4InPlace(u32, u32) u32;
-extern fn si_normalizeVec3InPlace(u32) void;
+extern fn si_calculateSinCos(u32, u32, u32) callconv(cc_sc) void;
+extern fn si_createZRotMat3x3(u32, u32) callconv(cc_tc) u32;
+extern fn si_transposeMat4x4(u32, u32) callconv(cc_tc) u32;
+extern fn si_mulMat3x4InPlace(u32, u32) callconv(cc_tc) u32;
+extern fn si_normalizeVec3InPlace(u32) callconv(cc_fc) void;
 extern fn si_vec3Dot() callconv(.naked) void; // naked: ECX=a, EDX=b, returns ST(0)
-extern fn si_translateBoundingVol(u32, u32) void;
-extern fn si_addVec3ToAccumulator(u32, u32, u32) void;
-extern fn si_addToColorAccumulator(u32, u32) void;
-extern fn si_packParticleColor(u32, u32, u32, u32) void;
-extern fn si_setParticleAlpha(u32, u32) void;
+extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
+extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(cc_tc) void;
+extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
+extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_fc) void;
+extern fn si_setParticleAlpha(u32, u32) callconv(cc_fc) void;
 extern fn si_ftol() callconv(.naked) void;
 
 // =========================================================================
@@ -190,6 +190,7 @@ fn bench5(comptime func: anytype, args: anytype) u64 {
 
 const cc_fc: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 const cc_tc: std.builtin.CallingConvention = .{ .x86_thiscall = .{} };
+const cc_sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
 
 const ITERS: u64 = 2_000_000;
 
@@ -804,7 +805,6 @@ pub fn main() void {
         var cos_o: f32 = undefined;
         var sin_s: f32 = undefined;
         var cos_s: f32 = undefined;
-        const cc_sc: std.builtin.CallingConvention = .{ .x86_stdcall = .{} };
         const of = origFn(fn (u32, u32, u32) callconv(cc_sc) void, 0x749280);
         of(ab2, a(&sin_o), a(&cos_o));
         si_calculateSinCos(ab2, a(&sin_s), a(&cos_s));
