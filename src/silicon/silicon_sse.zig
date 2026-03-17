@@ -267,7 +267,8 @@ export fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_
 }
 
 // --- 0x686B80: testSphereFrustum (375K/7.5s) ---
-// Uses V4 dot for plane distance
+// Serial dot4v with early-out per plane. Gather-based batching tested — slower
+// due to stride-16 loads. Early-out is valuable here (most spheres pass all planes).
 export fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) u32 {
     const s: [*]const f32 = @ptrFromInt(sphere);
     const center = V4{ s[0], s[1], s[2], 1.0 };
@@ -409,7 +410,8 @@ export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) u32 {
 }
 
 // --- 0x6720F0: normalizeVec3InPlace ---
-// Uses rsqrt approximation + Newton-Raphson for fast inverse sqrt
+// sqrt + reciprocal. 14cy (2.2x). rsqrt+NR tested at 15cy — no gain, compiler's
+// vsqrtss+vdivss pipeline is already optimal for scalar inverse sqrt.
 export fn si_normalizeVec3InPlace(vec: u32) void {
     const v: [*]f32 = @ptrFromInt(vec);
     const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
