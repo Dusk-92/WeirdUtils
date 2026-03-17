@@ -151,6 +151,7 @@ const SUB_PARTY_KILL: [*:0]const u8 = "PARTY_KILL";
 const SUB_UNIT_DIED: [*:0]const u8 = "UNIT_DIED";
 const SUB_DAMAGE_SPLIT: [*:0]const u8 = "DAMAGE_SPLIT";
 const SUB_SPELL_DISPEL_FAILED: [*:0]const u8 = "SPELL_DISPEL_FAILED";
+const SUB_UNIT_DESTROYED: [*:0]const u8 = "UNIT_DESTROYED";
 
 // Miss type strings (for _MISSED suffix arg)
 const MISS_MISS: [*:0]const u8 = "MISS";
@@ -1046,8 +1047,22 @@ fn unitDeathDetour(unit_obj: u32) callconv(hook.cc.fastcall) void {
 
             if (guid != 0) {
                 const dst_str = guidToString(guid);
-                log.fmt("UNIT_DIED: unit=0x{x}\n", .{guid});
-                fireBase(SUB_UNIT_DIED, GUID_ZERO, dst_str);
+                // Check creature type: totems (type 11) fire UNIT_DESTROYED
+                // CGUnit_GetCreatureType fallback path: obj+0xB30 -> +0x18
+                const is_totem = blk: {
+                    const name_cache = hook.readMem(u32, unit_obj + 0xB30);
+                    if (name_cache != 0) {
+                        break :blk hook.readMem(u32, name_cache + 0x18) == 11; // CREATURE_TYPE_TOTEM
+                    }
+                    break :blk false;
+                };
+                if (is_totem) {
+                    log.fmt("UNIT_DESTROYED: unit=0x{x}\n", .{guid});
+                    fireBase(SUB_UNIT_DESTROYED, GUID_ZERO, dst_str);
+                } else {
+                    log.fmt("UNIT_DIED: unit=0x{x}\n", .{guid});
+                    fireBase(SUB_UNIT_DIED, GUID_ZERO, dst_str);
+                }
             }
         }
     }
