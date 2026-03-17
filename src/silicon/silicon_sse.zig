@@ -232,16 +232,36 @@ export fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_
         corners[i] = @mulAdd(V4, @as(V4, @splat(lz)), rc2, @mulAdd(V4, @as(V4, @splat(ly)), rc1, @mulAdd(V4, @as(V4, @splat(lx)), rc0, tv)));
     }
 
-    // Test each plane: if all 8 corners are behind it, box is outside
+    // Extract x/y/z/w components across corners for batched plane tests
+    // Group A: corners 0-3, Group B: corners 4-7
+    const cx_a = V4{ corners[0][0], corners[1][0], corners[2][0], corners[3][0] };
+    const cy_a = V4{ corners[0][1], corners[1][1], corners[2][1], corners[3][1] };
+    const cz_a = V4{ corners[0][2], corners[1][2], corners[2][2], corners[3][2] };
+
+    const cx_b = V4{ corners[4][0], corners[5][0], corners[6][0], corners[7][0] };
+    const cy_b = V4{ corners[4][1], corners[5][1], corners[6][1], corners[7][1] };
+    const cz_b = V4{ corners[4][2], corners[5][2], corners[6][2], corners[7][2] };
+
+    // Test each plane: compute 4 dots at a time, branchless sign check
     inline for (0..6) |p| {
         const pl = loadV4(planes_ptr + p * 16);
-        var all_outside = true;
-        inline for (0..8) |c| {
-            if (dot4v(corners[c], pl) >= 0) {
-                all_outside = false;
-            }
-        }
-        if (all_outside) return 0;
+        const pnx: V4 = @splat(pl[0]);
+        const pny: V4 = @splat(pl[1]);
+        const pnz: V4 = @splat(pl[2]);
+        const pd: V4 = @splat(pl[3]);
+
+        // 4 dots for corners 0-3
+        const da = @mulAdd(V4, cz_a, pnz, @mulAdd(V4, cy_a, pny, @mulAdd(V4, cx_a, pnx, pd)));
+        // 4 dots for corners 4-7
+        const db = @mulAdd(V4, cz_b, pnz, @mulAdd(V4, cy_b, pny, @mulAdd(V4, cx_b, pnx, pd)));
+
+        // All outside if all 8 distances are negative
+        // Branchless: extract sign bits via comparison
+        const neg_a = da < @as(V4, @splat(@as(f32, 0)));
+        const neg_b = db < @as(V4, @splat(@as(f32, 0)));
+        const mask_a: u4 = @bitCast(neg_a);
+        const mask_b: u4 = @bitCast(neg_b);
+        if (mask_a == 0xF and mask_b == 0xF) return 0;
     }
     return 3;
 }
