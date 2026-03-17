@@ -688,12 +688,21 @@ inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) [4]
 // Game function call wrappers — replacing reimplementations with actual calls
 // =============================================================================
 
+/// Fast modulo for looping animations. The value is almost always < 2*length
+/// (frame-to-frame delta is small), so a conditional subtract beats idiv.
+inline fn fastMod(val: u32, len: u32) u32 {
+    var v = val;
+    if (v >= len) {
+        v -%=  len;
+        if (v >= len) v = v % len; // fallback for large time skips
+    }
+    return v;
+}
+
 /// Float truncation — replaces game's __ftol at 0x40A2B0.
 /// Original: FILD i32 → FMUL f32 → __ftol, all in 80-bit x87 precision.
-/// Uses f64 intermediate (53-bit mantissa) to approximate x87's 64-bit.
 inline fn callFtol(delta: i32, scale_addr: u32) i32 {
-    const f = @as(f64, @floatFromInt(delta)) * @as(f64, rf32(scale_addr));
-    return @intFromFloat(f);
+    return @intFromFloat(@as(f32, @floatFromInt(delta)) * rf32(scale_addr));
 }
 
 /// Vec3 squared magnitude — replaces game's 0x4549F0. Uses @mulAdd → vfmadd.
@@ -1232,7 +1241,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                         // elapsed = (float)(cur_time - sec_start) * time_scale → __ftol
                         const delta = cur_time -% ru32(brt + 0xA8);
                         const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xB0);
-                        const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8)) % (anim_end -% anim_start);
+                        const frame = fastMod(@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8), anim_end -% anim_start);
                         wu32(brt + 0x98, anim_start +% frame); // prim_time
                     } else {
                         // Assembly 0x714631: MOV EDX,EAX — fallback to anim_start
@@ -1254,7 +1263,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                         if (@as(i32, @bitCast(anim_start)) < @as(i32, @bitCast(anim_end))) {
                             const delta = effective_time -% ru32(brt + 0xA8);
                             const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xB0);
-                            const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8)) % (anim_end -% anim_start);
+                            const frame = fastMod(@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xB8), anim_end -% anim_start);
                             wu32(brt + 0x98, anim_start +% frame);
                         } else {
                             wu32(brt + 0x98, anim_start);
@@ -1323,7 +1332,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                     if (@as(i32, @bitCast(anim_start)) < @as(i32, @bitCast(anim_end))) {
                         const delta = sec_cur_time -% ru32(brt + 0xD4);
                         const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xDC);
-                        const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4)) % (anim_end -% anim_start);
+                        const frame = fastMod(@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4), anim_end -% anim_start);
                         wu32(brt + 0xC4, anim_start +% frame); // sec_time
                     } else {
                         wu32(brt + 0xC4, anim_start);
@@ -1341,7 +1350,7 @@ export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u3
                         if (@as(i32, @bitCast(anim_start)) < @as(i32, @bitCast(anim_end))) {
                             const delta = effective_time -% ru32(brt + 0xD4);
                             const ftol_result = callFtol(@as(i32, @bitCast(delta)), brt + 0xDC);
-                            const frame = (@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4)) % (anim_end -% anim_start);
+                            const frame = fastMod(@as(u32, @bitCast(ftol_result)) +% ru32(brt + 0xE4), anim_end -% anim_start);
                             wu32(brt + 0xC4, anim_start +% frame);
                         } else {
                             wu32(brt + 0xC4, anim_start);
