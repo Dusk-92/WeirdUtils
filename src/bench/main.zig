@@ -46,12 +46,12 @@ extern fn si_calculateSinCos(u32, u32, u32) callconv(cc_sc) void;
 extern fn si_createZRotMat3x3(u32, u32) callconv(cc_tc) u32;
 extern fn si_transposeMat4x4(u32, u32) callconv(cc_tc) u32;
 extern fn si_mulMat3x4InPlace(u32, u32) callconv(cc_tc) u32;
-extern fn si_normalizeVec3InPlace(u32) callconv(cc_fc) void;
+extern fn si_normalizeVec3InPlace(u32) callconv(cc_tc) void;
 extern fn si_vec3Dot(u32, u32) callconv(cc_fc) f64;
 extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
-extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(cc_tc) void;
+extern fn si_addVec3ToAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
-extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_fc) void;
+extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
 extern fn si_setParticleAlpha(u32, u32, u32) callconv(cc_fc) void; // fastcall(ECX=obj, EDX=unused, stack=alpha)
 extern fn si_ftol() callconv(.naked) void;
 

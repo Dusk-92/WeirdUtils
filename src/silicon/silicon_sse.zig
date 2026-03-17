@@ -398,7 +398,7 @@ export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
 // --- 0x6720F0: normalizeVec3InPlace ---
 // sqrt + reciprocal. 14cy (2.2x). rsqrt+NR tested at 15cy — no gain, compiler's
 // vsqrtss+vdivss pipeline is already optimal for scalar inverse sqrt.
-export fn si_normalizeVec3InPlace(vec: u32) callconv(FC) void {
+export fn si_normalizeVec3InPlace(vec: u32) callconv(TC) void {
     const v: [*]f32 = @ptrFromInt(vec);
     const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if (len > 1.0e-20) {
@@ -410,10 +410,11 @@ export fn si_normalizeVec3InPlace(vec: u32) callconv(FC) void {
 }
 
 // --- 0x71BC70: addVec3ToAccumulator (136K/7.5s) ---
-export fn si_addVec3ToAccumulator(this: u32, vec: u32, scale_addr: u32) callconv(TC) void {
+// thiscall(ECX=this, stack=vec). Scale is a global at 0x81207C, NOT a parameter.
+export fn si_addVec3ToAccumulator(this: u32, vec: u32) callconv(TC) void {
     const obj: [*]f32 = @ptrFromInt(this);
     const v: [*]const f32 = @ptrFromInt(vec);
-    const scale: f32 = @as(*const f32, @ptrFromInt(scale_addr)).*;
+    const scale: f32 = @as(*const f32, @ptrFromInt(0x81207C)).*;
     obj[21] += v[0];
     obj[22] += v[1];
     obj[23] += v[2];
@@ -443,7 +444,7 @@ export fn si_addToColorAccumulator() callconv(.naked) void {
 
 // --- 0x7B7A80: packParticleColor (2K/7.5s) ---
 // V4 multiply + clamp, then packed round+convert via @Vector(4, i32) for all channels at once.
-export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) callconv(FC) void {
+export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) callconv(TC) void {
     const base: [*]u8 = @ptrFromInt(obj);
     const out: *align(1) u32 = @ptrCast(base + 0x12C);
     const alpha = base[0x12F];

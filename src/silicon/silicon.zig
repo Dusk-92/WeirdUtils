@@ -2065,7 +2065,7 @@ pub fn installHooks() void {
 
 const sse = struct {
     // silicon_sse.zig exports (linked via object file)
-    extern fn si_normalizeVec3(u32, u32) callconv(TC) void;
+    extern fn si_normalizeVec3() callconv(.naked) void;
     extern fn si_mulMat3x4(u32, u32, u32) callconv(FC) u32;
     extern fn si_rotateMatByQuat(u32, u32) callconv(TC) u32;
     extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(FC) u32;
@@ -2078,13 +2078,13 @@ const sse = struct {
     extern fn si_isPointInsideBounds() callconv(.naked) void;
     extern fn si_calculateSinCos(u32, u32, u32) callconv(SC) void;
     extern fn si_createZRotMat3x3(u32, u32) callconv(TC) u32;
-    extern fn si_transposeMat4x4(u32, u32) callconv(TC) u32;
+    extern fn si_transposeMat4x4() callconv(.naked) void;
     extern fn si_mulMat3x4InPlace(u32, u32) callconv(TC) u32;
-    extern fn si_normalizeVec3InPlace(u32) callconv(FC) void;
-    extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(TC) void;
-    extern fn si_addToColorAccumulator(u32, u32) callconv(TC) void;
-    extern fn si_packParticleColor(u32, u32, u32, u32) callconv(FC) void;
-    extern fn si_setParticleAlpha(u32, u32) callconv(FC) void;
+    extern fn si_normalizeVec3InPlace(u32) callconv(TC) void;
+    extern fn si_addVec3ToAccumulator(u32, u32) callconv(TC) void;
+    extern fn si_addToColorAccumulator() callconv(.naked) void;
+    extern fn si_packParticleColor(u32, u32, u32, u32) callconv(TC) void;
+    extern fn si_setParticleAlpha() callconv(.naked) void;
     extern fn si_ftol() callconv(.naked) void;
     extern fn si_vec3Dot() callconv(.naked) void;
     extern fn si_translateBoundingVol(u32, u32) callconv(TC) void;
@@ -2126,22 +2126,53 @@ fn getPatchTable() []const PatchEntry {
     return &table;
 }
 
+fn patchJmp(target: u32, replacement: u32) void {
+    const rel = @as(i32, @bitCast(replacement -% target -% 5));
+    var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
+    @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
+    hook.writeProtected(target, &patch);
+}
+
+fn patchDirect(target: u32, src: [*]const u8, size: usize) void {
+    hook.writeProtected(target, src[0..size]);
+}
+
 fn installPatches() u32 {
     var count: u32 = 0;
-    for (getPatchTable()) |entry| {
-        if (entry.direct_size > 0) {
-            // Direct byte copy: naked asm replacement fits in original
-            const src: [*]const u8 = @ptrFromInt(entry.replacement);
-            hook.writeProtected(entry.target, src[0..entry.direct_size]);
-        } else {
-            // JMP rel32: E9 XX XX XX XX
-            const rel = @as(i32, @bitCast(entry.replacement -% entry.target -% 5));
-            var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
-            @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
-            hook.writeProtected(entry.target, &patch);
+    const patch = struct {
+        fn jmp(target: u32, comptime func: anytype) void {
+            patchJmp(target, @intFromPtr(func));
         }
-        count += 1;
-    }
+        fn direct(target: u32, comptime func: anytype, size: usize) void {
+            patchDirect(target, @as([*]const u8, @ptrCast(func)), size);
+        }
+    };
+
+    patch.jmp(0x4549C0, &sse.si_normalizeVec3);
+    patch.jmp(0x7BAE60, &sse.si_mulMat3x4);
+    patch.jmp(0x7BDDB0, &sse.si_rotateMatByQuat);
+    patch.jmp(0x7BB860, &sse.si_createRotMat3x4);
+    patch.jmp(0x686C20, &sse.si_classifyPointFrustum);
+    patch.jmp(0x6DC5A0, &sse.si_checkBoxLineIntersect);
+    patch.jmp(0x6869C0, &sse.si_testOBBFrustum);
+    patch.jmp(0x686B80, &sse.si_testSphereFrustum);
+    patch.jmp(0x7C0570, &sse.si_quatSlerp);
+    patch.jmp(0x749280, &sse.si_calculateSinCos);
+    patch.jmp(0x7BE5B0, &sse.si_createZRotMat3x3);
+    patch.jmp(0x7BB420, &sse.si_mulMat3x4InPlace);
+    patch.jmp(0x6720F0, &sse.si_normalizeVec3InPlace);
+    patch.jmp(0x71BC70, &sse.si_addVec3ToAccumulator);
+    patch.jmp(0x71BF60, &sse.si_addToColorAccumulator);
+    patch.jmp(0x7B7A80, &sse.si_packParticleColor);
+    patch.jmp(0x7B7B10, &sse.si_setParticleAlpha);
+    patch.jmp(0x686820, &sse.si_translateBoundingVol);
+    count += 18;
+
+    // Direct byte patches (naked asm that fits in original)
+    patch.direct(0x40A2B0, &sse.si_ftol, 9);
+    patch.direct(0x7BCEF0, &sse.si_transposeMat4x4, 64);
+    count += 2;
+
     return count;
 }
 
