@@ -334,6 +334,20 @@ export fn si_setParticleAlpha(obj: u32, alpha_bits: u32) void {
     base[0x12F] = @intFromFloat(@min(@max(alpha * 255.0, 0.0), 255.0));
 }
 
+// --- 0x40A2B0: __ftol ---
+// Drop-in binary replacement for MSVC __ftol. Input: ST(0). Output: EAX:EDX (i64).
+// Original: FSTCW/OR/FLDCW/FISTP/FLDCW (39 bytes, ~6 cycles on modern x86)
+// SSE3 FISTTP: truncate directly from x87 without rounding mode change (9 bytes)
+export fn si_ftol() callconv(.naked) void {
+    asm volatile (
+        \\sub $8, %%esp
+        \\.byte 0xDD, 0x0C, 0x24
+        \\pop %%eax
+        \\pop %%edx
+        \\ret
+    );
+}
+
 // --- 0x602630: vec3Dot ---
 export fn si_vec3Dot(a: u32, b: u32) f64 {
     const va: [*]const f32 = @ptrFromInt(a);

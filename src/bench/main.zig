@@ -53,6 +53,7 @@ extern fn si_addVec3ToAccumulator(u32, u32, u32) void;
 extern fn si_addToColorAccumulator(u32, u32) void;
 extern fn si_packParticleColor(u32, u32, u32, u32) void;
 extern fn si_setParticleAlpha(u32, u32) void;
+extern fn si_ftol() callconv(.naked) void;
 
 // =========================================================================
 // Infrastructure
@@ -820,6 +821,116 @@ pub fn main() void {
         var t = rdtsc(); for (0..ITERS) |_| { of(a(&obj_o), 0, ab2); } t = rdtsc() - t;
         var s = rdtsc(); for (0..ITERS) |_| { si_setParticleAlpha(a(&obj_s), ab2); } s = rdtsc() - s;
         report("setParticleAlpha", t, s, ok);
+    }
+
+    // =========================================================================
+    // __ftol: SSE2 vs x87 rounding-mode dance
+    // Both versions: input ST(0), output EAX:EDX, __cdecl, RET.
+    // SSE2 version is a drop-in binary patch at 0x40A2B0.
+    // =========================================================================
+    if (sections_mapped) {
+        print("\n{s}\n", .{"--- __ftol SSE2 vs original ---"});
+
+        // si_ftol is a naked fn — get its address and size by reading the bytes
+        const si_ftol_addr = @intFromPtr(&si_ftol);
+        const si_ftol_ptr: [*]const u8 = @ptrFromInt(si_ftol_addr);
+
+        // Find the RET (0xC3) to determine patch size
+        var patch_size: usize = 0;
+        while (patch_size < 39 and si_ftol_ptr[patch_size] != 0xC3) : (patch_size += 1) {}
+        patch_size += 1; // include the RET
+
+        // Save original bytes at 0x40A2B0
+        const ftol_addr: [*]u8 = @ptrFromInt(0x40A2B0);
+        var orig_bytes: [39]u8 = undefined;
+        @memcpy(&orig_bytes, ftol_addr[0..39]);
+
+        // Helper: call __ftol at 0x40A2B0 with val on ST(0), returns EAX
+        const callFtol = struct {
+            fn call(val: f32) i32 {
+                var result: i32 = undefined;
+                var edx_trash: u32 = undefined;
+                asm volatile (
+                    \\flds (%[val])
+                    \\call *%[addr]
+                    : [result] "={eax}" (result),
+                      [edx_out] "={edx}" (edx_trash),
+                    : [val] "r" (&val),
+                      [addr] "r" (@as(u32, 0x40A2B0)),
+                );
+                return result;
+            }
+        }.call;
+
+        // Parity test
+        const test_vals = [_]f32{
+            0.0, 1.0, -1.0, 127.5, 127.999, 128.0, -128.5,
+            255.999, 256.0, 1000.7, -1000.7, 32767.0, -32768.0,
+            0.49999, 0.50001, 100.0001, -100.0001,
+            16777215.0, 16777216.0,
+        };
+
+        // Get original results
+        var orig_results: [test_vals.len]i32 = undefined;
+        for (test_vals, 0..) |val, idx| {
+            orig_results[idx] = callFtol(val);
+        }
+
+        // Patch with si_ftol
+        @memcpy(ftol_addr[0..patch_size], si_ftol_ptr[0..patch_size]);
+
+        // Get SSE results
+        var sse_results: [test_vals.len]i32 = undefined;
+        for (test_vals, 0..) |val, idx| {
+            sse_results[idx] = callFtol(val);
+        }
+
+        var mismatches: u32 = 0;
+        for (test_vals, 0..) |val, idx| {
+            if (orig_results[idx] != sse_results[idx]) {
+                mismatches += 1;
+                print("  MISMATCH: val={d:.6} orig={d} sse={d}\n", .{ val, orig_results[idx], sse_results[idx] });
+            }
+        }
+        if (mismatches == 0) {
+            print("  Parity: all {d} test values match ({d} byte patch)\n", .{ test_vals.len, patch_size });
+        } else {
+            print("  Parity: {d}/{d} mismatches\n", .{ mismatches, test_vals.len });
+        }
+
+        // Benchmark: best of 5 each
+        const FTOL_ITERS = 1_000_000;
+        var t_best: u64 = std.math.maxInt(u64);
+        var s_best: u64 = std.math.maxInt(u64);
+
+        @memcpy(ftol_addr[0..39], &orig_bytes);
+        for (0..5) |_| {
+            var sum: i32 = 0;
+            const t0 = rdtsc();
+            for (0..FTOL_ITERS) |iter| {
+                const v: f32 = @floatFromInt(@as(i32, @intCast(iter % 1000)) - 500);
+                sum +%= callFtol(v * 0.7);
+            }
+            const elapsed = rdtsc() - t0;
+            if (elapsed < t_best) t_best = elapsed;
+            std.mem.doNotOptimizeAway(sum);
+        }
+
+        @memcpy(ftol_addr[0..patch_size], si_ftol_ptr[0..patch_size]);
+        for (0..5) |_| {
+            var sum: i32 = 0;
+            const s0 = rdtsc();
+            for (0..FTOL_ITERS) |iter| {
+                const v: f32 = @floatFromInt(@as(i32, @intCast(iter % 1000)) - 500);
+                sum +%= callFtol(v * 0.7);
+            }
+            const elapsed = rdtsc() - s0;
+            if (elapsed < s_best) s_best = elapsed;
+            std.mem.doNotOptimizeAway(sum);
+        }
+
+        @memcpy(ftol_addr[0..39], &orig_bytes);
+        report("__ftol", t_best, s_best, mismatches == 0);
     }
 
     // =========================================================================
