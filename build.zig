@@ -106,7 +106,7 @@ pub fn build(b: *std.Build) void {
         .name = "silicon_sse",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/silicon/silicon_sse.zig"),
-            .target = target,
+            .target = bone_sse_target, // SSE4.1+FMA+AVX, same as bone_sse
             .optimize = .ReleaseFast,
         }),
     });
@@ -162,7 +162,11 @@ pub fn build(b: *std.Build) void {
             .name = "bench_silicon_sse",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/silicon/silicon_sse.zig"),
-                .target = bench_target,
+                .target = b.resolveTargetQuery(.{
+                    .cpu_arch = .x86,
+                    .os_tag = .linux,
+                    .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
+                }),
                 .optimize = .ReleaseFast,
             }),
         });
