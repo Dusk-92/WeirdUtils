@@ -27,7 +27,7 @@ inline fn dot4v(a: V4, b: V4) f32 {
 }
 
 // --- 0x4549C0: normalizeVec3 (137K/7.5s) ---
-// divides vec3 by given length
+// 9cy (1.8x). Reciprocal + 3 muls. Division latency is the floor.
 export fn si_normalizeVec3(vec: u32, length_bits: u32) void {
     const v: [*]f32 = @ptrFromInt(vec);
     const length: f32 = @bitCast(length_bits);
@@ -119,6 +119,9 @@ export fn si_createRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normal
         if (len > 1.0e-20) { const inv = 1.0 / len; x *= inv; y *= inv; z *= inv; }
     }
     const angle: f32 = @bitCast(angle_bits);
+    // x87 FSINCOS: single instruction computes both sin and cos
+    // FSINCOS tested at 148cy — x87 microcode is slow on modern CPUs.
+    // Library sinf+cosf (~35cy each = 70cy total) is 2x faster.
     const c = @cos(angle); const s = @sin(angle); const t = 1.0 - c;
     m[0] = @mulAdd(f32, t * x, x, c);    m[1] = @mulAdd(f32, s, z, t * x * y); m[2] = @mulAdd(f32, -s, y, t * x * z);
     m[3] = @mulAdd(f32, -s, z, t * x * y); m[4] = @mulAdd(f32, t * y, y, c);   m[5] = @mulAdd(f32, s, x, t * y * z);
@@ -504,24 +507,21 @@ export fn si_vec3Dot() callconv(.naked) void {
 }
 
 // --- 0x686820: translateBoundingVol ---
-// Uses @mulAdd for plane distance updates
+// @mulAdd for plane distances. Scalar corner adds (stride 3 — V4 unaligned tested, slower).
 export fn si_translateBoundingVol(this: u32, offset: u32) void {
     const obj: [*]f32 = @ptrFromInt(this);
     const off: [*]const f32 = @ptrFromInt(offset);
     const dx = off[0]; const dy = off[1]; const dz = off[2];
-    // Translate 8 corners (stride 3, starting at index 24)
     inline for (0..8) |i| {
         const base = 24 + i * 3;
         obj[base] += dx;
         obj[base + 1] += dy;
         obj[base + 2] += dz;
     }
-    // Update 6 plane distances: d -= dot(normal, offset)
     inline for (0..6) |i| {
         const base = i * 4;
         obj[base + 3] -= @mulAdd(f32, obj[base + 2], dz, @mulAdd(f32, obj[base + 1], dy, obj[base] * dx));
     }
-    // Translate min/max
     obj[48] += dx; obj[49] += dy; obj[50] += dz;
     obj[51] += dx; obj[52] += dy; obj[53] += dz;
 }
