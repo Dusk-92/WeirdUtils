@@ -2114,7 +2114,86 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
     log_state = logging.Logger.open(module_name, .both);
-    log_state.print("silicon: module loaded (probe hooks deferred to lateInit)\n");
+
+    // Binary-patch SSE replacements immediately at DLL load
+    const patched = installPatches();
+    log_state.fmt("silicon: {d} JMP patches installed\n", .{patched});
+}
+
+// =============================================================================
+// Binary patching: write JMP rel32 at each game function to our SSE replacement.
+// No trampoline, no CC translation — our functions use the game's native CC.
+// =============================================================================
+
+const sse = struct {
+    // silicon_sse.zig exports (linked via object file)
+    extern fn si_normalizeVec3(u32, u32) callconv(TC) void;
+    extern fn si_mulMat3x4(u32, u32, u32) callconv(FC) u32;
+    extern fn si_rotateMatByQuat(u32, u32) callconv(TC) u32;
+    extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(FC) u32;
+    extern fn si_distanceToPlane() callconv(.naked) void;
+    extern fn si_classifyPointFrustum(u32, u32, u32) callconv(TC) u32;
+    extern fn si_checkBoxLineIntersect(u32, u32, u32) callconv(FC) u32;
+    extern fn si_testOBBFrustum(u32, u32, u32, u32) callconv(TC) u32;
+    extern fn si_testSphereFrustum(u32, u32) callconv(TC) u32;
+    extern fn si_quatSlerp(u32, u32, u32, u32) callconv(FC) u32;
+    extern fn si_isPointInsideBounds() callconv(.naked) void;
+    extern fn si_calculateSinCos(u32, u32, u32) callconv(SC) void;
+    extern fn si_createZRotMat3x3(u32, u32) callconv(TC) u32;
+    extern fn si_transposeMat4x4(u32, u32) callconv(TC) u32;
+    extern fn si_mulMat3x4InPlace(u32, u32) callconv(TC) u32;
+    extern fn si_normalizeVec3InPlace(u32) callconv(FC) void;
+    extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(TC) void;
+    extern fn si_addToColorAccumulator(u32, u32) callconv(TC) void;
+    extern fn si_packParticleColor(u32, u32, u32, u32) callconv(FC) void;
+    extern fn si_setParticleAlpha(u32, u32) callconv(FC) void;
+    extern fn si_ftol() callconv(.naked) void;
+    extern fn si_vec3Dot() callconv(.naked) void;
+    extern fn si_translateBoundingVol(u32, u32) callconv(TC) void;
+};
+
+const PatchEntry = struct { target: u32, replacement: u32, name: [*:0]const u8 };
+
+fn getPatchTable() []const PatchEntry {
+    const table = [_]PatchEntry{
+        .{ .target = 0x4549C0, .replacement = @intFromPtr(&sse.si_normalizeVec3), .name = "normalizeVec3" },
+        .{ .target = 0x7BAE60, .replacement = @intFromPtr(&sse.si_mulMat3x4), .name = "mulMat3x4" },
+        .{ .target = 0x7BDDB0, .replacement = @intFromPtr(&sse.si_rotateMatByQuat), .name = "rotateMatByQuat" },
+        .{ .target = 0x7BB860, .replacement = @intFromPtr(&sse.si_createRotMat3x4), .name = "createRotMat3x4" },
+        .{ .target = 0x6329E0, .replacement = @intFromPtr(&sse.si_distanceToPlane), .name = "distanceToPlane" },
+        .{ .target = 0x686C20, .replacement = @intFromPtr(&sse.si_classifyPointFrustum), .name = "classifyPointFrustum" },
+        .{ .target = 0x6DC5A0, .replacement = @intFromPtr(&sse.si_checkBoxLineIntersect), .name = "checkBoxLineIntersect" },
+        .{ .target = 0x6869C0, .replacement = @intFromPtr(&sse.si_testOBBFrustum), .name = "testOBBFrustum" },
+        .{ .target = 0x686B80, .replacement = @intFromPtr(&sse.si_testSphereFrustum), .name = "testSphereFrustum" },
+        .{ .target = 0x7C0570, .replacement = @intFromPtr(&sse.si_quatSlerp), .name = "quatSlerp" },
+        .{ .target = 0x699330, .replacement = @intFromPtr(&sse.si_isPointInsideBounds), .name = "isPointInsideBounds" },
+        .{ .target = 0x749280, .replacement = @intFromPtr(&sse.si_calculateSinCos), .name = "calculateSinCos" },
+        .{ .target = 0x7BE5B0, .replacement = @intFromPtr(&sse.si_createZRotMat3x3), .name = "createZRotMat3x3" },
+        .{ .target = 0x7BCEF0, .replacement = @intFromPtr(&sse.si_transposeMat4x4), .name = "transposeMat4x4" },
+        .{ .target = 0x7BB420, .replacement = @intFromPtr(&sse.si_mulMat3x4InPlace), .name = "mulMat3x4InPlace" },
+        .{ .target = 0x6720F0, .replacement = @intFromPtr(&sse.si_normalizeVec3InPlace), .name = "normalizeVec3InPlace" },
+        .{ .target = 0x71BC70, .replacement = @intFromPtr(&sse.si_addVec3ToAccumulator), .name = "addVec3ToAccumulator" },
+        .{ .target = 0x71BF60, .replacement = @intFromPtr(&sse.si_addToColorAccumulator), .name = "addToColorAccumulator" },
+        .{ .target = 0x7B7A80, .replacement = @intFromPtr(&sse.si_packParticleColor), .name = "packParticleColor" },
+        .{ .target = 0x7B7B10, .replacement = @intFromPtr(&sse.si_setParticleAlpha), .name = "setParticleAlpha" },
+        .{ .target = 0x40A2B0, .replacement = @intFromPtr(&sse.si_ftol), .name = "__ftol" },
+        .{ .target = 0x602630, .replacement = @intFromPtr(&sse.si_vec3Dot), .name = "vec3Dot" },
+        .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
+    };
+    return &table;
+}
+
+fn installPatches() u32 {
+    var count: u32 = 0;
+    for (getPatchTable()) |entry| {
+        // Write JMP rel32: E9 XX XX XX XX
+        const rel = @as(i32, @bitCast(entry.replacement -% entry.target -% 5));
+        var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
+        @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
+        hook.writeProtected(entry.target, &patch);
+        count += 1;
+    }
+    return count;
 }
 
 /// Called from engineInitDetour after engine is fully initialized.
@@ -2123,11 +2202,9 @@ pub fn lateInit() void {
 
     var installed: u32 = 0;
 
-    // Debug: only install ftol to isolate visual issues
-    const FTOL_ONLY = true;
-
-    // Cat 1: Scalar math — SSE replacements
-    if (!FTOL_ONLY) {
+    // Detour hooks for profiling probes (functions without SSE replacements)
+    const INSTALL_PROBES = false; // disable probes when patching
+    if (INSTALL_PROBES) {
         if (h00.attach(0x4549C0, &sseNormalizeVec3) == .ok) installed += 1; // 137K/7.5s
         if (h01.attach(0x41AE40, probeDetour(SC1d, &h01, &cnt[1])) == .ok) installed += 1;
         if (h02.attach(0x41AE50, probeDetour(SC1d, &h02, &cnt[2])) == .ok) installed += 1;

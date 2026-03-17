@@ -35,19 +35,19 @@ extern fn si_normalizeVec3(u32, u32) callconv(cc_tc) void;
 extern fn si_mulMat3x4(u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_rotateMatByQuat(u32, u32) callconv(cc_tc) u32;
 extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(cc_fc) u32;
-extern fn si_distanceToPlane() callconv(.naked) void; // naked: ECX=point, EDX=plane, stack=dir, returns ST(0), RET 4
+extern fn si_distanceToPlane(u32, u32, u32) callconv(cc_fc) f64;
 extern fn si_classifyPointFrustum(u32, u32, u32) callconv(cc_tc) u32;
 extern fn si_checkBoxLineIntersect(u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_testOBBFrustum(u32, u32, u32, u32) callconv(cc_tc) u32;
 extern fn si_testSphereFrustum(u32, u32) callconv(cc_tc) u32;
 extern fn si_quatSlerp(u32, u32, u32, u32) callconv(cc_fc) u32;
-extern fn si_isPointInsideBounds() callconv(.naked) void;
+extern fn si_isPointInsideBounds(u32, u32) callconv(cc_fc) u32;
 extern fn si_calculateSinCos(u32, u32, u32) callconv(cc_sc) void;
 extern fn si_createZRotMat3x3(u32, u32) callconv(cc_tc) u32;
 extern fn si_transposeMat4x4(u32, u32) callconv(cc_tc) u32;
 extern fn si_mulMat3x4InPlace(u32, u32) callconv(cc_tc) u32;
 extern fn si_normalizeVec3InPlace(u32) callconv(cc_fc) void;
-extern fn si_vec3Dot() callconv(.naked) void; // naked: ECX=a, EDX=b, returns ST(0)
+extern fn si_vec3Dot(u32, u32) callconv(cc_fc) f64;
 extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
 extern fn si_addVec3ToAccumulator(u32, u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
@@ -481,90 +481,28 @@ pub fn main() void {
     print("\n{s}\n", .{"--- SILICON SSE functions ---"});
 
     // si_isPointInsideBounds (1.7M/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> u32
-    // Patch-in-place test: overwrite bytes at 0x699330 with SSE version
     {
         const va2 = tv3();
         const vb2 = Vec3{ 1.0, -3.0, 0.5 }; // all <= va
-        const FnType = fn (u32, u32) callconv(cc_fc) u32;
-        const target: [*]u8 = @ptrFromInt(0x699330);
-        const si_ptr: [*]const u8 = @ptrFromInt(@intFromPtr(&si_isPointInsideBounds));
-
-        // Find patch size (scan for RET after the first RET — 2 exit paths)
-        var patch_size: usize = 0;
-        var rets: u32 = 0;
-        while (patch_size < 46) : (patch_size += 1) {
-            if (si_ptr[patch_size] == 0xC3) {
-                rets += 1;
-                if (rets == 2) { patch_size += 1; break; }
-            }
-        }
-
-        var orig_bytes: [46]u8 = undefined;
-        @memcpy(&orig_bytes, target[0..46]);
-
-        // Parity: original
-        const f: *const FnType = @ptrCast(@alignCast(@as(*const anyopaque, @ptrFromInt(0x699330))));
-        const ov = f(a(&va2), a(&vb2));
-
-        // Patch + test
-        @memcpy(target[0..patch_size], si_ptr[0..patch_size]);
-        const sv = f(a(&va2), a(&vb2));
+        const of = origFn(fn (u32, u32) callconv(cc_fc) u32, 0x699330);
+        const ov = of(a(&va2), a(&vb2));
+        const sv = si_isPointInsideBounds(a(&va2), a(&vb2));
         const ok = ov == sv;
-
-        // Bench original
-        @memcpy(target[0..46], &orig_bytes);
-        var t_best: u64 = std.math.maxInt(u64);
-        for (0..5) |_| {
-            var sum: u32 = 0;
-            const t0 = rdtsc();
-            for (0..ITERS) |_| { sum +%= f(a(&va2), a(&vb2)); }
-            const elapsed = rdtsc() - t0;
-            if (elapsed < t_best) t_best = elapsed;
-            std.mem.doNotOptimizeAway(sum);
-        }
-
-        // Bench patched
-        @memcpy(target[0..patch_size], si_ptr[0..patch_size]);
-        var s_best: u64 = std.math.maxInt(u64);
-        for (0..5) |_| {
-            var sum: u32 = 0;
-            const s0 = rdtsc();
-            for (0..ITERS) |_| { sum +%= f(a(&va2), a(&vb2)); }
-            const elapsed = rdtsc() - s0;
-            if (elapsed < s_best) s_best = elapsed;
-            std.mem.doNotOptimizeAway(sum);
-        }
-
-        @memcpy(target[0..46], &orig_bytes);
-        report("isPointInsideBounds", t_best, s_best, ok);
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_isPointInsideBounds(a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
+        report("isPointInsideBounds", t, s, ok);
     }
 
-    // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> ST(0)
-    // Both original and SSE are naked/fastcall, call via asm
+    // si_vec3Dot (31K/7.5s) -- fastcall(vecA_ECX, vecB_EDX) -> f64
     {
         const va2 = tv3();
         const vb2 = tv3b();
-        const callDot = struct {
-            fn call(func: u32, va_ptr: u32, vb_ptr: u32) f64 {
-                var result: f64 = undefined;
-                var eax_trash: u32 = undefined;
-                asm volatile (
-                    \\call *%[func]
-                    \\fstpl (%[out])
-                    : [eax_out] "={eax}" (eax_trash),
-                    : [func] "r" (func),
-                      [out] "r" (&result),
-                      [_ecx] "{ecx}" (va_ptr),
-                      [_edx] "{edx}" (vb_ptr),
-                );
-                return result;
-            }
-        }.call;
-        const ov = callDot(0x602630, a(&va2), a(&vb2));
-        const sv = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2));
+        const of = origFn(fn (u32, u32) callconv(cc_fc) f64, 0x602630);
+        const ov = of(a(&va2), a(&vb2));
+        const sv = si_vec3Dot(a(&va2), a(&vb2));
         const ok = @abs(ov - sv) < 1e-4;
-        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = callDot(0x602630, a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
-        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = callDot(@intFromPtr(&si_vec3Dot), a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
+        var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_vec3Dot(a(&va2), a(&vb2)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("si_vec3Dot", t, s, ok);
     }
 
@@ -587,14 +525,12 @@ pub fn main() void {
         const pt = tv3();
         const plane = [4]f32{ 0.0, 1.0, 0.0, -5.0 }; // y=5 plane
         const dir = Vec3{ 0.0, -1.0, 0.0 }; // pointing down
-        const FnType = fn (u32, u32, u32) callconv(cc_fc) f64;
-        const of: *const FnType = origFn(FnType, 0x6329E0);
-        const sf: *const FnType = @ptrCast(&si_distanceToPlane);
+        const of = origFn(fn (u32, u32, u32) callconv(cc_fc) f64, 0x6329E0);
         const ov = of(a(&pt), a(&plane), a(&dir));
-        const sv = sf(a(&pt), a(&plane), a(&dir));
+        const sv = si_distanceToPlane(a(&pt), a(&plane), a(&dir));
         const ok = @abs(ov - sv) < 1e-2;
         var t: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = of(a(&pt), a(&plane), a(&dir)); } const _te = rdtsc() - _t0; if (_te < t) t = _te; }
-        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = sf(a(&pt), a(&plane), a(&dir)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
+        var s: u64 = std.math.maxInt(u64); for (0..5) |_| { const _t0 = rdtsc(); for (0..ITERS) |_| { _ = si_distanceToPlane(a(&pt), a(&plane), a(&dir)); } const _te = rdtsc() - _t0; if (_te < s) s = _te; }
         report("distanceToPlane", t, s, ok);
     }
 

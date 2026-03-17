@@ -135,37 +135,15 @@ export fn si_createRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normal
 }
 
 // --- 0x6329E0: distanceToPlane (525K/7.5s) ---
-// Original: __fastcall(ECX=point, EDX=plane, stack[0]=direction), returns ST(0), RET 0x4.
-// (dot(point,normal)+d) / dot(direction,normal). 70 bytes, 14cy.
-// Naked FMA version: 2 dot products via vfmadd + vdivss, transfer to ST(0).
-export fn si_distanceToPlane() callconv(.naked) void {
-    // ECX=point, EDX=plane, [ESP+4]=direction. Return ST(0), RET 0x4.
-    asm volatile (
-        // dot1 = p[0]*pl[0] + p[1]*pl[1] + p[2]*pl[2] + pl[3]
-        \\vmovss (%%ecx), %%xmm0
-        \\vmulss (%%edx), %%xmm0, %%xmm0
-        \\vmovss 4(%%ecx), %%xmm1
-        \\vfmadd231ss 4(%%edx), %%xmm1, %%xmm0
-        \\vmovss 8(%%ecx), %%xmm1
-        \\vfmadd231ss 8(%%edx), %%xmm1, %%xmm0
-        \\vaddss 12(%%edx), %%xmm0, %%xmm0
-        // dot2 = dir[0]*pl[0] + dir[1]*pl[1] + dir[2]*pl[2]
-        \\mov 4(%%esp), %%eax
-        \\vmovss (%%eax), %%xmm2
-        \\vmulss (%%edx), %%xmm2, %%xmm2
-        \\vmovss 4(%%eax), %%xmm1
-        \\vfmadd231ss 4(%%edx), %%xmm1, %%xmm2
-        \\vmovss 8(%%eax), %%xmm1
-        \\vfmadd231ss 8(%%edx), %%xmm1, %%xmm2
-        // result = dot1 / dot2 (skip epsilon check for speed — game tolerates it)
-        \\vdivss %%xmm2, %%xmm0, %%xmm0
-        // Transfer to ST(0)
-        \\sub $4, %%esp
-        \\vmovss %%xmm0, (%%esp)
-        \\flds (%%esp)
-        \\add $4, %%esp
-        \\ret $4
-    );
+// __fastcall(ECX=point, EDX=plane, stack=direction), returns f64 via ST(0), RET 0x4.
+export fn si_distanceToPlane(point: u32, plane: u32, direction: u32) callconv(FC) f64 {
+    const p: [*]const f32 = @ptrFromInt(point);
+    const pl: [*]const f32 = @ptrFromInt(plane);
+    const dir: [*]const f32 = @ptrFromInt(direction);
+    const dot1 = @mulAdd(f32, p[2], pl[2], @mulAdd(f32, p[1], pl[1], @mulAdd(f32, p[0], pl[0], pl[3])));
+    const dot2 = @mulAdd(f32, dir[2], pl[2], @mulAdd(f32, dir[1], pl[1], dir[0] * pl[0]));
+    if (@abs(dot2) < 1.0e-20) return 0.0;
+    return @as(f64, dot1) / @as(f64, dot2);
 }
 
 
@@ -315,27 +293,12 @@ export fn si_quatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) callconv(F
 }
 
 // --- 0x699330: isPointInsideBounds (1.7M/7.5s) ---
-// Original: __fastcall(ECX=a, EDX=b), RET. 46 bytes, 6cy.
-// Naked SSE: comiss replaces x87 FCOMP+FNSTSW+TEST (3 insns -> 1 insn per compare).
-// Binary patch candidate: fits in 46 bytes.
-export fn si_isPointInsideBounds() callconv(.naked) void {
-    // ECX = a, EDX = b. Return EAX = 1 if b[0..2] <= a[0..2], else 0.
-    asm volatile (
-        \\vmovss (%%edx), %%xmm0
-        \\vucomiss (%%ecx), %%xmm0
-        \\ja 1f
-        \\vmovss 4(%%edx), %%xmm0
-        \\vucomiss 4(%%ecx), %%xmm0
-        \\ja 1f
-        \\vmovss 8(%%edx), %%xmm0
-        \\vucomiss 8(%%ecx), %%xmm0
-        \\ja 1f
-        \\mov $1, %%eax
-        \\ret
-        \\1:
-        \\xor %%eax, %%eax
-        \\ret
-    );
+// __fastcall(ECX=a, EDX=b), returns u32.
+export fn si_isPointInsideBounds(a: u32, b: u32) callconv(FC) u32 {
+    const va: [*]const f32 = @ptrFromInt(a);
+    const vb: [*]const f32 = @ptrFromInt(b);
+    if (vb[0] <= va[0] and vb[1] <= va[1] and vb[2] <= va[2]) return 1;
+    return 0;
 }
 
 // --- 0x749280: calculateSinCos ---
@@ -487,27 +450,12 @@ export fn si_ftol() callconv(.naked) void {
     );
 }
 
-// --- 0x602630: vec3Dot (31K/7.5s, 0.05ms total) ---
-// Original: __fastcall(ECX=a, EDX=b), returns ST(0). 21 bytes, 5cy.
-// Achieved 0.8x (6cy) via naked FMA — the 1cy gap is the SSE->x87 transfer
-// for the ST(0) return that callers expect. DPPS (SSE4.1) is 7-11cy, no better.
-// x87 is inherently optimal here: 21 bytes, no domain crossing, pipelined.
-// Not worth further optimization at 31K calls — 0.05ms total frame cost.
-export fn si_vec3Dot() callconv(.naked) void {
-    // ECX = a ptr, EDX = b ptr (fastcall), return in ST(0)
-    asm volatile (
-        \\vmovss (%%ecx), %%xmm0
-        \\vmulss (%%edx), %%xmm0, %%xmm0
-        \\vmovss 4(%%ecx), %%xmm1
-        \\vfmadd231ss 4(%%edx), %%xmm1, %%xmm0
-        \\vmovss 8(%%ecx), %%xmm1
-        \\vfmadd231ss 8(%%edx), %%xmm1, %%xmm0
-        \\sub $4, %%esp
-        \\vmovss %%xmm0, (%%esp)
-        \\flds (%%esp)
-        \\add $4, %%esp
-        \\ret
-    );
+// --- 0x602630: vec3Dot (31K/7.5s) ---
+// __fastcall(ECX=a, EDX=b), returns f64 via ST(0).
+export fn si_vec3Dot(a: u32, b: u32) callconv(FC) f64 {
+    const va: [*]const f32 = @ptrFromInt(a);
+    const vb: [*]const f32 = @ptrFromInt(b);
+    return @floatCast(@mulAdd(f32, va[2], vb[2], @mulAdd(f32, va[1], vb[1], va[0] * vb[0])));
 }
 
 // --- 0x686820: translateBoundingVol ---
