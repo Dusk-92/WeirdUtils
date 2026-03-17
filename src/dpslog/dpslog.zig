@@ -149,6 +149,8 @@ const SUB_SPELL_RESURRECT: [*:0]const u8 = "SPELL_RESURRECT";
 const SUB_SPELL_INSTAKILL: [*:0]const u8 = "SPELL_INSTAKILL";
 const SUB_PARTY_KILL: [*:0]const u8 = "PARTY_KILL";
 const SUB_UNIT_DIED: [*:0]const u8 = "UNIT_DIED";
+const SUB_DAMAGE_SPLIT: [*:0]const u8 = "DAMAGE_SPLIT";
+const SUB_SPELL_DISPEL_FAILED: [*:0]const u8 = "SPELL_DISPEL_FAILED";
 
 // Miss type strings (for _MISSED suffix arg)
 const MISS_MISS: [*:0]const u8 = "MISS";
@@ -462,8 +464,13 @@ fn spellNonMeleeDmgLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callcon
         const dst_str = guidToString(target_guid.?);
         const critical: u32 = if (hit_info.? & 0x02 != 0) 1 else 0;
 
-        // Auto Shot (75) and Shoot/Wand (5019) are ranged auto-attacks
-        const sub = if (spell_id.? == 75 or spell_id.? == 5019) SUB_RANGE_DAMAGE else SUB_SPELL_DAMAGE;
+        // Classify the damage subevent
+        const sub = if (spell_id.? == 75 or spell_id.? == 5019)
+            SUB_RANGE_DAMAGE // Auto Shot / Wand Shoot
+        else if (isDamageSplitSpell(spell_id.?))
+            SUB_DAMAGE_SPLIT // Soul Link, Blessing of Sacrifice, etc.
+        else
+            SUB_SPELL_DAMAGE;
         log.fmt("{s}: spell={d} amt={d} school={d} crit={d}\n", .{
             std.mem.span(sub), spell_id.?, damage.?, @as(u32, school.?), critical,
         });
@@ -1330,6 +1337,19 @@ fn isEnergizeEffect(e: u32) bool {
     return e == 30;
 }
 
+/// Check if spell has a damage split aura effect (Soul Link, Blessing of Sacrifice, etc.)
+/// SPELL_AURA_SPLIT_DAMAGE_PCT=81, SPLIT_DAMAGE_FLAT=153, SPLIT_DAMAGE_GROUP_PCT=193
+fn isDamageSplitSpell(spell_id: u32) bool {
+    if (getSpellRecord(spell_id)) |rec| {
+        // EffectApplyAuraName[0..2] at offset 0x178, 0x17C, 0x180
+        inline for (0..3) |i| {
+            const aura = hook.readMem(u32, rec + 0x178 + @as(u32, @intCast(i)) * 4);
+            if (aura == 81 or aura == 153 or aura == 193) return true;
+        }
+    }
+    return false;
+}
+
 /// Determine aura type from spell DB Attributes flag.
 /// Spell attribute 0x4000000 = SPELL_ATTR_NEGATIVE (harmful/debuff).
 /// Falls back to slot-based heuristic if spell not found in DB.
@@ -1534,8 +1554,56 @@ fn auraDurationDetour(slot: u32, duration: u32) callconv(hook.cc.fastcall) void 
 }
 
 // =============================================================================
-//
-// SPELL_AURA_BROKEN:          CC break path — deep aura system research needed
+// Hook: ProcessMultipleSpellInterrupts (0x628C20) — dispel failed notification
+// Packet: SMSG_DISPEL_FAILED (0x262)
+// stdcall(messageType, dataBuffer), RET 8
+// Data: casterGUID(packed) + targetGUID(packed) + spellId(u32) * N
+// Fires: SPELL_DISPEL_FAILED
+// =============================================================================
+
+const DispelFailedFn = fn (u32, u32) callconv(hook.cc.stdcall) ?*anyopaque;
+
+var dispel_failed_hook: hook.Detour(DispelFailedFn) = .{};
+
+fn dispelFailedDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*anyopaque {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    const saved_read = cdsGetRead(cds);
+
+    // ReadPointerPairFromBuffer reads 2 u32s (lo + hi = 64-bit GUID), NOT packed
+    const caster_lo = cdsGet(u32, cds);
+    const caster_hi = cdsGet(u32, cds);
+    const target_lo = cdsGet(u32, cds);
+    const target_hi = cdsGet(u32, cds);
+
+    if (caster_lo != null and caster_hi != null and target_lo != null and target_hi != null) {
+        const caster_guid: u64 = @as(u64, caster_hi.?) << 32 | @as(u64, caster_lo.?);
+        const target_guid: u64 = @as(u64, target_hi.?) << 32 | @as(u64, target_lo.?);
+
+        if (caster_guid != 0 and target_guid != 0) {
+            const src_str = guidToString(caster_guid);
+            const dst_str = guidToString(target_guid);
+
+            // Loop: read spell IDs until buffer exhausted (ReadPointerFromStream reads u32)
+            var count: u32 = 0;
+            while (count < 20) : (count += 1) { // safety cap
+                const spell_id = cdsGet(u32, cds);
+                if (spell_id == null) break;
+                if (spell_id.? == 0) break;
+
+                const school = getSpellSchool(spell_id.?);
+                log.fmt("SPELL_DISPEL_FAILED: spell={d} caster=0x{x} target=0x{x}\n", .{
+                    spell_id.?, caster_guid, target_guid,
+                });
+                fireSpell(SUB_SPELL_DISPEL_FAILED, src_str, dst_str, spell_id.?, school);
+            }
+        }
+    }
+
+    cdsSetRead(cds, saved_read);
+    return dispel_failed_hook.callOriginal(.{ msg_type, cds });
+}
+
 // RANGE_MISSED already handled via spell ID check in SPELL_MISSED hook
 
 // Event registration now happens dynamically in createEventsDetour.
@@ -1683,10 +1751,17 @@ pub fn installHooks() void {
     } else {
         log.print("Hooked SetActionCooldownTimer (SPELL_AURA_REFRESH)\n");
     }
+
+    if (dispel_failed_hook.attach(0x628C20, &dispelFailedDetour) != .ok) {
+        log.print("FAILED to hook ProcessMultipleSpellInterrupts\n");
+    } else {
+        log.print("Hooked ProcessMultipleSpellInterrupts (SPELL_DISPEL_FAILED)\n");
+    }
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        dispel_failed_hook.detach();
         aura_duration_hook.detach();
         spell_effect_hook.detach();
         dispel_hook.detach();
