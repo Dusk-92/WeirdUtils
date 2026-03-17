@@ -101,9 +101,13 @@ local SUBEVENTS = {
     "SPELL_AURA_BROKEN_SPELL",
     -- Pattern H: fireEnvDamage (sub, src, dst, envStr, amount, school, absorbed, 0, 0)
     "ENVIRONMENTAL_DAMAGE",
+    -- New: damage split, dispel failed, unit destroyed
+    "DAMAGE_SPLIT",
+    "SPELL_DISPEL_FAILED",
+    "UNIT_DESTROYED",
 }
 
-local NUM_SUBEVENTS = 35
+local NUM_SUBEVENTS = 37
 
 -- Reverse lookup: subevent name -> index
 local subeventIndex = {}
@@ -211,6 +215,11 @@ end
 argFormatters["ENVIRONMENTAL_DAMAGE"] = function(a4,a5,a6,a7)
     return format("env=%s amt=%s %s abs=%s", s(a4), s(a5), schoolName(a6 or 0), s(a7))
 end
+
+-- New subevents
+argFormatters["DAMAGE_SPLIT"] = function(a4,a5,a6,a7,a8,a9,a10) return fmtSpellDmg(a4,a5,a6,a7,a8,a9,a10) end
+argFormatters["SPELL_DISPEL_FAILED"] = function(a4,a5) return format("spell=%s %s", s(a4), schoolName(a5 or 0)) end
+argFormatters["UNIT_DESTROYED"] = function() return "" end
 
 -- ============================================================================
 -- Chat output handlers (preserved from original)
@@ -335,6 +344,15 @@ chatHandlers["SPELL_PERIODIC_MISSED"] = function(src, dst, spellId, spellSchool,
 end
 chatHandlers["DAMAGE_SHIELD_MISSED"] = function(src, dst, spellId, spellSchool, missType)
     DEFAULT_CHAT_FRAME:AddMessage(format("|cffaaaaaaDAMAGE_SHIELD_MISSED|r %s -> %s: spell %d %s", src, dst, spellId, missType))
+end
+chatHandlers["DAMAGE_SPLIT"] = function(src, dst, spellId, amount, school)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff6600DAMAGE_SPLIT|r %s -> %s: spell %d for %d %s", src, dst, spellId, amount, schoolName(school)))
+end
+chatHandlers["SPELL_DISPEL_FAILED"] = function(src, dst, spellId, spellSchool)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff888888SPELL_DISPEL_FAILED|r %s -> %s: spell %d resisted", src, dst, spellId))
+end
+chatHandlers["UNIT_DESTROYED"] = function(src, dst)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff666666UNIT_DESTROYED|r %s", dst))
 end
 
 -- ============================================================================

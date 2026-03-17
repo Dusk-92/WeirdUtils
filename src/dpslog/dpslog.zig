@@ -993,7 +993,7 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
 
 // =============================================================================
 // Hook: CastResultHandler (0x6E7330)
-// Packet: SMSG_CAST_RESULT (opcode 0x0130)
+// Packet: SMSG_CAST_RESULT (opcode 0x0130) — local player only
 // Fires: SPELL_CAST_FAILED (when status != 0)
 // =============================================================================
 
@@ -1010,17 +1010,51 @@ fn castResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
     cdsSetRead(cds, saved_read);
 
     if (spell_id != null and status != null and status.? != 0) {
-        // SMSG_CAST_RESULT is only sent to the casting player
         const player_guid = getActivePlayerGuid();
         if (player_guid != 0) {
             const src_str = guidToString(player_guid);
             const school = getSpellSchool(spell_id.?);
-            log.fmt("SPELL_CAST_FAILED: spell={d} status={d}\n", .{ spell_id.?, status.? });
+            log.fmt("SPELL_CAST_FAILED: spell={d} status={d} (self)\n", .{ spell_id.?, status.? });
             fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, GUID_ZERO, spell_id.?, school, "FAILED");
         }
     }
 
     return cast_result_hook.callOriginal(.{ unk, opcode, unk2, cds });
+}
+
+// =============================================================================
+// Hook: HandleSpellInterruptUpdate (0x6E75F0)
+// Handles SMSG_SPELL_FAILED_OTHER (0x2A6) and SMSG_SPELL_FAILURE (0x133)
+// Broadcast to all nearby — captures other units' cast failures.
+// stdcall(msgType, dataBuffer), RET 8.
+// Packet: packedGuid + spellId(u32)
+// Fires: SPELL_CAST_FAILED for other units
+// =============================================================================
+
+var spell_failed_other_hook: hook.Detour(DispelFailedFn) = .{}; // same CC as dispel failed: stdcall(2), ret 8
+
+fn spellFailedOtherDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*anyopaque {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    const saved_read = cdsGetRead(cds);
+
+    const caster_guid = cdsGetPackedGuid(cds);
+    const spell_id = cdsGet(u32, cds);
+
+    cdsSetRead(cds, saved_read);
+
+    if (caster_guid != null and spell_id != null and spell_id.? != 0) {
+        // Skip if this is the local player (already handled by CastResultHandler)
+        const player_guid = getActivePlayerGuid();
+        if (caster_guid.? != player_guid) {
+            const src_str = guidToString(caster_guid.?);
+            const school = getSpellSchool(spell_id.?);
+            log.fmt("SPELL_CAST_FAILED: spell={d} caster=0x{x} (other)\n", .{ spell_id.?, caster_guid.? });
+            fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, GUID_ZERO, spell_id.?, school, "FAILED");
+        }
+    }
+
+    return spell_failed_other_hook.callOriginal(.{ msg_type, cds });
 }
 
 // =============================================================================
@@ -1692,7 +1726,13 @@ pub fn installHooks() void {
     if (cast_result_hook.attach(0x6E7330, &castResultDetour) != .ok) {
         log.print("FAILED to hook CastResultHandler\n");
     } else {
-        log.print("Hooked CastResultHandler\n");
+        log.print("Hooked CastResultHandler (SPELL_CAST_FAILED self)\n");
+    }
+
+    if (spell_failed_other_hook.attach(0x6E75F0, &spellFailedOtherDetour) != .ok) {
+        log.print("FAILED to hook HandleSpellInterruptUpdate\n");
+    } else {
+        log.print("Hooked HandleSpellInterruptUpdate (SPELL_CAST_FAILED others)\n");
     }
 
     if (spell_missed_hook.attach(0x62BAB0, &spellMissedDetour) != .ok) {
@@ -1776,6 +1816,7 @@ pub fn installHooks() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        spell_failed_other_hook.detach();
         dispel_failed_hook.detach();
         aura_duration_hook.detach();
         spell_effect_hook.detach();
