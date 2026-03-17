@@ -443,7 +443,7 @@ export fn si_setParticleAlpha(obj: u32, alpha_bits: u32) callconv(FC) void {
 export fn si_ftol() callconv(.naked) void {
     asm volatile (
         \\sub $8, %%esp
-        \\.byte 0xDD, 0x0C, 0x24
+        \\fisttpll (%%esp)
         \\pop %%eax
         \\pop %%edx
         \\ret

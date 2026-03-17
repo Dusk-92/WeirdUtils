@@ -1895,69 +1895,7 @@ fn ftolProbe() callconv(.naked) void {
     );
 }
 
-/// SSE2 __ftol compare mode. Calls original, computes SSE2 result, logs mismatches.
-fn ftolSSE2() callconv(.naked) void {
-    asm volatile (
-        // Count calls
-        \\mov %[cnt], %%eax
-        \\lock addl $1, (%%eax)
-        // Duplicate ST(0) for both paths
-        \\sub $16, %%esp
-        \\fld %%st(0)
-        // Call original via trampoline (consumes one ST(0) copy, result in EAX:EDX)
-        \\mov %[orig], %%eax
-        \\mov (%%eax), %%eax
-        \\call *%%eax
-        // EAX = original result. Save it.
-        \\mov %%eax, 8(%%esp)
-        \\mov %%edx, 12(%%esp)
-        // Now compute SSE2 result from saved copy
-        \\fstpl (%%esp)
-        \\movsd (%%esp), %%xmm0
-        \\cvttsd2si %%xmm0, %%ecx
-        // Compare
-        \\cmp %%ecx, 8(%%esp)
-        \\jne 1f
-        // Match: return original result
-        \\mov 8(%%esp), %%eax
-        \\mov 12(%%esp), %%edx
-        \\add $16, %%esp
-        \\ret
-        // Mismatch: log it, return original
-        \\1:
-        \\mov %[miss], %%eax
-        \\lock addl $1, (%%eax)
-        // Push args for logFtolMismatch(original_i32, sse2_i32, f64_lo, f64_hi)
-        \\push 4(%%esp)
-        \\push 4(%%esp)
-        \\push %%ecx
-        \\push 20(%%esp)
-        \\call %[logfn]
-        \\add $16, %%esp
-        // Return original result
-        \\mov 8(%%esp), %%eax
-        \\mov 12(%%esp), %%edx
-        \\add $16, %%esp
-        \\ret
-        :
-        : [orig] "i" (&h115.inner.trampoline),
-          [miss] "i" (&ftol_mismatch_count),
-          [cnt] "i" (&cnt[115]),
-          [logfn] "i" (&logFtolMismatch),
-    );
-}
-
-fn logFtolMismatch(original: i32, sse2: i32, f64_lo: u32, f64_hi: u32) callconv(.c) void {
-    const S = struct { var count: u32 = 0; };
-    if (S.count < 50) {
-        S.count += 1;
-        const bits: u64 = @as(u64, f64_hi) << 32 | f64_lo;
-        const val: f64 = @bitCast(bits);
-        log_state.fmt("[ftol_cmp] orig={d} sse2={d} val={d}\n", .{ original, sse2, @as(i64, @intFromFloat(val)) });
-    }
-}
-
-var ftol_mismatch_count: u32 = 0;
+// ftolSSE2 compare mode removed — using direct byte patching via si_ftol now
 
 const ProbeInfo = struct { name: [*:0]const u8, idx: u32 };
 
@@ -2152,7 +2090,12 @@ const sse = struct {
     extern fn si_translateBoundingVol(u32, u32) callconv(TC) void;
 };
 
-const PatchEntry = struct { target: u32, replacement: u32, name: [*:0]const u8 };
+const PatchEntry = struct {
+    target: u32,
+    replacement: u32,
+    name: [*:0]const u8,
+    direct_size: u8 = 0, // >0: copy this many bytes directly (naked asm, no JMP)
+};
 
 fn getPatchTable() []const PatchEntry {
     const table = [_]PatchEntry{
@@ -2176,7 +2119,7 @@ fn getPatchTable() []const PatchEntry {
         .{ .target = 0x71BF60, .replacement = @intFromPtr(&sse.si_addToColorAccumulator), .name = "addToColorAccumulator" },
         .{ .target = 0x7B7A80, .replacement = @intFromPtr(&sse.si_packParticleColor), .name = "packParticleColor" },
         .{ .target = 0x7B7B10, .replacement = @intFromPtr(&sse.si_setParticleAlpha), .name = "setParticleAlpha" },
-        .{ .target = 0x40A2B0, .replacement = @intFromPtr(&sse.si_ftol), .name = "__ftol" },
+        .{ .target = 0x40A2B0, .replacement = @intFromPtr(&sse.si_ftol), .name = "__ftol", .direct_size = 9 },
         .{ .target = 0x602630, .replacement = @intFromPtr(&sse.si_vec3Dot), .name = "vec3Dot" },
         .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
     };
@@ -2186,11 +2129,17 @@ fn getPatchTable() []const PatchEntry {
 fn installPatches() u32 {
     var count: u32 = 0;
     for (getPatchTable()) |entry| {
-        // Write JMP rel32: E9 XX XX XX XX
-        const rel = @as(i32, @bitCast(entry.replacement -% entry.target -% 5));
-        var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
-        @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
-        hook.writeProtected(entry.target, &patch);
+        if (entry.direct_size > 0) {
+            // Direct byte copy: naked asm replacement fits in original
+            const src: [*]const u8 = @ptrFromInt(entry.replacement);
+            hook.writeProtected(entry.target, src[0..entry.direct_size]);
+        } else {
+            // JMP rel32: E9 XX XX XX XX
+            const rel = @as(i32, @bitCast(entry.replacement -% entry.target -% 5));
+            var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
+            @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
+            hook.writeProtected(entry.target, &patch);
+        }
         count += 1;
     }
     return count;
@@ -2335,7 +2284,7 @@ pub fn lateInit() void {
         // the control word state after the original returns. Needs naked asm like ftol.
         // if (h114.attach(0x40CF81, probeDetour(SC2r, &h114, &cnt[114])) == .ok) installed += 1;
     }
-    if (h115.attach(0x40A2B0, @ptrCast(&ftolSSE2)) == .ok) installed += 1;
+    // ftol patched directly via installPatches(), no detour needed
 
     // Periodic reporting hook
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) {
@@ -2355,10 +2304,6 @@ fn reportProbes() void {
             log_state.fmt("  {s}: {d}\n", .{ info.name, c });
         }
     }
-    const miss = @atomicRmw(u32, &ftol_mismatch_count, .Xchg, 0, .monotonic);
-    // cnt[115] already read+reset by the probe loop above, so use the value from probe_infos
-    // Just report the mismatch count — the call count is in the probe list as "__ftol"
-    log_state.fmt("  __ftol SSE2 mismatches: {d}\n", .{miss});
 }
 
 pub fn removeHooks() void {
