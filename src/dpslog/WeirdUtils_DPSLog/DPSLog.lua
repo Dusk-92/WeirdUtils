@@ -87,7 +87,6 @@ local SUBEVENTS = {
     { "SWING_MISSED (BLOCK)",    "SWING_MISSED",    4, "BLOCK" },
     { "SWING_MISSED (EVADE)",    "SWING_MISSED",    4, "EVADE" },
     { "SWING_MISSED (IMMUNE)",   "SWING_MISSED",    4, "IMMUNE" },
-    { "SWING_MISSED (DEFLECT)",  "SWING_MISSED",    4, "DEFLECT" },
     { "SWING_MISSED (RESIST)",   "SWING_MISSED",    4, "RESIST" },
     { "SWING_MISSED (ABSORB)",   "SWING_MISSED",    4, "ABSORB" },
     -- Misses — spell/range
@@ -97,6 +96,7 @@ local SUBEVENTS = {
     { "SPELL_MISSED (IMMUNE)",   "SPELL_MISSED",    6, "IMMUNE" },
     { "SPELL_MISSED (RESIST)",   "SPELL_MISSED",    6, "RESIST" },
     { "SPELL_MISSED (ABSORB)",   "SPELL_MISSED",    6, "ABSORB" },
+    { "SPELL_MISSED (DEFLECT)",  "SPELL_MISSED",    6, "DEFLECT" }, -- dead in vanilla, kept for completeness
     { "SPELL_MISSED (REFLECT)",  "SPELL_MISSED",    6, "REFLECT" },
     { "RANGE_MISSED",            "RANGE_MISSED" },
     { "SPELL_PERIODIC_MISSED",   "SPELL_PERIODIC_MISSED" },
