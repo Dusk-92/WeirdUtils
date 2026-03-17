@@ -1258,7 +1258,7 @@ const ExtraAttacksFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
 
 var extra_attacks_hook: hook.Detour(ExtraAttacksFn) = .{};
 
-fn extraAttacksDetour(caster_ptr: u32, _edx: u32, spell_id: u32) callconv(hook.cc.fastcall) void {
+fn extraAttacksDetour(caster_ptr: u32, count: u32, spell_id: u32) callconv(hook.cc.fastcall) void {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
     if (caster_ptr != 0 and spell_id != 0) {
@@ -1269,13 +1269,13 @@ fn extraAttacksDetour(caster_ptr: u32, _edx: u32, spell_id: u32) callconv(hook.c
         if (caster_guid != 0) {
             const src_str = guidToString(caster_guid);
             const school = getSpellSchool(spell_id);
-            log.fmt("SPELL_EXTRA_ATTACKS: spell={d}\n", .{spell_id});
-            // _EXTRA_ATTACKS: spellId, spellSchool, amount(0 — not available from downstream)
-            fireCombatLog(SUB_SPELL_EXTRA_ATTACKS, src_str, GUID_ZERO, spell_id, school, 0, 0, 0, 0, 0);
+            log.fmt("SPELL_EXTRA_ATTACKS: spell={d} count={d}\n", .{ spell_id, count });
+            // _EXTRA_ATTACKS: spellId, spellSchool, amount
+            fireCombatLog(SUB_SPELL_EXTRA_ATTACKS, src_str, GUID_ZERO, spell_id, school, count, 0, 0, 0, 0);
         }
     }
 
-    extra_attacks_hook.callOriginal(.{ caster_ptr, _edx, spell_id });
+    extra_attacks_hook.callOriginal(.{ caster_ptr, count, spell_id });
 }
 
 // =============================================================================
