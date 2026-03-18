@@ -163,6 +163,28 @@ No other configuration needed, install and forget.
 
 ---
 
+### DPSLog (Combat Log Events)
+
+Provides WotLK 3.3.5-style `COMBAT_LOG_EVENT` for the vanilla client. Fires a single unified event with structured arguments instead of vanilla's fragmented localized text events. Enables modern DPS meter addons without expensive string parsing.
+
+37 subevents covering all combat interactions: damage (spell, melee, periodic, environmental, damage shield, damage split), healing (direct, periodic, overheal tracking), misses (all types), auras (applied, removed, refreshed, broken, dose changes), casts (start, success, failed, interrupted), power (energize, drain, leech), dispels, extra attacks, deaths, and kills.
+
+Each event includes source/destination names and GUIDs, spell names, school bitmasks, overkill/overheal amounts, and all WotLK-standard fields.
+
+Also provides `GetSpellInfo(spellId)` -- the TBC/WotLK spell lookup API that doesn't exist in vanilla:
+
+```lua
+local name, rank, icon, castTime, minRange, maxRange, spellId = GetSpellInfo(133)
+```
+
+Includes an embedded tracker addon (`/dpslog`) for verifying event coverage.
+
+See the [DPSLog wiki page](https://codeberg.org/gwenael/WeirdUtils/wiki/DPSLog) for full event reference and addon developer guide.
+
+**DLL:** `dpslog.dll`
+
+---
+
 ### SuperWoW Heal Text Fix
 
 Fixes duplicate floating heal numbers caused by SuperWoW 1.5. Only relevant if you use SuperWoW. No configuration needed, install and forget.
@@ -240,7 +262,7 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 
 Module names are case-insensitive and match the released dll names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`, `dpslog`
 
 There is no re-enable API.
 

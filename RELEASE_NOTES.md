@@ -9,10 +9,15 @@ Track notable changes here between releases. Clear this file when cutting a new 
   the world. Slash commands (`/wm 1`, `/cwm`), keybindings, full Lua API, and automatic
   group sync between WeirdUtils users. Requires party/raid leader or raid assist.
 
-- **DPSLog (COMBAT_LOG_EVENT)** - unified TBC/WotLK-style COMBAT_LOG_EVENT system with
-  30 subevents across 23 hooks. Provides a single event (slot 549) with subevent strings
-  (SWING_DAMAGE, SPELL_HEAL, SPELL_AURA_APPLIED, etc.) instead of vanilla's fragmented
-  per-type events. Includes embedded addon for parsing. Not yet in DLL_README.
+- **DPSLog (COMBAT_LOG_EVENT)** - WotLK 3.3.5 CLEU parity for vanilla 1.12.1. 37 subevents
+  across 24 hooks with full structured data: source/dest names via name cache, spell names
+  via SpellRec, overkill/overheal from unit descriptors, WotLK-standard field ordering
+  (blocked before absorbed, separate glancing/crushing booleans). Drain Life reclassified
+  as SPELL_PERIODIC_LEECH. SPELL_ENERGIZE with actual amount/powerType via dedicated
+  SMSG_SPELLENERGIZELOG hook. Periodic energize divides by power display factor (rage/10).
+  Includes `GetSpellInfo(spellId)` Lua API (name, rank, icon, castTime, minRange, maxRange)
+  with verified SpellRec/SpellIcon/SpellRange/SpellCastTimes DBC offsets.
+  Embedded tracker addon (`/dpslog`). Full event reference in wiki.
 
 - **Interact** - smart interaction helpers: "Interact Nearest" right-clicks the closest
   interactable NPC or object within 5 yards, "Loot All Corpses" bulk loots nearby corpses.
@@ -137,6 +142,5 @@ Features documented in DLL_README but never included in a release:
 - Crash Fix (framecrash)
 
 Features implemented but not yet documented in DLL_README:
-- DPSLog (COMBAT_LOG_EVENT)
 - Clickthrough lootable corpse priority
 - World Markers battleground restriction

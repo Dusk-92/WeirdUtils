@@ -13,7 +13,7 @@ interaction helpers, and an embedded addon with Lua API + keybindings.
 | **Interact** | Nearest NPC/object interaction, bulk looting with queue processing. |
 | **Markers** | World-space raid markers (5 colors) using M2 model entities. Proximity respawn, group sync, animated spawn/despawn. Lua API + slash commands (`/wm`, `/cwm`). |
 | **Framecrash** | Anchor vtable guards - prevents crashes from dangling relativeTo pointers and NULL frame refs. |
-| **Combatlog** | Combat log fixes. |
+| **DPSLog** | WotLK-style `COMBAT_LOG_EVENT` for vanilla 1.12.1. Fires structured events with full WotLK 3.3.5 CLEU parity: spell prefix (spellId, spellName, spellSchool), source/dest names, overkill, overheal, all damage/heal/miss/aura/cast subevents. Includes `GetSpellInfo(spellId)` Lua API. Embedded tracker addon. See [wiki/DPSLog.md](wiki/DPSLog.md). |
 | **Minimap Icons** | Minimap icon fixes. |
 | **Transmogfix** | Coalesces transmog durability update packets to prevent death frame drops. |
 | **Data Assets** | Loose file loading, permissive MPQ glob patterns, pre-indexed file hash set. |
