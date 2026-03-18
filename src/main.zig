@@ -111,6 +111,7 @@ fn registerLuaFunctions() void {
     }
     if (build_opts.dpslog) {
         registerFunction("GetSpellInfo", @intFromPtr(&dpslog.luaGetSpellInfo));
+        registerFunction("CombatLogGetCurrentEventInfo", @intFromPtr(&dpslog.luaCombatLogGetCurrentEventInfo));
     }
     if (build_opts.addonperf) {
         registerFunction("GetAddOnMemoryUsage", @intFromPtr(&addonperf.luaGetAddOnMemoryUsage));

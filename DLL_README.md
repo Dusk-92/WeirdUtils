@@ -169,15 +169,27 @@ Provides WotLK 3.3.5-style `COMBAT_LOG_EVENT_UNFILTERED` for the vanilla client.
 
 37 subevents covering all combat interactions: damage (spell, melee, periodic, environmental, damage shield, damage split), healing (direct, periodic, overheal tracking), misses (all types), auras (applied, removed, refreshed, broken, dose changes), casts (start, success, failed, interrupted), power (energize, drain, leech), dispels, extra attacks, deaths, and kills.
 
-Each event includes source/destination names and GUIDs, spell names, school bitmasks, overkill/overheal amounts, and all WotLK-standard fields.
+Each event includes source/destination GUIDs, names, unit flags, raid flags, spell info, and all WotLK-standard suffix fields. Booleans (critical, glancing, crushing) use WotLK semantics: `nil` for false, `"1"` for true.
 
-Also provides `GetSpellInfo(spellId)` -- the TBC/WotLK spell lookup API that doesn't exist in vanilla:
+Also provides:
+
+- `CombatLogGetCurrentEventInfo()` -- WotLK-style lazy arg retrieval (call from event handler):
+
+```lua
+local f = CreateFrame("Frame")
+f:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+f:SetScript("OnEvent", function()
+    local sub, srcGUID, srcName, srcFlags, srcRaidFlags,
+          dstGUID, dstName, dstFlags, dstRaidFlags = CombatLogGetCurrentEventInfo()
+    -- suffix args follow (spellId, spellName, etc.) -- see wiki for full layout
+end)
+```
+
+- `GetSpellInfo(spellId)` -- the TBC/WotLK spell lookup API:
 
 ```lua
 local name, rank, icon, castTime, minRange, maxRange, spellId = GetSpellInfo(133)
 ```
-
-Includes an embedded tracker addon (`/dpslog`) for verifying event coverage.
 
 See the [DPSLog wiki page](https://codeberg.org/gwenael/WeirdUtils/wiki/DPSLog) for full event reference and addon developer guide.
 

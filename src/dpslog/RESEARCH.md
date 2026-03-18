@@ -592,6 +592,14 @@ All in the 0x51xxxx addon/UI system. Zeroing/overwriting these corrupts game sta
 - Known limitations: false positives if damage + unrelated aura removal happen in same batch;
   no coverage for SPELL_AURA_BROKEN (without spell — melee break) since we pass spellId=0 for melee
 
+### Future — Custom Extensions (beyond WotLK spec)
+- [ ] **RESURRECT_ACCEPTED**: Current SPELL_RESURRECT fires on cast/effect (ProcessSpellEffect),
+  not when the target accepts. Detect via outgoing CMSG_RESURRECT_RESPONSE (0x15C) or
+  SMSG_UPDATE_OBJECT alive state change. Related: SMSG_RESURRECT_REQUEST (0x15B),
+  SMSG_RESURRECT_FAILED (0x252).
+- [ ] **UNIT_POSITION**: Periodic or event-driven unit position data in combat log events.
+  Useful for replay/analysis tools.
+
 ### Completed reference
 - [x] RANGE_MISSED: Detected via spell ID check (75/5019) in ProcessSpellCombatResult hook.
 - [x] SPELL_SUMMON / SPELL_RESURRECT / SPELL_ENERGIZE: Hook ProcessSpellEffect (0x62ACE0),
