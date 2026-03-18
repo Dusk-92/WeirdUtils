@@ -591,7 +591,7 @@ end)
 
 -- Expand args table to handle up to 17 args (spell damage has the most: 5 base + 3 prefix + 9 suffix)
 local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("COMBAT_LOG_EVENT")
+eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 
 eventFrame:SetScript("OnEvent", function()
     local subevent = arg1

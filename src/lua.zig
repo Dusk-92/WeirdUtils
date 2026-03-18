@@ -144,3 +144,17 @@ pub fn checknumber(L: State, index: i32) f64 {
     const f: *const fn (State, i32) callconv(hook.cc.fastcall) f64 = @ptrFromInt(0x6F4C80);
     return f(L, index);
 }
+
+// Lua 5.0 pseudo-index for globals table
+pub const GLOBALS_INDEX: i32 = -10001;
+
+pub fn setglobal(L: State, name: [*:0]const u8) void {
+    pushstring(L, name);
+    insert(L, -2); // swap: value is now at -1, name at -2 → after insert: name at -2, value at -1
+    settable(L, GLOBALS_INDEX);
+}
+
+pub fn getglobal(L: State, name: [*:0]const u8) void {
+    pushstring(L, name);
+    gettable(L, GLOBALS_INDEX);
+}

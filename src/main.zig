@@ -138,6 +138,74 @@ fn registerLuaFunctions() void {
 }
 
 // =============================================================================
+// Module version registry — GetWeirdUtilsVersion(name?) from Lua
+// =============================================================================
+//
+// Populates a global "WeirdUtils" table with { module_name = "version", ... }
+// for each enabled module. If the table already exists (from another DLL),
+// new entries are merged in additively.
+//
+// GetWeirdUtilsVersion()        → returns the full WeirdUtils table
+// GetWeirdUtilsVersion("name")  → returns version string for that module, or nil
+
+const all_module_names = @import("build_options").all_module_names;
+const all_module_versions = @import("build_options").all_module_versions;
+
+fn registerModuleVersions() void {
+    const L = lua.getContext();
+
+    // Get or create the WeirdUtils global table
+    lua.getglobal(L, "WeirdUtils");
+    if (lua.typeOf(L, -1) != 5) { // 5 = LUA_TTABLE
+        lua.pop(L, 1);
+        lua.newtable(L);
+    }
+
+    // For each enabled module, set WeirdUtils[name] = version
+    inline for (all_module_names, 0..) |name, i| {
+        const enabled = @field(@import("build_options"), "enable_" ++ name);
+        if (enabled) {
+            lua.pushstring(L, @ptrCast(name.ptr));
+            lua.pushstring(L, @ptrCast(all_module_versions[i].ptr));
+            lua.settable(L, -3);
+        }
+    }
+
+    // Set as global
+    lua.setglobal(L, "WeirdUtils");
+
+    // Register query function
+    registerFunction("GetWeirdUtilsVersion", @intFromPtr(&luaGetWeirdUtilsVersion));
+}
+
+fn luaGetWeirdUtilsVersion(L_ecx: usize) callconv(hook.cc.fastcall) u32 {
+    const L: lua.State = @ptrFromInt(L_ecx);
+    const nargs = lua.gettop(L);
+
+    if (nargs >= 1 and lua.isstring(L, 1)) {
+        // GetWeirdUtilsVersion("name") → return version or nil
+        const name = lua.tostring(L, 1) orelse {
+            lua.pushnil(L);
+            return 1;
+        };
+        lua.getglobal(L, "WeirdUtils");
+        if (lua.typeOf(L, -1) != 5) {
+            lua.pop(L, 1);
+            lua.pushnil(L);
+            return 1;
+        }
+        lua.pushstring(L, name);
+        lua.gettable(L, -2);
+        lua.remove(L, -2); // remove WeirdUtils table, leave value
+        return 1;
+    }
+
+    // GetWeirdUtilsVersion() → return the whole table
+    lua.getglobal(L, "WeirdUtils");
+    return 1;
+}
+
+// =============================================================================
 // Embedded addon files
 // =============================================================================
 
@@ -661,11 +729,22 @@ fn removeFileHooks() void {
 // Hook: LoadScriptFunctions (0x490250)
 // =============================================================================
 
-var lsf_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+var register_commands_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+var glue_commands_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
-fn loadScriptFunctionsDetour() callconv(hook.cc.stdcall) void {
-    lsf_hook.callOriginal(.{});
+/// Hook for Player_LoadScriptFunctions (0x490250).
+/// Fires after login/reload — registers gameplay Lua functions + version table.
+fn registerAllSystemCommandsDetour() callconv(hook.cc.stdcall) void {
+    register_commands_hook.callOriginal(.{});
     registerLuaFunctions();
+    registerModuleVersions();
+}
+
+/// Hook for Glue_LoadScriptFunctions (0x46ABB0).
+/// Fires at the login/glue screen — registers version table so addons can query early.
+fn glueLoadScriptFunctionsDetour() callconv(hook.cc.stdcall) void {
+    glue_commands_hook.callOriginal(.{});
+    registerModuleVersions();
 }
 
 // =============================================================================
@@ -793,7 +872,8 @@ fn install() void {
     _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
     installFileHooks();
     _ = file_hook.attach(0x648620, &loadFileDetour);
-    _ = lsf_hook.attach(0x490250, &loadScriptFunctionsDetour);
+    _ = register_commands_hook.attach(0x490250, &registerAllSystemCommandsDetour);
+    _ = glue_commands_hook.attach(0x46ABB0, &glueLoadScriptFunctionsDetour);
 
     inline for (modules) |m| {
         if (m.install) |inst| inst();
@@ -822,7 +902,8 @@ fn uninstall() void {
     }
 
     addons.uninstall();
-    lsf_hook.detach();
+    register_commands_hook.detach();
+    glue_commands_hook.detach();
     file_hook.detach();
     removeFileHooks();
     protection_hook.detach();
@@ -900,7 +981,8 @@ fn disableAll() callconv(.c) i32 {
     logout_hook.detach();
     engine_init_hook.detach();
     addons.uninstall();
-    lsf_hook.detach();
+    register_commands_hook.detach();
+    glue_commands_hook.detach();
     file_hook.detach();
     removeFileHooks();
     protection_hook.detach();

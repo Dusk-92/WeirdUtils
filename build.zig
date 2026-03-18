@@ -3,6 +3,7 @@ const std = @import("std");
 const ModuleDesc = struct {
     name: []const u8,
     desc: []const u8,
+    version: []const u8 = "1.0",
     default: bool = true,
     /// Source directory under src/ (defaults to name if null).
     src_dir: ?[]const u8 = null,
@@ -255,7 +256,7 @@ fn addModuleOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
     inline for (module_list) |mod| {
         opts.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
     }
-    // Pass full module name list so addons.zig doesn't need a hardcoded copy
+    // Pass full module name/version lists so main.zig/addons.zig can use them at comptime
     const names: []const []const u8 = comptime blk: {
         var n: [module_list.len][]const u8 = undefined;
         for (module_list, 0..) |mod, i| n[i] = mod.name;
@@ -263,6 +264,13 @@ fn addModuleOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
         break :blk &final;
     };
     opts.addOption([]const []const u8, "all_module_names", names);
+    const versions: []const []const u8 = comptime blk: {
+        var v: [module_list.len][]const u8 = undefined;
+        for (module_list, 0..) |mod, i| v[i] = mod.version;
+        const final = v;
+        break :blk &final;
+    };
+    opts.addOption([]const []const u8, "all_module_versions", versions);
     addFileListOptions(b, opts);
 }
 

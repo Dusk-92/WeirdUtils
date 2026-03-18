@@ -1,6 +1,6 @@
-//! DPS log module — TBC/WotLK-style COMBAT_LOG_EVENT for vanilla 1.12.1.
+//! DPS log module — TBC/WotLK-style COMBAT_LOG_EVENT_UNFILTERED for vanilla 1.12.1.
 //!
-//! Fires a unified COMBAT_LOG_EVENT with WotLK-style subevent names and
+//! Fires a unified COMBAT_LOG_EVENT_UNFILTERED with WotLK-style subevent names and
 //! structured args. All subevents share: arg1=subevent, arg2=sourceGUID,
 //! arg3=destGUID. Remaining args are subevent-specific.
 //!
@@ -87,12 +87,12 @@ pub fn isActive() bool {
 }
 
 // =============================================================================
-// COMBAT_LOG_EVENT — slot assigned dynamically in createEventsDetour
+// COMBAT_LOG_EVENT_UNFILTERED — slot assigned dynamically in createEventsDetour
 // =============================================================================
 
 var g_event_combat_log: u32 = 0;
 const EVENT_TABLE_MAIN: u32 = 0xBE1198;
-const event_name: [*:0]const u8 = "COMBAT_LOG_EVENT";
+const event_name: [*:0]const u8 = "COMBAT_LOG_EVENT_UNFILTERED";
 
 // =============================================================================
 // Subevent name strings (WotLK naming)
@@ -119,6 +119,7 @@ const SUB_SPELL_PERIODIC_HEAL: [*:0]const u8 = "SPELL_PERIODIC_HEAL";
 
 // Energize / Drain
 const SUB_SPELL_ENERGIZE: [*:0]const u8 = "SPELL_ENERGIZE";
+const SUB_SPELL_DRAIN: [*:0]const u8 = "SPELL_DRAIN";
 const SUB_SPELL_PERIODIC_ENERGIZE: [*:0]const u8 = "SPELL_PERIODIC_ENERGIZE";
 const SUB_SPELL_PERIODIC_DRAIN: [*:0]const u8 = "SPELL_PERIODIC_DRAIN";
 const SUB_SPELL_PERIODIC_LEECH: [*:0]const u8 = "SPELL_PERIODIC_LEECH";
@@ -297,6 +298,94 @@ fn guidToString(guid: u64) [*:0]const u8 {
 }
 
 // =============================================================================
+// Handler Table Swap — replace NetClient opcode dispatch entries
+// =============================================================================
+//
+// NetClient__ProcessMessage (0x537AA0) dispatches packets via:
+//   handler = NetClient[opcode * 4 + 0x74]
+//   call handler(ECX=context, EDX=opcode, stack: timestamp, CDataStore*)
+//
+// We swap pointers in the heap-allocated NetClient object (no code patching).
+// Original handler is saved and called after our processing.
+
+const NETCLIENT_PTR: u32 = 0xC28128;
+const HANDLER_TABLE_BASE: u32 = 0x74;
+
+const HandlerSwap = struct {
+    opcode: u16,
+    original: u32 = 0,
+    active: bool = false,
+};
+
+// Max swaps we'll ever need (one per opcode we intercept)
+const MAX_SWAPS = 16;
+var handler_swaps: [MAX_SWAPS]HandlerSwap = [_]HandlerSwap{.{ .opcode = 0 }} ** MAX_SWAPS;
+var swap_count: u32 = 0;
+
+fn getNetClient() ?u32 {
+    const nc = hook.readMem(u32, NETCLIENT_PTR);
+    return if (nc != 0) nc else null;
+}
+
+fn handlerSlotAddr(net_client: u32, opcode: u16) u32 {
+    return net_client + @as(u32, opcode) * 4 + HANDLER_TABLE_BASE;
+}
+
+fn swapHandler(opcode: u16, replacement: u32) bool {
+    const nc = getNetClient() orelse {
+        log.fmt("swapHandler: NetClient is NULL, cannot swap opcode 0x{X}\n", .{opcode});
+        return false;
+    };
+    if (swap_count >= MAX_SWAPS) {
+        log.fmt("swapHandler: swap table full\n", .{});
+        return false;
+    }
+    const slot = handlerSlotAddr(nc, opcode);
+    const original = hook.readMem(u32, slot);
+    if (original == 0) {
+        log.fmt("swapHandler: no handler registered for opcode 0x{X}\n", .{opcode});
+        return false;
+    }
+
+    handler_swaps[swap_count] = .{
+        .opcode = opcode,
+        .original = original,
+        .active = true,
+    };
+    swap_count += 1;
+
+    // Write our replacement into the table (heap memory, writable)
+    @as(*align(1) u32, @ptrFromInt(slot)).* = replacement;
+    log.fmt("swapHandler: opcode 0x{X} swapped (original=0x{X})\n", .{ opcode, original });
+    return true;
+}
+
+fn getOriginalHandler(opcode: u16) ?u32 {
+    for (handler_swaps[0..swap_count]) |entry| {
+        if (entry.opcode == opcode and entry.active) return entry.original;
+    }
+    return null;
+}
+
+fn callOriginalHandler(opcode: u16, unk: u32, opc: u32, unk2: u32, cds: u32) u32 {
+    const original = getOriginalHandler(opcode) orelse return 0;
+    return @call(.auto, @as(*const FastCallPacketHandlerFn, @ptrFromInt(original)), .{ unk, opc, unk2, cds });
+}
+
+fn restoreAllHandlers() void {
+    const nc = getNetClient() orelse return;
+    for (handler_swaps[0..swap_count]) |*entry| {
+        if (entry.active) {
+            const slot = handlerSlotAddr(nc, entry.opcode);
+            @as(*align(1) u32, @ptrFromInt(slot)).* = entry.original;
+            entry.active = false;
+            log.fmt("restoreHandler: opcode 0x{X} restored\n", .{entry.opcode});
+        }
+    }
+    swap_count = 0;
+}
+
+// =============================================================================
 // SignalEventParam fire functions — one per format pattern
 // =============================================================================
 //
@@ -407,6 +496,21 @@ fn fireBase(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst
 }
 
 // =============================================================================
+// Hook: InitializeGameEngine (0x401570)
+// __thiscall(ECX=this), RET 0xC (3 stack params)
+// Registers all packet handlers. We install table swaps after it returns.
+// =============================================================================
+
+const InitGameEngineFn = fn (u32, u32, u32, u32) callconv(hook.cc.thiscall) void;
+var init_engine_hook: hook.Detour(InitGameEngineFn) = .{};
+
+fn initGameEngineDetour(this: u32, p1: u32, p2: u32, p3: u32) callconv(hook.cc.thiscall) void {
+    init_engine_hook.callOriginal(.{ this, p1, p2, p3 });
+    // All packet handlers are now registered — install our table swaps
+    installHandlerSwaps();
+}
+
+// =============================================================================
 // Hook: FrameScript_CreateEvents (0x703D90)
 // After the chain runs, write our event into the internal table.
 // =============================================================================
@@ -475,8 +579,74 @@ fn createEventsDetour(param1: u32, max_event_id: u32) callconv(hook.cc.fastcall)
         hook.writeMem(internal_array + slot * 16, std.mem.asBytes(&name_ptr));
         g_event_combat_log = slot;
 
-        log.fmt("createEventsDetour: COMBAT_LOG_EVENT at slot {d}, capacity={d}\n", .{ slot, capacity });
+        log.fmt("createEventsDetour: COMBAT_LOG_EVENT_UNFILTERED at slot {d}, capacity={d}\n", .{ slot, capacity });
     }
+}
+
+fn installHandlerSwaps() void {
+    if (swap_count > 0) return; // already installed
+    // Packet handler table swaps (no code patching, heap pointer writes only)
+    if (!swapHandler(0x250, @intFromPtr(&spellNonMeleeDmgLogDetour)))
+        log.print("FAILED to swap SPELLNONMELEEDAMAGELOG (0x250)\n")
+    else
+        log.print("Swapped SPELLNONMELEEDAMAGELOG (0x250)\n");
+
+    if (!swapHandler(0x24E, @intFromPtr(&periodicAuraLogDetour)))
+        log.print("FAILED to swap PERIODICAURALOG (0x24E)\n")
+    else
+        log.print("Swapped PERIODICAURALOG (0x24E)\n");
+
+    if (!swapHandler(0x150, @intFromPtr(&healLogDetour)))
+        log.print("FAILED to swap SPELLHEALLOG (0x150)\n")
+    else
+        log.print("Swapped SPELLHEALLOG (0x150)\n");
+
+    if (!swapHandler(0x14A, @intFromPtr(&meleeDispatcherDetour)))
+        log.print("FAILED to swap ATTACKERSTATEUPDATE (0x14A)\n")
+    else
+        log.print("Swapped ATTACKERSTATEUPDATE (0x14A)\n");
+
+    if (!swapHandler(0x1F5, @intFromPtr(&partyKillLogDetour)))
+        log.print("FAILED to swap PARTYKILLLOG (0x1F5)\n")
+    else
+        log.print("Swapped PARTYKILLLOG (0x1F5)\n");
+
+    if (!swapHandler(0x131, @intFromPtr(&spellStartDetour)))
+        log.print("FAILED to swap SPELL_START (0x131)\n")
+    else
+        log.print("Swapped SPELL_START (0x131)\n");
+
+    if (!swapHandler(0x132, @intFromPtr(&spellStartDetour)))
+        log.print("FAILED to swap SPELL_GO (0x132)\n")
+    else
+        log.print("Swapped SPELL_GO (0x132)\n");
+
+    if (!swapHandler(0x130, @intFromPtr(&castResultDetour)))
+        log.print("FAILED to swap CAST_RESULT (0x130)\n")
+    else
+        log.print("Swapped CAST_RESULT (0x130)\n");
+
+    if (!swapHandler(0x24B, @intFromPtr(&spellMissedDetour)))
+        log.print("FAILED to swap SPELLLOGMISS (0x24B)\n")
+    else
+        log.print("Swapped SPELLLOGMISS (0x24B)\n");
+
+    if (!swapHandler(0x24F, @intFromPtr(&damageShieldDetour)))
+        log.print("FAILED to swap SPELLDAMAGESHIELD (0x24F)\n")
+    else
+        log.print("Swapped SPELLDAMAGESHIELD (0x24F)\n");
+
+    if (!swapHandler(0x24C, @intFromPtr(&spellLogExecuteDetour)))
+        log.print("FAILED to swap SPELLLOGEXECUTE (0x24C)\n")
+    else
+        log.print("Swapped SPELLLOGEXECUTE (0x24C)\n");
+
+    if (!swapHandler(0x32F, @intFromPtr(&instaKillDetour)))
+        log.print("FAILED to swap SPELLINSTAKILLLOG (0x32F)\n")
+    else
+        log.print("Swapped SPELLINSTAKILLLOG (0x32F)\n");
+
+    log.fmt("installHandlerSwaps: {d} handlers swapped\n", .{swap_count});
 }
 
 // =============================================================================
@@ -486,8 +656,6 @@ fn createEventsDetour(param1: u32, max_event_id: u32) callconv(hook.cc.fastcall)
 // =============================================================================
 
 const FastCallPacketHandlerFn = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
-
-var spell_dmg_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
 
 fn spellNonMeleeDmgLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
@@ -548,7 +716,7 @@ fn spellNonMeleeDmgLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callcon
         }
     }
 
-    return spell_dmg_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    return callOriginalHandler(0x250, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -557,8 +725,6 @@ fn spellNonMeleeDmgLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callcon
 // Fires: SPELL_PERIODIC_DAMAGE, SPELL_PERIODIC_HEAL, SPELL_PERIODIC_ENERGIZE,
 //        SPELL_PERIODIC_DRAIN, SPELL_PERIODIC_LEECH
 // =============================================================================
-
-var periodic_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
 
 fn periodicAuraLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
@@ -650,45 +816,44 @@ fn periodicAuraLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
     }
 
     cdsSetRead(cds, saved_read);
-    return periodic_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    return callOriginalHandler(0x24E, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
-// Hook: ProcessSpellPowerDrainMessage (0x62C770) — downstream of SMSG_SPELLHEALLOG
-// __fastcall(ECX=casterGuid_ptr, EDX=targetGuid_ptr, stack: spellId, healAmount, isCrit)
-// RET 0xC (3 stack params). Ghidra mislabel — actually heal display function.
+// Hook: SMSG_SPELLHEALLOG (opcode 0x150) — handler table swap
+// Packet: victimPackGUID, casterPackGUID, uint32 spellId, uint32 healAmount, uint8 isCrit
 // Fires: SPELL_HEAL
 // =============================================================================
 
-const HealDisplayFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
-
-var heal_hook: hook.Detour(HealDisplayFn) = .{};
-
-fn healDisplayDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32, heal_amount: u32, is_crit: u32) callconv(hook.cc.fastcall) void {
+fn healLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    if (caster_ptr != 0 and target_ptr != 0 and spell_id != 0) {
-        const caster_lo = hook.readMem(u32, caster_ptr);
-        const caster_hi = hook.readMem(u32, caster_ptr + 4);
-        const target_lo = hook.readMem(u32, target_ptr);
-        const target_hi = hook.readMem(u32, target_ptr + 4);
-        const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
-        const target_guid: u64 = @as(u64, target_hi) << 32 | @as(u64, target_lo);
+    const saved_read = cdsGetRead(cds);
 
-        if (caster_guid != 0 and target_guid != 0 and !isPeriodicLeechSpell(spell_id)) {
-            // Suppress heal for periodic leech spells — already covered by SPELL_PERIODIC_LEECH
-            const src_str = guidToString(caster_guid);
-            const dst_str = guidToString(target_guid);
-            const src_name = wow.getNameByGUID(caster_guid);
-            const dst_name = wow.getNameByGUID(target_guid);
-            const critical: u32 = if (is_crit != 0) 1 else 0;
-            const overheal = computeOverheal(target_guid, heal_amount);
-            // _HEAL: spellId, amount, overheal, absorbed(0), critical
-            fireSpellHeal(SUB_SPELL_HEAL, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), getSpellSchool(spell_id), heal_amount, overheal, 0, critical);
-        }
+    const target_guid = cdsGetPackedGuid(cds);
+    const caster_guid = cdsGetPackedGuid(cds);
+    const spell_id = cdsGet(u32, cds);
+    const heal_amount = cdsGet(u32, cds);
+    const is_crit = cdsGet(u8, cds);
+
+    cdsSetRead(cds, saved_read);
+
+    if (target_guid != null and caster_guid != null and spell_id != null and
+        heal_amount != null and is_crit != null and
+        caster_guid.? != 0 and target_guid.? != 0 and !isPeriodicLeechSpell(spell_id.?))
+    {
+        // Suppress heal for periodic leech spells — already covered by SPELL_PERIODIC_LEECH
+        const src_str = guidToString(caster_guid.?);
+        const dst_str = guidToString(target_guid.?);
+        const src_name = wow.getNameByGUID(caster_guid.?);
+        const dst_name = wow.getNameByGUID(target_guid.?);
+        const critical: u32 = if (is_crit.? != 0) 1 else 0;
+        const overheal = computeOverheal(target_guid.?, heal_amount.?);
+        // _HEAL: spellId, amount, overheal, absorbed(0), critical
+        fireSpellHeal(SUB_SPELL_HEAL, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), heal_amount.?, overheal, 0, critical);
     }
 
-    heal_hook.callOriginal(.{ caster_ptr, target_ptr, spell_id, heal_amount, is_crit });
+    return callOriginalHandler(0x150, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -700,8 +865,6 @@ fn healDisplayDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32, heal_amoun
 
 const OPCODE_ATTACKERSTATEUPDATE: u32 = 0x14A;
 
-var melee_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
-
 fn meleeDispatcherDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
@@ -709,7 +872,7 @@ fn meleeDispatcherDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
         parseMeleePacket(cds);
     }
 
-    return melee_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    return callOriginalHandler(0x14A, unk, opcode, unk2, cds);
 }
 
 fn parseMeleePacket(cds: u32) void {
@@ -851,81 +1014,87 @@ fn getActivePlayerGuid() u64 {
 }
 
 // =============================================================================
-// Hook: ProcessSpellCombatResult (0x62BAB0) — downstream of SMSG_SPELLLOGMISS
-// __fastcall(ECX=missType, EDX=spellId, stack: casterGuidLo, casterGuidHi,
-//            targetGuidLo, targetGuidHi, isFromSpellLogMiss)
-// RET 0x14 (5 stack params)
+// Hook: SMSG_SPELLLOGMISS (opcode 0x24B) — handler table swap
+// Packet: uint32 spellId, casterGUID(8 raw), uint8 unk, uint32 targetCount,
+//         [targetGUID(8 raw), uint8 missInfo] x count
 // Fires: SPELL_MISSED, RANGE_MISSED, SPELL_PERIODIC_MISSED, DAMAGE_SHIELD_MISSED
 // =============================================================================
 
-const SpellMissedFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
-
-var spell_missed_hook: hook.Detour(SpellMissedFn) = .{};
-
-fn spellMissedDetour(miss_type: u32, spell_id: u32, caster_lo: u32, caster_hi: u32, target_lo: u32, target_hi: u32, is_spell_log_miss: u32) callconv(hook.cc.fastcall) void {
+fn spellMissedDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
-    const target_guid: u64 = @as(u64, target_hi) << 32 | @as(u64, target_lo);
+    const saved_read = cdsGetRead(cds);
 
-    if (caster_guid != 0 and target_guid != 0 and spell_id != 0) {
-        const src_str = guidToString(caster_guid);
-        const dst_str = guidToString(target_guid);
-        const src_name = wow.getNameByGUID(caster_guid);
-        const dst_name = wow.getNameByGUID(target_guid);
-        const miss_str = missInfoToString(@truncate(miss_type));
-        const school = getSpellSchool(spell_id);
-        // Classify miss subevent by spell type
-        const sub = if (spell_id == 75 or spell_id == 5019)
+    const spell_id = cdsGet(u32, cds);
+    const caster_guid = cdsGet(u64, cds);
+    _ = cdsGet(u8, cds); // unknown byte
+    const target_count = cdsGet(u32, cds);
+
+    if (spell_id != null and caster_guid != null and target_count != null and
+        caster_guid.? != 0 and spell_id.? != 0)
+    {
+        const src_str = guidToString(caster_guid.?);
+        const src_name = wow.getNameByGUID(caster_guid.?);
+        const school = getSpellSchool(spell_id.?);
+        const sub = if (spell_id.? == 75 or spell_id.? == 5019)
             SUB_RANGE_MISSED
-        else if (isDamageShieldSpell(spell_id))
+        else if (isDamageShieldSpell(spell_id.?))
             SUB_DAMAGE_SHIELD_MISSED
-        else if (isPeriodicSpell(spell_id))
+        else if (isPeriodicSpell(spell_id.?))
             SUB_SPELL_PERIODIC_MISSED
         else
             SUB_SPELL_MISSED;
-        log.fmt("{s}: [{d}]{s} miss={s} logmiss={d}\n", .{ std.mem.span(sub), spell_id, std.mem.span(getSpellName(spell_id)), std.mem.span(miss_str), is_spell_log_miss });
-        fireSpellMissed(sub, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school, miss_str, 0);
+
+        var i: u32 = 0;
+        while (i < target_count.?) : (i += 1) {
+            const target_guid = cdsGet(u64, cds) orelse break;
+            const miss_info = cdsGet(u8, cds) orelse break;
+            if (target_guid == 0) continue;
+
+            const dst_str = guidToString(target_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
+            const miss_str = missInfoToString(miss_info);
+            log.fmt("{s}: [{d}]{s} miss={s}\n", .{ std.mem.span(sub), spell_id.?, std.mem.span(getSpellName(spell_id.?)), std.mem.span(miss_str) });
+            fireSpellMissed(sub, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), school, miss_str, 0);
+        }
     }
 
-    spell_missed_hook.callOriginal(.{ miss_type, spell_id, caster_lo, caster_hi, target_lo, target_hi, is_spell_log_miss });
+    cdsSetRead(cds, saved_read);
+    return callOriginalHandler(0x24B, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
 // Hook: ProcessSpellDrainEffectMessage (0x62CA20) — downstream of SMSG_SPELLDAMAGESHIELD
-// __fastcall(ECX=victimGuid_ptr, EDX=casterGuid_ptr, stack: damage, school)
-// RET 0x8 (2 stack params)
+// Packet: victimGUID(8 raw), attackerGUID(8 raw), uint32 damage, uint32 school
 // Fires: DAMAGE_SHIELD
 // =============================================================================
 
-const DamageShieldFn = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
-
-var damage_shield_hook: hook.Detour(DamageShieldFn) = .{};
-
-fn damageShieldDetour(victim_ptr: u32, caster_ptr: u32, damage: u32, school: u32) callconv(hook.cc.fastcall) void {
+fn damageShieldDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    if (victim_ptr != 0 and caster_ptr != 0) {
-        const victim_lo = hook.readMem(u32, victim_ptr);
-        const victim_hi = hook.readMem(u32, victim_ptr + 4);
-        const caster_lo = hook.readMem(u32, caster_ptr);
-        const caster_hi = hook.readMem(u32, caster_ptr + 4);
-        const victim_guid: u64 = @as(u64, victim_hi) << 32 | @as(u64, victim_lo);
-        const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
+    const saved_read = cdsGetRead(cds);
 
-        if (victim_guid != 0 and caster_guid != 0) {
-            const src_str = guidToString(caster_guid);
-            const dst_str = guidToString(victim_guid);
-            const src_name = wow.getNameByGUID(caster_guid);
-            const dst_name = wow.getNameByGUID(victim_guid);
-            const overkill = computeOverkill(victim_guid, damage);
-            log.fmt("DAMAGE_SHIELD: dmg={d} school={d}\n", .{ damage, school });
-            // No spellId available in SMSG_SPELLDAMAGESHIELD — pass 0
-            fireSpellDamage(SUB_DAMAGE_SHIELD, src_str, src_name, dst_str, dst_name, 0, getSpellName(0), school, damage, overkill, school, 0, 0, 0, 0, 0, 0);
-        }
+    const victim_guid = cdsGet(u64, cds);
+    const attacker_guid = cdsGet(u64, cds);
+    const damage = cdsGet(u32, cds);
+    const school = cdsGet(u32, cds);
+
+    cdsSetRead(cds, saved_read);
+
+    if (victim_guid != null and attacker_guid != null and damage != null and school != null and
+        victim_guid.? != 0 and attacker_guid.? != 0)
+    {
+        const src_str = guidToString(attacker_guid.?);
+        const dst_str = guidToString(victim_guid.?);
+        const src_name = wow.getNameByGUID(attacker_guid.?);
+        const dst_name = wow.getNameByGUID(victim_guid.?);
+        const overkill = computeOverkill(victim_guid.?, damage.?);
+        log.fmt("DAMAGE_SHIELD: dmg={d} school={d}\n", .{ damage.?, school.? });
+        // No spellId in SMSG_SPELLDAMAGESHIELD packet — pass 0
+        fireSpellDamage(SUB_DAMAGE_SHIELD, src_str, src_name, dst_str, dst_name, 0, getSpellName(0), school.?, damage.?, overkill, school.?, 0, 0, 0, 0, 0, 0);
     }
 
-    damage_shield_hook.callOriginal(.{ victim_ptr, caster_ptr, damage, school });
+    return callOriginalHandler(0x24F, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -1001,35 +1170,177 @@ fn spellInterruptDetour(caster_ptr: u32, target_ptr: u32, interrupted_spell_id: 
 }
 
 // =============================================================================
-// Hook: ProcessInstaKillSpellMessage (0x62CBE0) — downstream of SMSG_SPELLINSTAKILLLOG
-// __fastcall(ECX=casterGuid_ptr, EDX=spellId)
-// Plain RET (0 stack params)
-// Fires: SPELL_INSTAKILL
+// Hook: SMSG_SPELLLOGEXECUTE (opcode 0x24C) — handler table swap
+// Packet: casterPackGUID, uint32 spellId, uint32 effectCount,
+//         per effect: uint32 effectType, uint32 logCount,
+//         per log entry: varies by effectType (see SpellDefines.h)
+// Fires: SPELL_INTERRUPT, SPELL_ENERGIZE, SPELL_EXTRA_ATTACKS,
+//        SPELL_SUMMON, SPELL_RESURRECT
+// Replaces 4 downstream hooks: 0x626A10, 0x62D9F0, 0x62CA00, 0x62ACE0
 // =============================================================================
 
-const InstaKillFn = fn (u32, u32) callconv(hook.cc.fastcall) void;
+// Vanilla spell effect type constants
+const EFFECT_INSTAKILL: u32 = 1;
+const EFFECT_POWER_DRAIN: u32 = 8;
+const EFFECT_HEAL: u32 = 10;
+const EFFECT_ADD_EXTRA_ATTACKS: u32 = 19;
+const EFFECT_CREATE_ITEM: u32 = 24;
+const EFFECT_ENERGIZE: u32 = 30;
+const EFFECT_DISPEL: u32 = 38;
+const EFFECT_SUMMON_PET: u32 = 56;
+const EFFECT_HEAL_MAX_HEALTH: u32 = 67;
+const EFFECT_INTERRUPT_CAST: u32 = 68;
+const EFFECT_FEED_PET: u32 = 101;
+const EFFECT_DURABILITY_DAMAGE: u32 = 111;
+const EFFECT_RESURRECT_NEW: u32 = 113;
 
-var instakill_hook: hook.Detour(InstaKillFn) = .{};
-
-fn instaKillDetour(caster_ptr: u32, spell_id: u32) callconv(hook.cc.fastcall) void {
+fn spellLogExecuteDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    if (caster_ptr != 0 and spell_id != 0) {
-        const caster_lo = hook.readMem(u32, caster_ptr);
-        const caster_hi = hook.readMem(u32, caster_ptr + 4);
-        const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
+    const saved_read = cdsGetRead(cds);
 
-        if (caster_guid != 0) {
-            const src_str = guidToString(caster_guid);
-            const src_name = wow.getNameByGUID(caster_guid);
-            const school = getSpellSchool(spell_id);
-            log.fmt("SPELL_INSTAKILL: [{d}]{s} caster=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), caster_guid });
-            // No victim GUID in SMSG_SPELLINSTAKILLLOG — pass zero GUID
-            fireSpell(SUB_SPELL_INSTAKILL, src_str, src_name, GUID_ZERO, "", spell_id, getSpellName(spell_id), school);
+    const caster_guid = cdsGetPackedGuid(cds);
+    const spell_id = cdsGet(u32, cds);
+    const effect_count = cdsGet(u32, cds);
+
+    if (caster_guid != null and spell_id != null and effect_count != null and
+        caster_guid.? != 0 and spell_id.? != 0)
+    {
+        const src_str = guidToString(caster_guid.?);
+        const src_name = wow.getNameByGUID(caster_guid.?);
+        const spell_school = getSpellSchool(spell_id.?);
+        const spell_name = getSpellName(spell_id.?);
+
+        var eff_i: u32 = 0;
+        while (eff_i < effect_count.?) : (eff_i += 1) {
+            const effect_type = cdsGet(u32, cds) orelse break;
+            const log_count = cdsGet(u32, cds) orelse break;
+
+            var log_i: u32 = 0;
+            while (log_i < log_count) : (log_i += 1) {
+                switch (effect_type) {
+                    EFFECT_POWER_DRAIN => {
+                        // targetGUID(8), amount(4), powerType(4), multiplier(float 4)
+                        const target = cdsGet(u64, cds) orelse break;
+                        const amount = cdsGet(u32, cds) orelse break;
+                        const power_type = cdsGet(u32, cds) orelse break;
+                        _ = cdsGet(u32, cds) orelse break; // multiplier float, skip
+                        if (target != 0) {
+                            const dst_str = guidToString(target);
+                            const dst_name = wow.getNameByGUID(target);
+                            log.fmt("SPELL_DRAIN: [{d}]{s} amt={d} power={d}\n", .{ spell_id.?, std.mem.span(spell_name), amount, power_type });
+                            fireSpellEnergize(SUB_SPELL_DRAIN, src_str, src_name, dst_str, dst_name, spell_id.?, spell_name, spell_school, amount, power_type);
+                        }
+                    },
+                    EFFECT_ENERGIZE => {
+                        // targetGUID(8), amount(4), powerType(4)
+                        const target = cdsGet(u64, cds) orelse break;
+                        const amount = cdsGet(u32, cds) orelse break;
+                        const power_type = cdsGet(u32, cds) orelse break;
+                        if (target != 0) {
+                            const dst_str = guidToString(target);
+                            const dst_name = wow.getNameByGUID(target);
+                            log.fmt("SPELL_ENERGIZE: [{d}]{s} amt={d} power={d}\n", .{ spell_id.?, std.mem.span(spell_name), amount, power_type });
+                            fireSpellEnergize(SUB_SPELL_ENERGIZE, src_str, src_name, dst_str, dst_name, spell_id.?, spell_name, spell_school, amount, power_type);
+                        }
+                    },
+                    EFFECT_ADD_EXTRA_ATTACKS => {
+                        // targetGUID(8), count(4)
+                        const target = cdsGet(u64, cds) orelse break;
+                        const count = cdsGet(u32, cds) orelse break;
+                        _ = target;
+                        log.fmt("SPELL_EXTRA_ATTACKS: [{d}]{s} count={d}\n", .{ spell_id.?, std.mem.span(spell_name), count });
+                        fireSpellExtraAttacks(src_str, src_name, GUID_ZERO, "", spell_id.?, spell_name, spell_school, count);
+                    },
+                    EFFECT_INTERRUPT_CAST => {
+                        // targetGUID(8), interruptedSpellId(4)
+                        const target = cdsGet(u64, cds) orelse break;
+                        const interrupted_id = cdsGet(u32, cds) orelse break;
+                        if (target != 0 and interrupted_id != 0) {
+                            const dst_str = guidToString(target);
+                            const dst_name = wow.getNameByGUID(target);
+                            const extra_school = getSpellSchool(interrupted_id);
+                            log.fmt("SPELL_INTERRUPT: [{d}]{s} interrupted=[{d}]{s}\n", .{
+                                spell_id.?, std.mem.span(spell_name), interrupted_id, std.mem.span(getSpellName(interrupted_id)),
+                            });
+                            // Now we have the interrupting spell ID (spell_id) — previously was 0
+                            fireSpellInterrupt(SUB_SPELL_INTERRUPT, src_str, src_name, dst_str, dst_name, spell_id.?, spell_name, spell_school, interrupted_id, getSpellName(interrupted_id), extra_school);
+                        }
+                    },
+                    EFFECT_HEAL, EFFECT_HEAL_MAX_HEALTH => {
+                        // targetGUID(8), amount(4), critical(4)
+                        _ = cdsGet(u64, cds) orelse break;
+                        _ = cdsGet(u32, cds) orelse break;
+                        _ = cdsGet(u32, cds) orelse break;
+                        // Heals from SPELLLOGEXECUTE are handled by SMSG_SPELLHEALLOG — skip here
+                    },
+                    EFFECT_CREATE_ITEM => {
+                        // itemEntry(4)
+                        _ = cdsGet(u32, cds) orelse break;
+                    },
+                    EFFECT_FEED_PET => {
+                        // itemEntry(4)
+                        _ = cdsGet(u32, cds) orelse break;
+                    },
+                    EFFECT_DURABILITY_DAMAGE => {
+                        // targetGUID(8), itemEntry(4), unk(4)
+                        _ = cdsGet(u64, cds) orelse break;
+                        _ = cdsGet(u32, cds) orelse break;
+                        _ = cdsGet(u32, cds) orelse break;
+                    },
+                    else => {
+                        // Most other effect types: just targetGUID(8)
+                        // This covers INSTAKILL, RESURRECT, DISPEL, SUMMON variants, etc.
+                        const target = cdsGet(u64, cds) orelse break;
+
+                        if (target != 0) {
+                            const dst_str = guidToString(target);
+                            const dst_name = wow.getNameByGUID(target);
+
+                            if (isSummonEffect(effect_type)) {
+                                log.fmt("SPELL_SUMMON: [{d}]{s}\n", .{ spell_id.?, std.mem.span(spell_name) });
+                                fireSpell(SUB_SPELL_SUMMON, src_str, src_name, dst_str, dst_name, spell_id.?, spell_name, spell_school);
+                            } else if (isResurrectEffect(effect_type)) {
+                                log.fmt("SPELL_RESURRECT: [{d}]{s}\n", .{ spell_id.?, std.mem.span(spell_name) });
+                                fireSpell(SUB_SPELL_RESURRECT, src_str, src_name, dst_str, dst_name, spell_id.?, spell_name, spell_school);
+                            }
+                        }
+                    },
+                }
+            }
         }
     }
 
-    instakill_hook.callOriginal(.{ caster_ptr, spell_id });
+    cdsSetRead(cds, saved_read);
+    return callOriginalHandler(0x24C, unk, opcode, unk2, cds);
+}
+
+// =============================================================================
+// Hook: SMSG_SPELLINSTAKILLLOG (opcode 0x32F) — handler table swap
+// Packet: victimGUID(8 raw), uint32 spellId
+// Fires: SPELL_INSTAKILL
+// =============================================================================
+
+fn instaKillDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    const saved_read = cdsGetRead(cds);
+
+    const victim_guid = cdsGet(u64, cds);
+    const spell_id = cdsGet(u32, cds);
+
+    cdsSetRead(cds, saved_read);
+
+    if (victim_guid != null and spell_id != null and victim_guid.? != 0) {
+        const dst_str = guidToString(victim_guid.?);
+        const dst_name = wow.getNameByGUID(victim_guid.?);
+        const school = getSpellSchool(spell_id.?);
+        log.fmt("SPELL_INSTAKILL: [{d}]{s} victim=0x{x}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), victim_guid.? });
+        // Caster not in packet — src is unknown
+        fireSpell(SUB_SPELL_INSTAKILL, GUID_ZERO, "", dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), school);
+    }
+
+    return callOriginalHandler(0x32F, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -1037,8 +1348,6 @@ fn instaKillDetour(caster_ptr: u32, spell_id: u32) callconv(hook.cc.fastcall) vo
 // Packet: SMSG_PARTYKILLLOG (opcode 0x01F5)
 // Fires: PARTY_KILL
 // =============================================================================
-
-var party_kill_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
 
 fn partyKillLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
@@ -1059,7 +1368,7 @@ fn partyKillLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.
         fireBase(SUB_PARTY_KILL, src_str, src_name, dst_str, dst_name);
     }
 
-    return party_kill_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    return callOriginalHandler(0x1F5, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -1070,8 +1379,6 @@ fn partyKillLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.
 
 const OPCODE_SPELL_START: u32 = 0x131;
 const OPCODE_SPELL_GO: u32 = 0x132;
-
-var spell_start_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
 
 fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
@@ -1126,7 +1433,8 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
         cdsSetRead(cds, saved_read);
     }
 
-    return spell_start_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    // Both 0x131 and 0x132 share this handler; callOriginal uses the opcode passed in EDX
+    return callOriginalHandler(@intCast(opcode), unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -1134,8 +1442,6 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
 // Packet: SMSG_CAST_RESULT (opcode 0x0130) — local player only
 // Fires: SPELL_CAST_FAILED (when status != 0)
 // =============================================================================
-
-var cast_result_hook: hook.Detour(FastCallPacketHandlerFn) = .{};
 
 fn castResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
@@ -1158,7 +1464,7 @@ fn castResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
         }
     }
 
-    return cast_result_hook.callOriginal(.{ unk, opcode, unk2, cds });
+    return callOriginalHandler(0x130, unk, opcode, unk2, cds);
 }
 
 // =============================================================================
@@ -1906,28 +2212,10 @@ pub fn installHooks() void {
         log.print("Hooked FrameScript_CreateEvents\n");
     }
 
-    if (spell_dmg_hook.attach(0x5E85E0, &spellNonMeleeDmgLogDetour) != .ok) {
-        log.print("FAILED to hook SpellNonMeleeDmgLogHandler\n");
+    if (init_engine_hook.attach(0x401570, &initGameEngineDetour) != .ok) {
+        log.print("FAILED to hook InitializeGameEngine\n");
     } else {
-        log.print("Hooked SpellNonMeleeDmgLogHandler\n");
-    }
-
-    if (periodic_hook.attach(0x626DD0, &periodicAuraLogDetour) != .ok) {
-        log.print("FAILED to hook PeriodicAuraLogHandler\n");
-    } else {
-        log.print("Hooked PeriodicAuraLogHandler\n");
-    }
-
-    if (heal_hook.attach(0x62C770, &healDisplayDetour) != .ok) {
-        log.print("FAILED to hook ProcessSpellPowerDrainMessage\n");
-    } else {
-        log.print("Hooked ProcessSpellPowerDrainMessage (SPELL_HEAL)\n");
-    }
-
-    if (melee_hook.attach(0x6255B0, &meleeDispatcherDetour) != .ok) {
-        log.print("FAILED to hook MeleeDispatcher\n");
-    } else {
-        log.print("Hooked MeleeDispatcher\n");
+        log.print("Hooked InitializeGameEngine (handler table swaps after return)\n");
     }
 
     if (env_dmg_hook.attach(0x62AAC0, &envDamageDetour) != .ok) {
@@ -1936,23 +2224,6 @@ pub fn installHooks() void {
         log.print("Hooked ProcessEnvironmentalDamage\n");
     }
 
-    if (party_kill_hook.attach(0x628890, &partyKillLogDetour) != .ok) {
-        log.print("FAILED to hook PartyKillLogHandler\n");
-    } else {
-        log.print("Hooked PartyKillLogHandler\n");
-    }
-
-    if (spell_start_hook.attach(0x6E7640, &spellStartDetour) != .ok) {
-        log.print("FAILED to hook SpellStartHandler\n");
-    } else {
-        log.print("Hooked SpellStartHandler\n");
-    }
-
-    if (cast_result_hook.attach(0x6E7330, &castResultDetour) != .ok) {
-        log.print("FAILED to hook CastResultHandler\n");
-    } else {
-        log.print("Hooked CastResultHandler (SPELL_CAST_FAILED self)\n");
-    }
 
     if (spell_failed_other_hook.attach(0x6E75F0, &spellFailedOtherDetour) != .ok) {
         log.print("FAILED to hook HandleSpellInterruptUpdate\n");
@@ -1960,35 +2231,6 @@ pub fn installHooks() void {
         log.print("Hooked HandleSpellInterruptUpdate (SPELL_CAST_FAILED others)\n");
     }
 
-    if (spell_missed_hook.attach(0x62BAB0, &spellMissedDetour) != .ok) {
-        log.print("FAILED to hook ProcessSpellCombatResult\n");
-    } else {
-        log.print("Hooked ProcessSpellCombatResult (SPELL_MISSED)\n");
-    }
-
-    if (damage_shield_hook.attach(0x62CA20, &damageShieldDetour) != .ok) {
-        log.print("FAILED to hook ProcessSpellDrainEffectMessage\n");
-    } else {
-        log.print("Hooked ProcessSpellDrainEffectMessage (DAMAGE_SHIELD)\n");
-    }
-
-    if (energize_hook.attach(0x62CA00, &energizeDetour) != .ok) {
-        log.print("FAILED to hook ProcessStandardPowerGainMessage\n");
-    } else {
-        log.print("Hooked ProcessStandardPowerGainMessage (SPELL_ENERGIZE)\n");
-    }
-
-    if (spell_interrupt_hook.attach(0x626A10, &spellInterruptDetour) != .ok) {
-        log.print("FAILED to hook DisplaySpellInterruptMessage\n");
-    } else {
-        log.print("Hooked DisplaySpellInterruptMessage (SPELL_INTERRUPT)\n");
-    }
-
-    if (instakill_hook.attach(0x62CBE0, &instaKillDetour) != .ok) {
-        log.print("FAILED to hook ProcessInstaKillSpellMessage\n");
-    } else {
-        log.print("Hooked ProcessInstaKillSpellMessage (SPELL_INSTAKILL)\n");
-    }
 
     if (unit_death_hook.attach(0x605860, &unitDeathDetour) != .ok) {
         log.print("FAILED to hook HandleUnitDeath\n");
@@ -2014,11 +2256,7 @@ pub fn installHooks() void {
         log.print("Hooked ValidateSpellSlot (SPELL_AURA_*_DOSE)\n");
     }
 
-    if (extra_attacks_hook.attach(0x62D9F0, &extraAttacksDetour) != .ok) {
-        log.print("FAILED to hook ProcessExtraAttacksSpellMessage\n");
-    } else {
-        log.print("Hooked ProcessExtraAttacksSpellMessage (SPELL_EXTRA_ATTACKS)\n");
-    }
+    // extra_attacks_hook — now handled by SPELLLOGEXECUTE table swap (0x24C)
 
     if (dispel_hook.attach(0x62D480, &dispelDetour) != .ok) {
         log.print("FAILED to hook ProcessAuraDispelMessage\n");
@@ -2026,11 +2264,7 @@ pub fn installHooks() void {
         log.print("Hooked ProcessAuraDispelMessage (SPELL_DISPEL)\n");
     }
 
-    if (spell_effect_hook.attach(0x62ACE0, &spellEffectDetour) != .ok) {
-        log.print("FAILED to hook ProcessSpellEffect\n");
-    } else {
-        log.print("Hooked ProcessSpellEffect (SPELL_SUMMON/RESURRECT/ENERGIZE)\n");
-    }
+    // spell_effect_hook — now handled by SPELLLOGEXECUTE table swap (0x24C)
 
     if (aura_duration_hook.attach(0x4E4390, &auraDurationDetour) != .ok) {
         log.print("FAILED to hook SetActionCooldownTimer\n");
@@ -2047,28 +2281,21 @@ pub fn installHooks() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        // Restore handler table swaps (no code to unpatch)
+        restoreAllHandlers();
+        // Detach remaining JMP-patching detours (non-packet hooks)
         spell_failed_other_hook.detach();
         dispel_failed_hook.detach();
         aura_duration_hook.detach();
-        spell_effect_hook.detach();
         dispel_hook.detach();
-        extra_attacks_hook.detach();
         aura_dose_hook.detach();
         aura_applied_hook.detach();
         aura_removed_hook.detach();
         unit_death_hook.detach();
-        instakill_hook.detach();
-        spell_interrupt_hook.detach();
-        damage_shield_hook.detach();
-        spell_missed_hook.detach();
-        cast_result_hook.detach();
-        spell_start_hook.detach();
-        party_kill_hook.detach();
+        // spell_interrupt_hook — now in SPELLLOGEXECUTE table swap
         env_dmg_hook.detach();
-        melee_hook.detach();
-        heal_hook.detach();
-        periodic_hook.detach();
-        spell_dmg_hook.detach();
+        // energize_hook — now in SPELLLOGEXECUTE table swap
+        init_engine_hook.detach();
         create_events_hook.detach();
         resize_events_hook.detach();
         log.close();

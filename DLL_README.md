@@ -165,7 +165,7 @@ No other configuration needed, install and forget.
 
 ### DPSLog (Combat Log Events)
 
-Provides WotLK 3.3.5-style `COMBAT_LOG_EVENT` for the vanilla client. Fires a single unified event with structured arguments instead of vanilla's fragmented localized text events. Enables modern DPS meter addons without expensive string parsing.
+Provides WotLK 3.3.5-style `COMBAT_LOG_EVENT_UNFILTERED` for the vanilla client. Fires a single unified event with structured arguments instead of vanilla's fragmented localized text events. Enables modern DPS meter addons without expensive string parsing.
 
 37 subevents covering all combat interactions: damage (spell, melee, periodic, environmental, damage shield, damage split), healing (direct, periodic, overheal tracking), misses (all types), auras (applied, removed, refreshed, broken, dose changes), casts (start, success, failed, interrupted), power (energize, drain, leech), dispels, extra attacks, deaths, and kills.
 
@@ -296,6 +296,37 @@ if (hMod) {
     }
 }
 ```
+
+### Version Query API
+
+WeirdUtils registers a Lua global table and query function for addon developers to detect which modules are loaded and their versions. Available from the login screen onward.
+
+#### `GetWeirdUtilsVersion()`
+
+Returns the `WeirdUtils` table containing all enabled modules and their version strings:
+
+```lua
+local modules = GetWeirdUtilsVersion()
+for name, version in pairs(modules) do
+    print(name .. " v" .. version)  -- e.g. "dpslog v1.0"
+end
+```
+
+#### `GetWeirdUtilsVersion("modulename")`
+
+Returns the version string for a specific module, or `nil` if not loaded:
+
+```lua
+if GetWeirdUtilsVersion("dpslog") then
+    -- DPSLog is available, register for COMBAT_LOG_EVENT_UNFILTERED
+end
+
+local ver = GetWeirdUtilsVersion("minimapicons")  -- "1.0" or nil
+```
+
+The `WeirdUtils` table is additive -- if multiple independent DLLs are loaded (e.g. `dpslog.dll` and `minimapicons.dll` separately), each adds its own modules to the shared table.
+
+---
 
 ### Module Mutexes
 
