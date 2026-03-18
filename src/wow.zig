@@ -224,6 +224,22 @@ pub fn getLocalPlayer() u32 {
     return getObjectByGUID(guid);
 }
 
+/// Resolve a GUID to a unit/NPC name via the name cache.
+/// Returns the name string or "" if not cached.
+pub fn getNameByGUID(guid: u64) [*:0]const u8 {
+    if (guid == 0) return "";
+    const lo: u32 = @truncate(guid);
+    const hi: u32 = @truncate(guid >> 32);
+    var name_buf: [2]u32 = .{ 0, 0 };
+    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32, o.FN_NAME_CACHE_LOOKUP, .{
+        o.NAME_CACHE_OBJ, lo, hi, @intFromPtr(&name_buf), 0, 0, 0,
+    });
+    if (result != 0) {
+        return @ptrFromInt(result);
+    }
+    return "";
+}
+
 /// Get the current target's GUID.
 pub fn getTargetGUID() u64 {
     return unitGUID("target");

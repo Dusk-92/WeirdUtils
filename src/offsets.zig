@@ -162,6 +162,12 @@ pub const FN_CVAR_LOOKUP: usize = 0x0063DEC0;
 /// SceneEnd: __thiscall(device). Per-frame hook point.
 pub const FN_SCENE_END: usize = 0x5A17A0;
 
+/// RetrieveNPCDataFromCache — __thiscall(ECX=cache_obj), 6 stack params, RET 0x18.
+/// Returns char* name or 0 on miss.
+pub const FN_NAME_CACHE_LOOKUP: usize = 0x0055F080;
+/// Name cache object pointer (global at 0xC0E228).
+pub const NAME_CACHE_OBJ: usize = 0x00C0E228;
+
 // =============================================================================
 // D3D9 / GxDevice
 // =============================================================================

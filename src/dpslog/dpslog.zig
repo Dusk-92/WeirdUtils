@@ -7,31 +7,28 @@
 //! See reference/COMBAT_LOG_EVENT_WOTLK.md for full WotLK spec.
 //! See RESEARCH.md "Implementation Status" for what's implemented vs TODO.
 //!
-//! Arg layouts per suffix type:
+//! WotLK CLEU parity — see WOTLK_CLEU_SPEC.md for full spec.
+//! Base: arg1=subevent, arg2=sourceGUID, arg3=sourceName, arg4=destGUID, arg5=destName
+//! Spell prefix: spellId, spellName, spellSchool
+//! Env prefix: envType(string)
+//! Swing prefix: (none)
 //!
-//!   _DAMAGE (spell prefix): arg4=spellId, arg5=amount, arg6=school,
-//!       arg7=resisted, arg8=absorbed, arg9=blocked, arg10=critical
-//!   _DAMAGE (swing):        arg4=amount, arg5=school, arg6=resisted,
-//!       arg7=absorbed, arg8=blocked, arg9=critical, arg10=0
-//!   _DAMAGE (environmental): arg4=envType, arg5=amount, arg6=absorbed,
-//!       arg7-10=0
-//!   _MISSED (spell prefix): arg4=spellId, arg5=spellSchool, arg6=missType(string)
-//!   _MISSED (swing):        arg4=missType(string)
-//!   _HEAL (spell prefix):   arg4=spellId, arg5=amount, arg6=0(overheal),
-//!       arg7=0(absorbed), arg8=critical
-//!   _ENERGIZE:              arg4=spellId, arg5=amount, arg6=powerType
-//!   _DRAIN/_LEECH:          arg4=spellId, arg5=amount, arg6=powerType,
-//!       arg7=extraAmount
-//!   _AURA_APPLIED/REMOVED:  arg4=spellId, arg5=spellSchool, arg6=auraType(string)
-//!   _AURA_APPLIED_DOSE/REMOVED_DOSE: same + arg7=amount(stacks)
-//!   _CAST_START/SUCCESS:    arg4=spellId, arg5=spellSchool
-//!   _CAST_FAILED:           arg4=spellId, arg5=spellSchool, arg6=failedType(string)
-//!   _INTERRUPT:             arg4=spellId, arg5=spellSchool, arg6=extraSpellId,
-//!       arg7=extraSpellSchool
-//!   _DISPEL/_STOLEN:        arg4=spellId, arg5=spellSchool, arg6=extraSpellId,
-//!       arg7=extraSpellSchool, arg8=auraType(string)
-//!   _EXTRA_ATTACKS:         arg4=spellId, arg5=spellSchool, arg6=amount
-//!   UNIT_DIED/PARTY_KILL:   (base params only)
+//!   _DAMAGE: amount, overkill(-1), school, resisted, blocked, absorbed,
+//!       critical, glancing, crushing
+//!   _MISSED: missType(string), amountMissed
+//!   _HEAL: amount, overheal, absorbed, critical
+//!   _ENERGIZE: amount, powerType
+//!   _LEECH/_DRAIN: amount, powerType(-2=health), extraAmount
+//!   _EXTRA_ATTACKS: amount
+//!   _AURA_APPLIED/REMOVED: auraType(string)
+//!   _AURA_DOSE: auraType(string), amount(stacks)
+//!   _CAST_START/SUCCESS/INSTAKILL/SUMMON/RESURRECT: (prefix only)
+//!   _CAST_FAILED: failedType(string)
+//!   _INTERRUPT/_DISPEL_FAILED: extraSpellId, extraSpellName, extraSchool
+//!   _DISPEL/_STOLEN/_AURA_BROKEN_SPELL: extraSpellId, extraSpellName,
+//!       extraSchool, auraType(string)
+//!   _AURA_BROKEN: auraType(string)
+//!   UNIT_DIED/PARTY_KILL/UNIT_DESTROYED: (base only)
 //!
 //! Power types: 0=mana, 1=rage, 2=focus, 3=energy, 4=combo points
 //! Env types:   0=EXHAUSTED, 1=DROWNING, 2=FALLING, 3=LAVA, 4=SLIME, 5=FIRE
@@ -42,6 +39,7 @@
 const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
+const lua = @import("../lua.zig");
 const mod_mutex = @import("../mutex.zig");
 const wow = @import("../wow.zig");
 
@@ -203,6 +201,10 @@ const HITINFO_GLANCING: u32 = 0x4000;
 // Unit power descriptor offsets (from m_data at obj+0x08)
 // =============================================================================
 
+/// UNIT_FIELD_HEALTH at absolute index 0x16. Offset = 0x58.
+const DESC_HEALTH: u32 = 0x16 * 4; // 0x58
+/// UNIT_FIELD_MAXHEALTH at absolute index 0x1C. Offset = 0x70.
+const DESC_MAXHEALTH: u32 = 0x1C * 4; // 0x70
 /// UNIT_FIELD_POWER1 at absolute index 0x17. Power(N) = 0x5C + N*4.
 const DESC_POWER_BASE: u32 = 0x17 * 4; // 0x5C
 /// UNIT_FIELD_MAXPOWER1 at absolute index 0x1D. MaxPower(N) = 0x74 + N*4.
@@ -304,55 +306,104 @@ fn guidToString(guid: u64) [*:0]const u8 {
 
 const SIGNAL: u32 = 0x703F50;
 
-/// Pattern A: 3 strings + 7 numbers — _DAMAGE, _HEAL, _ENERGIZE, etc.
-/// subevent, srcGUID, dstGUID, n1..n7
-fn fireCombatLog(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8, n1: u32, n2: u32, n3: u32, n4: u32, n5: u32, n6: u32, n7: u32) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%d%d%d%d%d%d%d", sub, src, dst, n1, n2, n3, n4, n5, n6, n7 });
+// =============================================================================
+// Fire functions — WotLK CLEU parity (see WOTLK_CLEU_SPEC.md)
+//
+// Base args: sub(s), srcGUID(s), srcName(s), dstGUID(s), dstName(s)
+// Spell prefix: spellId(d), spellName(s), spellSchool(d)
+// Env prefix: envType(s)
+// Swing prefix: (none)
+// =============================================================================
+
+/// Spell prefix + _DAMAGE suffix (9 fields: amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing)
+/// Used by: SPELL_DAMAGE, RANGE_DAMAGE, SPELL_PERIODIC_DAMAGE, DAMAGE_SHIELD, DAMAGE_SPLIT
+fn fireSpellDamage(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, amount: u32, overkill: u32, dmg_school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%d%d%d%d%d%d%d%d", sub, src, src_name, dst, dst_name, id, name, school, amount, overkill, dmg_school, resisted, blocked, absorbed, critical, glancing, crushing });
 }
 
-/// Pattern B: 4 strings — SWING_MISSED (subevent, src, dst, missType)
-fn fireSwingMissed(src: [*:0]const u8, dst: [*:0]const u8, miss_type: [*:0]const u8) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s", SUB_SWING_MISSED, src, dst, miss_type });
+/// Swing _DAMAGE suffix (no prefix, 9 fields)
+fn fireSwingDamage(src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, amount: u32, overkill: u32, school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%d%d%d%d%d%d%d%d", SUB_SWING_DAMAGE, src, src_name, dst, dst_name, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing });
 }
 
-/// Pattern C: 3 strings + 2 numbers + 1 string — SPELL_MISSED, SPELL_AURA_*, SPELL_CAST_FAILED
-/// subevent, srcGUID, dstGUID, spellId, spellSchool, stringArg
-fn fireSpellStr(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8, spell_id: u32, spell_school: u32, str_arg: [*:0]const u8) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%d%d%s", sub, src, dst, spell_id, spell_school, str_arg });
+/// Environmental prefix + _DAMAGE suffix (envType string + 9 fields)
+fn fireEnvDamage(dst: [*:0]const u8, dst_name: [*:0]const u8, env_str: [*:0]const u8, amount: u32, overkill: u32, school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%s%d%d%d%d%d%d%d%d%d", SUB_ENV_DAMAGE, GUID_ZERO, "", dst, dst_name, env_str, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing });
 }
 
-/// Pattern D: 3 strings + 2 numbers — SPELL_CAST_START/SUCCESS, SPELL_SUMMON, etc.
-/// subevent, srcGUID, dstGUID, spellId, spellSchool
-fn fireSpell(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8, spell_id: u32, spell_school: u32) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%d%d", sub, src, dst, spell_id, spell_school });
+/// Swing _MISSED suffix (missType string + amountMissed)
+fn fireSwingMissed(src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, miss_type: [*:0]const u8, amount_missed: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%s%d", SUB_SWING_MISSED, src, src_name, dst, dst_name, miss_type, amount_missed });
 }
 
-/// Pattern E: 3 strings only — UNIT_DIED, PARTY_KILL
-fn fireBase(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s", sub, src, dst });
+/// Spell prefix + _MISSED suffix (missType string + amountMissed)
+fn fireSpellMissed(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, miss_type: [*:0]const u8, amount_missed: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%s%d", sub, src, src_name, dst, dst_name, id, name, school, miss_type, amount_missed });
 }
 
-/// Pattern F: 3s + 2d + 1s + 1d — SPELL_AURA_APPLIED_DOSE/REMOVED_DOSE
-fn fireSpellStrD(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8, spell_id: u32, spell_school: u32, str_arg: [*:0]const u8, amount: u32) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%d%d%s%d", sub, src, dst, spell_id, spell_school, str_arg, amount });
+/// Spell prefix + _HEAL suffix (amount, overheal, absorbed, critical)
+fn fireSpellHeal(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, amount: u32, overheal: u32, absorbed: u32, critical: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%d%d%d", sub, src, src_name, dst, dst_name, id, name, school, amount, overheal, absorbed, critical });
 }
 
-/// Pattern G: 3s + 4d + 1s — SPELL_DISPEL/STOLEN (spellId, spellSchool, extraSpellId, extraSchool, auraType)
-fn fireSpellDispel(sub: [*:0]const u8, src: [*:0]const u8, dst: [*:0]const u8, spell_id: u32, spell_school: u32, extra_id: u32, extra_school: u32, aura_type: [*:0]const u8) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, u32, u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%d%d%d%d%s", sub, src, dst, spell_id, spell_school, extra_id, extra_school, aura_type });
+/// Spell prefix + _ENERGIZE suffix (amount, powerType)
+fn fireSpellEnergize(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, amount: u32, power_type: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%d", sub, src, src_name, dst, dst_name, id, name, school, amount, power_type });
 }
 
-/// Pattern H: 4 strings + 6 numbers — ENVIRONMENTAL_DAMAGE (envType as string)
-fn fireEnvDamage(dst: [*:0]const u8, env_str: [*:0]const u8, amount: u32, school: u32, absorb: u32) void {
-    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
-    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%d%d%d%d%d", SUB_ENV_DAMAGE, GUID_ZERO, dst, env_str, amount, school, absorb, 0, 0 });
+/// Spell prefix + _LEECH/_DRAIN suffix (amount, powerType, extraAmount)
+fn fireSpellLeech(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, amount: u32, power_type: u32, extra_amount: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%d%d", sub, src, src_name, dst, dst_name, id, name, school, amount, power_type, extra_amount });
+}
+
+/// Spell prefix + _EXTRA_ATTACKS suffix (amount)
+fn fireSpellExtraAttacks(src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, amount: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d", SUB_SPELL_EXTRA_ATTACKS, src, src_name, dst, dst_name, id, name, school, amount });
+}
+
+/// Spell prefix + string suffix (_AURA_APPLIED/REMOVED, _CAST_FAILED)
+fn fireSpellStr(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, str_arg: [*:0]const u8) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%s", sub, src, src_name, dst, dst_name, id, name, school, str_arg });
+}
+
+/// Spell prefix + string + number suffix (_AURA_APPLIED_DOSE/REMOVED_DOSE)
+fn fireSpellStrD(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, str_arg: [*:0]const u8, amount: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%s%d", sub, src, src_name, dst, dst_name, id, name, school, str_arg, amount });
+}
+
+/// Spell prefix only (_CAST_START/SUCCESS, _INSTAKILL, _SUMMON, _RESURRECT)
+fn fireSpell(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d", sub, src, src_name, dst, dst_name, id, name, school });
+}
+
+/// Spell prefix + _INTERRUPT/_DISPEL_FAILED suffix (extraSpellId, extraSpellName, extraSchool)
+fn fireSpellInterrupt(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, extra_id: u32, extra_name: [*:0]const u8, extra_school: u32) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, [*:0]const u8, u32) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%s%d", sub, src, src_name, dst, dst_name, id, name, school, extra_id, extra_name, extra_school });
+}
+
+/// Spell prefix + _DISPEL/_STOLEN/_AURA_BROKEN_SPELL suffix (extraSpellId, extraSpellName, extraSchool, auraType)
+fn fireSpellDispel(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8, id: u32, name: [*:0]const u8, school: u32, extra_id: u32, extra_name: [*:0]const u8, extra_school: u32, aura_type: [*:0]const u8) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, u32, [*:0]const u8, u32, u32, [*:0]const u8, u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s%d%s%d%d%s%d%s", sub, src, src_name, dst, dst_name, id, name, school, extra_id, extra_name, extra_school, aura_type });
+}
+
+/// Base only — UNIT_DIED, PARTY_KILL, UNIT_DESTROYED
+fn fireBase(sub: [*:0]const u8, src: [*:0]const u8, src_name: [*:0]const u8, dst: [*:0]const u8, dst_name: [*:0]const u8) void {
+    const F = fn (u32, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8, [*:0]const u8) callconv(hook.cc.cdecl) void;
+    @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "%s%s%s%s%s", sub, src, src_name, dst, dst_name });
 }
 
 // =============================================================================
@@ -463,20 +514,38 @@ fn spellNonMeleeDmgLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callcon
     {
         const src_str = guidToString(caster_guid.?);
         const dst_str = guidToString(target_guid.?);
+        const src_name = wow.getNameByGUID(caster_guid.?);
+        const dst_name = wow.getNameByGUID(target_guid.?);
         const critical: u32 = if (hit_info.? & 0x02 != 0) 1 else 0;
 
         // Classify the damage subevent
-        const sub = if (spell_id.? == 75 or spell_id.? == 5019)
-            SUB_RANGE_DAMAGE // Auto Shot / Wand Shoot
-        else if (isDamageSplitSpell(spell_id.?))
-            SUB_DAMAGE_SPLIT // Soul Link, Blessing of Sacrifice, etc.
-        else
-            SUB_SPELL_DAMAGE;
-        log.fmt("{s}: spell={d} amt={d} school={d} crit={d}\n", .{
-            std.mem.span(sub), spell_id.?, damage.?, @as(u32, school.?), critical,
-        });
-        fireCombatLog(sub, src_str, dst_str, spell_id.?, damage.?, @as(u32, school.?), @bitCast(resist.?), absorb.?, blocked.?, critical);
-        recordDamage(target_guid.?, caster_guid.?, spell_id.?);
+        if (isPeriodicLeechSpell(spell_id.?)) {
+            // Vanilla routes periodic leech (Drain Life, Siphon Life) through the spell damage
+            // packet instead of PERIODICAURALOG. Reclassify as SPELL_PERIODIC_LEECH.
+            // WotLK _LEECH suffix: amount, powerType, extraAmount
+            // For health leech: powerType = -2 (0xFFFFFFFE, WotLK convention for health)
+            // Approximate gained: damage - absorb - resist (heal is suppressed in heal hook)
+            const effective: u32 = if (damage.? > absorb.?) damage.? - absorb.? else 0;
+            const resist_u: u32 = @bitCast(resist.?);
+            const gained: u32 = if (effective > resist_u) effective - resist_u else 0;
+            log.fmt("SPELL_PERIODIC_LEECH: [{d}]{s} amt={d} gained={d}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), damage.?, gained });
+            // _LEECH: spellId, amount, powerType(-2=health), extraAmount(gained)
+            fireSpellLeech(SUB_SPELL_PERIODIC_LEECH, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), damage.?, @bitCast(@as(i32, -2)), gained);
+            recordDamage(target_guid.?, caster_guid.?, spell_id.?);
+        } else {
+            const sub = if (spell_id.? == 75 or spell_id.? == 5019)
+                SUB_RANGE_DAMAGE // Auto Shot / Wand Shoot
+            else if (isDamageSplitSpell(spell_id.?))
+                SUB_DAMAGE_SPLIT // Soul Link, Blessing of Sacrifice, etc.
+            else
+                SUB_SPELL_DAMAGE;
+            const overkill = computeOverkill(target_guid.?, damage.?);
+            log.fmt("{s}: [{d}]{s} amt={d} school={d} crit={d}\n", .{
+                std.mem.span(sub), spell_id.?, std.mem.span(getSpellName(spell_id.?)), damage.?, @as(u32, school.?), critical,
+            });
+            fireSpellDamage(sub, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), damage.?, overkill, @as(u32, school.?), @bitCast(resist.?), blocked.?, absorb.?, critical, 0, 0);
+            recordDamage(target_guid.?, caster_guid.?, spell_id.?);
+        }
     }
 
     return spell_dmg_hook.callOriginal(.{ unk, opcode, unk2, cds });
@@ -504,6 +573,8 @@ fn periodicAuraLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
     if (target_guid != null and caster_guid != null and spell_id != null and count != null) {
         const src_str = guidToString(caster_guid.?);
         const dst_str = guidToString(target_guid.?);
+        const src_name = wow.getNameByGUID(caster_guid.?);
+        const dst_name = wow.getNameByGUID(target_guid.?);
 
         const aura_type = cdsGet(u32, cds);
         if (aura_type) |at| {
@@ -514,50 +585,64 @@ fn periodicAuraLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
                     const spell_school = cdsGet(u32, cds) orelse 0;
                     const absorb = cdsGet(u32, cds) orelse 0;
                     const resist = cdsGet(i32, cds) orelse 0;
-                    fireCombatLog(SUB_SPELL_PERIODIC_DAMAGE, src_str, dst_str, spell_id.?, amount, spell_school, @bitCast(resist), absorb, 0, 0);
+                    const overkill = computeOverkill(target_guid.?, amount);
+                    fireSpellDamage(SUB_SPELL_PERIODIC_DAMAGE, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), spell_school, amount, overkill, spell_school, @bitCast(resist), 0, absorb, 0, 0, 0);
                     recordDamage(target_guid.?, caster_guid.?, spell_id.?);
                 },
                 8, 20 => {
                     // SPELL_PERIODIC_HEAL
                     const amount = cdsGet(u32, cds) orelse 0;
-                    fireCombatLog(SUB_SPELL_PERIODIC_HEAL, src_str, dst_str, spell_id.?, amount, 0, 0, 0, 0, 0);
+                    const overheal = computeOverheal(target_guid.?, amount);
+                    fireSpellHeal(SUB_SPELL_PERIODIC_HEAL, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), amount, overheal, 0, 0);
                 },
                 21, 24 => {
                     // SPELL_PERIODIC_ENERGIZE
                     const power_type = cdsGet(u32, cds) orelse 0;
-                    const amount = cdsGet(u32, cds) orelse 0;
-                    // Compute overEnergize from descriptors (before original processes the update)
-                    var over_energize: u32 = 0;
-                    if (target_guid != null) {
-                        const cur = getUnitPower(target_guid.?, power_type) orelse 0;
-                        const max = getUnitMaxPower(target_guid.?, power_type) orelse 0;
-                        if (max > 0 and cur + amount > max) {
-                            over_energize = cur + amount - max;
-                        }
-                    }
-                    fireCombatLog(SUB_SPELL_PERIODIC_ENERGIZE, src_str, dst_str, spell_id.?, amount, over_energize, power_type, 0, 0, 0);
+                    const raw_amount = cdsGet(u32, cds) orelse 0;
+                    // Power display divisor table at 0x86F978 (verified from client binary):
+                    // Mana(0)=1, Rage(1)=10, Focus(2)=1, Energy(3)=1, Happiness(4)=1000
+                    // SMSG_SPELLENERGIZELOG handler divides by this; PERIODICAURALOG does not.
+                    const divisor: u32 = switch (power_type) {
+                        1 => 10, // rage
+                        4 => 1000, // happiness
+                        else => 1,
+                    };
+                    const amount = raw_amount / divisor;
+                    fireSpellEnergize(SUB_SPELL_PERIODIC_ENERGIZE, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), amount, power_type);
                 },
                 53 => {
-                    // SPELL_PERIODIC_LEECH — health drain (Drain Life, Siphon Life)
-                    // Packet format: damage, spellSchool, absorb, resist (same as periodic damage)
+                    // SPELL_PERIODIC_LEECH — health leech (Drain Life, Siphon Life)
+                    // NOTE: vanilla server routes health leech through SendSpellNonMeleeDamageLog,
+                    // NOT PERIODICAURALOG. This case won't fire on vanilla servers — Drain Life
+                    // ticks are reclassified in spellNonMeleeDmgLogDetour via isPeriodicLeechSpell().
+                    // Kept for protocol completeness.
                     const amount = cdsGet(u32, cds) orelse 0;
-                    const spell_school = cdsGet(u32, cds) orelse 0;
+                    _ = cdsGet(u32, cds); // school
                     const absorb = cdsGet(u32, cds) orelse 0;
                     const resist = cdsGet(i32, cds) orelse 0;
-                    // WotLK _LEECH suffix: amount, powerType(0=health), extraAmount(gained back)
-                    // Vanilla doesn't send the gained amount separately — approximate as amount - absorb - resist
                     const effective: u32 = if (amount > absorb) amount - absorb else 0;
-                    const gained: u32 = if (effective > @as(u32, @bitCast(resist))) effective - @as(u32, @bitCast(resist)) else 0;
-                    fireCombatLog(SUB_SPELL_PERIODIC_LEECH, src_str, dst_str, spell_id.?, amount, spell_school, gained, absorb, @bitCast(resist), 0);
+                    const resist_u: u32 = @bitCast(resist);
+                    const gained: u32 = if (effective > resist_u) effective - resist_u else 0;
+                    // _LEECH: spellId, amount, powerType(-2=health), extraAmount(gained)
+                    fireSpellLeech(SUB_SPELL_PERIODIC_LEECH, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), amount, @bitCast(@as(i32, -2)), gained);
                     recordDamage(target_guid.?, caster_guid.?, spell_id.?);
                 },
                 64 => {
-                    // SPELL_PERIODIC_DRAIN — mana drain/leech (Mana Burn, Drain Mana)
-                    // Packet format: powerType, amount, gainMultiplier
+                    // SPELL_AURA_PERIODIC_MANA_LEECH — power leech/drain
+                    // Packet format: powerType(u32), amount(u32), gainMultiplier(f32)
+                    // multiplier > 0 = LEECH (caster gains amount*mult): Drain Mana, Viper Sting
+                    // multiplier == 0 = DRAIN (caster gains nothing): rare boss mechanics
                     const power_type = cdsGet(u32, cds) orelse 0;
                     const amount = cdsGet(u32, cds) orelse 0;
-                    const extra = cdsGet(u32, cds) orelse 0; // multiplied gain
-                    fireCombatLog(SUB_SPELL_PERIODIC_DRAIN, src_str, dst_str, spell_id.?, amount, power_type, extra, 0, 0, 0);
+                    const multiplier = cdsGet(f32, cds) orelse 0.0;
+                    if (multiplier > 0.0) {
+                        const gained: u32 = @intFromFloat(@as(f32, @floatFromInt(amount)) * multiplier);
+                        log.fmt("SPELL_PERIODIC_LEECH: spell={d} amt={d} power={d} gained={d} mult={d}\n", .{ spell_id.?, amount, power_type, gained, @as(u32, @bitCast(multiplier)) });
+                        fireSpellLeech(SUB_SPELL_PERIODIC_LEECH, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), amount, power_type, gained);
+                    } else {
+                        log.fmt("SPELL_PERIODIC_DRAIN: [{d}]{s} amt={d} power={d}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), amount, power_type });
+                        fireSpellLeech(SUB_SPELL_PERIODIC_DRAIN, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), getSpellSchool(spell_id.?), amount, power_type, 0);
+                    }
                 },
                 else => {},
             }
@@ -590,12 +675,16 @@ fn healDisplayDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32, heal_amoun
         const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
         const target_guid: u64 = @as(u64, target_hi) << 32 | @as(u64, target_lo);
 
-        if (caster_guid != 0 and target_guid != 0) {
+        if (caster_guid != 0 and target_guid != 0 and !isPeriodicLeechSpell(spell_id)) {
+            // Suppress heal for periodic leech spells — already covered by SPELL_PERIODIC_LEECH
             const src_str = guidToString(caster_guid);
             const dst_str = guidToString(target_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
             const critical: u32 = if (is_crit != 0) 1 else 0;
-            // _HEAL: spellId, amount, overheal(0), absorbed(0), critical
-            fireCombatLog(SUB_SPELL_HEAL, src_str, dst_str, spell_id, heal_amount, 0, 0, critical, 0, 0);
+            const overheal = computeOverheal(target_guid, heal_amount);
+            // _HEAL: spellId, amount, overheal, absorbed(0), critical
+            fireSpellHeal(SUB_SPELL_HEAL, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), getSpellSchool(spell_id), heal_amount, overheal, 0, critical);
         }
     }
 
@@ -666,6 +755,8 @@ fn parseMeleePacket(cds: u32) void {
 
     const src_str = guidToString(attacker_guid);
     const dst_str = guidToString(target_guid);
+    const src_name = wow.getNameByGUID(attacker_guid);
+    const dst_name = wow.getNameByGUID(target_guid);
 
     // Determine miss type from victimState
     const miss_type: ?[*:0]const u8 = switch (victim_state) {
@@ -681,17 +772,15 @@ fn parseMeleePacket(cds: u32) void {
 
     if (miss_type) |mt| {
         log.fmt("SWING_MISSED: vs={d} type={s}\n", .{ victim_state, std.mem.span(mt) });
-        fireSwingMissed(src_str, dst_str, mt);
+        fireSwingMissed(src_str, src_name, dst_str, dst_name, mt, 0);
     } else {
         const critical: u32 = if (hit_info & HITINFO_CRITICALHIT != 0) 1 else 0;
-        // Pack glancing/crushing/offhand into flags bitmask (arg10):
-        //   bit0=glancing, bit1=crushing, bit2=offhand
-        const flags: u32 = (if (hit_info & HITINFO_GLANCING != 0) @as(u32, 1) else 0) |
-            (if (hit_info & HITINFO_CRUSHING != 0) @as(u32, 2) else 0) |
-            (if (hit_info & HITINFO_LEFTSWING != 0) @as(u32, 4) else 0);
-        log.fmt("SWING_DAMAGE: dmg={d} crit={d} flags={d} hitInfo=0x{x}\n", .{ total_damage, critical, flags, hit_info });
-        // _DAMAGE: amount, school, resisted, absorbed, blocked, critical, flags(glancing|crushing|offhand)
-        fireCombatLog(SUB_SWING_DAMAGE, src_str, dst_str, total_damage, school, resist, absorb, blocked, critical, flags);
+        const glancing: u32 = if (hit_info & HITINFO_GLANCING != 0) 1 else 0;
+        const crushing: u32 = if (hit_info & HITINFO_CRUSHING != 0) 1 else 0;
+        const overkill = computeOverkill(target_guid, total_damage);
+        log.fmt("SWING_DAMAGE: dmg={d} crit={d} glance={d} crush={d} hitInfo=0x{x}\n", .{ total_damage, critical, glancing, crushing, hit_info });
+        // _DAMAGE: amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
+        fireSwingDamage(src_str, src_name, dst_str, dst_name, total_damage, overkill, school, resist, blocked, absorb, critical, glancing, crushing);
         recordDamage(target_guid, attacker_guid, 0);
     }
 }
@@ -715,6 +804,7 @@ fn envDamageDetour(victim_guid_ptr: u32, damage_type: u32, damage: u32, absorb: 
 
         if (victim_guid != 0) {
             const dst_str = guidToString(victim_guid);
+            const dst_name = wow.getNameByGUID(victim_guid);
             const env_str = envTypeToString(damage_type);
             // Env school: falling=1(physical), fire/lava=4(fire), drowning/slime=8(nature), exhausted=1
             const school: u32 = switch (damage_type) {
@@ -722,8 +812,9 @@ fn envDamageDetour(victim_guid_ptr: u32, damage_type: u32, damage: u32, absorb: 
                 3, 5 => 4, // lava, fire → fire
                 else => 1, // exhausted, falling → physical
             };
+            const overkill = computeOverkill(victim_guid, damage);
             log.fmt("ENVIRONMENTAL_DAMAGE: type={s} dmg={d} absorb={d}\n", .{ std.mem.span(env_str), damage, absorb });
-            fireEnvDamage(dst_str, env_str, damage, school, absorb);
+            fireEnvDamage(dst_str, dst_name, env_str, damage, overkill, school, 0, 0, absorb, 0, 0, 0);
             recordDamage(victim_guid, 0, 0);
         }
     }
@@ -780,6 +871,8 @@ fn spellMissedDetour(miss_type: u32, spell_id: u32, caster_lo: u32, caster_hi: u
     if (caster_guid != 0 and target_guid != 0 and spell_id != 0) {
         const src_str = guidToString(caster_guid);
         const dst_str = guidToString(target_guid);
+        const src_name = wow.getNameByGUID(caster_guid);
+        const dst_name = wow.getNameByGUID(target_guid);
         const miss_str = missInfoToString(@truncate(miss_type));
         const school = getSpellSchool(spell_id);
         // Classify miss subevent by spell type
@@ -791,8 +884,8 @@ fn spellMissedDetour(miss_type: u32, spell_id: u32, caster_lo: u32, caster_hi: u
             SUB_SPELL_PERIODIC_MISSED
         else
             SUB_SPELL_MISSED;
-        log.fmt("{s}: spell={d} miss={s} logmiss={d}\n", .{ std.mem.span(sub), spell_id, std.mem.span(miss_str), is_spell_log_miss });
-        fireSpellStr(sub, src_str, dst_str, spell_id, school, miss_str);
+        log.fmt("{s}: [{d}]{s} miss={s} logmiss={d}\n", .{ std.mem.span(sub), spell_id, std.mem.span(getSpellName(spell_id)), std.mem.span(miss_str), is_spell_log_miss });
+        fireSpellMissed(sub, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school, miss_str, 0);
     }
 
     spell_missed_hook.callOriginal(.{ miss_type, spell_id, caster_lo, caster_hi, target_lo, target_hi, is_spell_log_miss });
@@ -823,13 +916,51 @@ fn damageShieldDetour(victim_ptr: u32, caster_ptr: u32, damage: u32, school: u32
         if (victim_guid != 0 and caster_guid != 0) {
             const src_str = guidToString(caster_guid);
             const dst_str = guidToString(victim_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(victim_guid);
+            const overkill = computeOverkill(victim_guid, damage);
             log.fmt("DAMAGE_SHIELD: dmg={d} school={d}\n", .{ damage, school });
             // No spellId available in SMSG_SPELLDAMAGESHIELD — pass 0
-            fireCombatLog(SUB_DAMAGE_SHIELD, src_str, dst_str, 0, damage, school, 0, 0, 0, 0);
+            fireSpellDamage(SUB_DAMAGE_SHIELD, src_str, src_name, dst_str, dst_name, 0, getSpellName(0), school, damage, overkill, school, 0, 0, 0, 0, 0, 0);
         }
     }
 
     damage_shield_hook.callOriginal(.{ victim_ptr, caster_ptr, damage, school });
+}
+
+// =============================================================================
+// Hook: ProcessStandardPowerGainMessage (0x62CA00) — downstream of SMSG_SPELLENERGIZELOG
+// __fastcall(ECX=casterGuid_ptr, EDX=targetGuid_ptr, stack: spellId, powerType, amount)
+// RET 0xC (3 stack params)
+// Fires: SPELL_ENERGIZE
+// =============================================================================
+
+const EnergizeFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) void;
+
+var energize_hook: hook.Detour(EnergizeFn) = .{};
+
+fn energizeDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32, power_type: u32, amount: u32) callconv(hook.cc.fastcall) void {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    if (caster_ptr != 0 and target_ptr != 0 and spell_id != 0) {
+        const caster_lo = hook.readMem(u32, caster_ptr);
+        const caster_hi = hook.readMem(u32, caster_ptr + 4);
+        const target_lo = hook.readMem(u32, target_ptr);
+        const target_hi = hook.readMem(u32, target_ptr + 4);
+        const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
+        const target_guid: u64 = @as(u64, target_hi) << 32 | @as(u64, target_lo);
+
+        if (caster_guid != 0 and target_guid != 0) {
+            const src_str = guidToString(caster_guid);
+            const dst_str = guidToString(target_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
+            log.fmt("SPELL_ENERGIZE: [{d}]{s} amt={d} power={d}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), amount, power_type });
+            fireSpellEnergize(SUB_SPELL_ENERGIZE, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), getSpellSchool(spell_id), amount, power_type);
+        }
+    }
+
+    energize_hook.callOriginal(.{ caster_ptr, target_ptr, spell_id, power_type, amount });
 }
 
 // =============================================================================
@@ -857,10 +988,12 @@ fn spellInterruptDetour(caster_ptr: u32, target_ptr: u32, interrupted_spell_id: 
         if (caster_guid != 0 and target_guid != 0 and interrupted_spell_id != 0) {
             const src_str = guidToString(caster_guid);
             const dst_str = guidToString(target_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
             const extra_school = getSpellSchool(interrupted_spell_id);
             log.fmt("SPELL_INTERRUPT: interrupted={d}\n", .{interrupted_spell_id});
             // _INTERRUPT: spellId(interrupt ability — unknown, pass 0), spellSchool, extraSpellId(interrupted), extraSchool
-            fireSpellDispel(SUB_SPELL_INTERRUPT, src_str, dst_str, 0, 0, interrupted_spell_id, extra_school, "");
+            fireSpellInterrupt(SUB_SPELL_INTERRUPT, src_str, src_name, dst_str, dst_name, 0, "", 0, interrupted_spell_id, getSpellName(interrupted_spell_id), extra_school);
         }
     }
 
@@ -888,10 +1021,11 @@ fn instaKillDetour(caster_ptr: u32, spell_id: u32) callconv(hook.cc.fastcall) vo
 
         if (caster_guid != 0) {
             const src_str = guidToString(caster_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
             const school = getSpellSchool(spell_id);
-            log.fmt("SPELL_INSTAKILL: spell={d} caster=0x{x}\n", .{ spell_id, caster_guid });
+            log.fmt("SPELL_INSTAKILL: [{d}]{s} caster=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), caster_guid });
             // No victim GUID in SMSG_SPELLINSTAKILLLOG — pass zero GUID
-            fireSpell(SUB_SPELL_INSTAKILL, src_str, GUID_ZERO, spell_id, school);
+            fireSpell(SUB_SPELL_INSTAKILL, src_str, src_name, GUID_ZERO, "", spell_id, getSpellName(spell_id), school);
         }
     }
 
@@ -919,8 +1053,10 @@ fn partyKillLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.
     if (player_guid != null and victim_guid != null) {
         const src_str = guidToString(player_guid.?);
         const dst_str = guidToString(victim_guid.?);
+        const src_name = wow.getNameByGUID(player_guid.?);
+        const dst_name = wow.getNameByGUID(victim_guid.?);
         log.fmt("PARTY_KILL: src=0x{x} dst=0x{x}\n", .{ player_guid.?, victim_guid.? });
-        fireBase(SUB_PARTY_KILL, src_str, dst_str);
+        fireBase(SUB_PARTY_KILL, src_str, src_name, dst_str, dst_name);
     }
 
     return party_kill_hook.callOriginal(.{ unk, opcode, unk2, cds });
@@ -950,13 +1086,14 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
 
         if (caster_guid != null and spell_id != null) {
             const src_str = guidToString(caster_guid.?);
+            const src_name = wow.getNameByGUID(caster_guid.?);
             const school = getSpellSchool(spell_id.?);
             if (opcode == OPCODE_SPELL_START) {
-                log.fmt("SPELL_CAST_START: spell={d} caster=0x{x}\n", .{ spell_id.?, caster_guid.? });
-                fireSpell(SUB_SPELL_CAST_START, src_str, GUID_ZERO, spell_id.?, school);
+                log.fmt("SPELL_CAST_START: [{d}]{s} caster=0x{x}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), caster_guid.? });
+                fireSpell(SUB_SPELL_CAST_START, src_str, src_name, GUID_ZERO, "", spell_id.?, getSpellName(spell_id.?), school);
             } else {
-                log.fmt("SPELL_CAST_SUCCESS: spell={d} caster=0x{x}\n", .{ spell_id.?, caster_guid.? });
-                fireSpell(SUB_SPELL_CAST_SUCCESS, src_str, GUID_ZERO, spell_id.?, school);
+                log.fmt("SPELL_CAST_SUCCESS: [{d}]{s} caster=0x{x}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), caster_guid.? });
+                fireSpell(SUB_SPELL_CAST_SUCCESS, src_str, src_name, GUID_ZERO, "", spell_id.?, getSpellName(spell_id.?), school);
 
                 // Heuristic SPELL_AURA_REFRESH for all units:
                 // Parse SPELL_GO hit targets. If a hit target already has this aura
@@ -974,9 +1111,10 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
                             if (target_guid != 0 and target_guid != local_guid) {
                                 if (unitHasAura(target_guid, spell_id.?)) |slot| {
                                     const dst_str = guidToString(target_guid);
+                                    const dst_name = wow.getNameByGUID(target_guid);
                                     const aura_type = getAuraType(spell_id.?, slot);
-                                    log.fmt("SPELL_AURA_REFRESH (heuristic): spell={d} target=0x{x}\n", .{ spell_id.?, target_guid });
-                                    fireSpellStr(SUB_SPELL_AURA_REFRESH, src_str, dst_str, spell_id.?, school, aura_type);
+                                    log.fmt("SPELL_AURA_REFRESH (heuristic): [{d}]{s} target=0x{x}\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), target_guid });
+                                    fireSpellStr(SUB_SPELL_AURA_REFRESH, src_str, src_name, dst_str, dst_name, spell_id.?, getSpellName(spell_id.?), school, aura_type);
                                 }
                             }
                         }
@@ -1013,9 +1151,10 @@ fn castResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
         const player_guid = getActivePlayerGuid();
         if (player_guid != 0) {
             const src_str = guidToString(player_guid);
+            const src_name = wow.getNameByGUID(player_guid);
             const school = getSpellSchool(spell_id.?);
-            log.fmt("SPELL_CAST_FAILED: spell={d} status={d} (self)\n", .{ spell_id.?, status.? });
-            fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, GUID_ZERO, spell_id.?, school, "FAILED");
+            log.fmt("SPELL_CAST_FAILED: [{d}]{s} status={d} (self)\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), status.? });
+            fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, src_name, GUID_ZERO, "", spell_id.?, getSpellName(spell_id.?), school, "FAILED");
         }
     }
 
@@ -1048,9 +1187,10 @@ fn spellFailedOtherDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*a
         const player_guid = getActivePlayerGuid();
         if (caster_guid.? != player_guid) {
             const src_str = guidToString(caster_guid.?);
+            const src_name = wow.getNameByGUID(caster_guid.?);
             const school = getSpellSchool(spell_id.?);
-            log.fmt("SPELL_CAST_FAILED: spell={d} caster=0x{x} (other)\n", .{ spell_id.?, caster_guid.? });
-            fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, GUID_ZERO, spell_id.?, school, "FAILED");
+            log.fmt("SPELL_CAST_FAILED: [{d}]{s} caster=0x{x} (other)\n", .{ spell_id.?, std.mem.span(getSpellName(spell_id.?)), caster_guid.? });
+            fireSpellStr(SUB_SPELL_CAST_FAILED, src_str, src_name, GUID_ZERO, "", spell_id.?, getSpellName(spell_id.?), school, "FAILED");
         }
     }
 
@@ -1081,6 +1221,7 @@ fn unitDeathDetour(unit_obj: u32) callconv(hook.cc.fastcall) void {
 
             if (guid != 0) {
                 const dst_str = guidToString(guid);
+                const dst_name = wow.getNameByGUID(guid);
                 // Check creature type: totems (type 11) fire UNIT_DESTROYED
                 // CGUnit_GetCreatureType fallback path: obj+0xB30 -> +0x18
                 const is_totem = blk: {
@@ -1092,10 +1233,10 @@ fn unitDeathDetour(unit_obj: u32) callconv(hook.cc.fastcall) void {
                 };
                 if (is_totem) {
                     log.fmt("UNIT_DESTROYED: unit=0x{x}\n", .{guid});
-                    fireBase(SUB_UNIT_DESTROYED, GUID_ZERO, dst_str);
+                    fireBase(SUB_UNIT_DESTROYED, GUID_ZERO, "", dst_str, dst_name);
                 } else {
                     log.fmt("UNIT_DIED: unit=0x{x}\n", .{guid});
-                    fireBase(SUB_UNIT_DIED, GUID_ZERO, dst_str);
+                    fireBase(SUB_UNIT_DIED, GUID_ZERO, "", dst_str, dst_name);
                 }
             }
         }
@@ -1128,6 +1269,7 @@ fn auraRemovedDetour(unit_obj: u32, _edx: u32, slot_index: u32, spell_id: u32) c
 
             if (guid != 0) {
                 const dst_str = guidToString(guid);
+                const dst_name = wow.getNameByGUID(guid);
                 const aura_type: [*:0]const u8 = getAuraType(spell_id, slot_index);
                 const school = getSpellSchool(spell_id);
 
@@ -1139,23 +1281,24 @@ fn auraRemovedDetour(unit_obj: u32, _edx: u32, slot_index: u32, spell_id: u32) c
                     if (aura_int_flags & (AURA_INTERRUPT_FLAG_DAMAGE | AURA_INTERRUPT_FLAG_DIRECT_DAMAGE) != 0) {
                         if (findRecentDamage(guid)) |dmg| {
                             const src_str = if (dmg.source_guid != 0) guidToString(dmg.source_guid) else GUID_ZERO;
+                            const breaker_name = if (dmg.source_guid != 0) wow.getNameByGUID(dmg.source_guid) else @as([*:0]const u8, "");
                             if (dmg.spell_id != 0) {
                                 // Spell broke the aura — WotLK arg order: broken aura as primary, breaker as extra
                                 const dmg_school = getSpellSchool(dmg.spell_id);
-                                log.fmt("SPELL_AURA_BROKEN_SPELL: aura={d} by spell={d} src=0x{x}\n", .{ spell_id, dmg.spell_id, dmg.source_guid });
-                                fireSpellDispel(SUB_SPELL_AURA_BROKEN_SPELL, src_str, dst_str, spell_id, school, dmg.spell_id, dmg_school, aura_type);
+                                log.fmt("SPELL_AURA_BROKEN_SPELL: aura=[{d}]{s} by [{d}]{s} src=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), dmg.spell_id, std.mem.span(getSpellName(dmg.spell_id)), dmg.source_guid });
+                                fireSpellDispel(SUB_SPELL_AURA_BROKEN_SPELL, src_str, breaker_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school, dmg.spell_id, getSpellName(dmg.spell_id), dmg_school, aura_type);
                             } else {
                                 // Melee (swing) broke the aura — no breaking spell ID
-                                log.fmt("SPELL_AURA_BROKEN: aura={d} by melee src=0x{x}\n", .{ spell_id, dmg.source_guid });
-                                fireSpellStr(SUB_SPELL_AURA_BROKEN, src_str, dst_str, spell_id, school, aura_type);
+                                log.fmt("SPELL_AURA_BROKEN: aura=[{d}]{s} by melee src=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), dmg.source_guid });
+                                fireSpellStr(SUB_SPELL_AURA_BROKEN, src_str, breaker_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type);
                             }
                         }
                     }
                 }
 
                 // Always fire SPELL_AURA_REMOVED (even if broken — WotLK fires both)
-                log.fmt("SPELL_AURA_REMOVED: spell={d} slot={d} unit=0x{x}\n", .{ spell_id, slot_index, guid });
-                fireSpellStr(SUB_SPELL_AURA_REMOVED, GUID_ZERO, dst_str, spell_id, school, aura_type);
+                log.fmt("SPELL_AURA_REMOVED: [{d}]{s} slot={d} unit=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), slot_index, guid });
+                fireSpellStr(SUB_SPELL_AURA_REMOVED, GUID_ZERO, "", dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type);
             }
         }
     }
@@ -1185,10 +1328,11 @@ fn auraAppliedDetour(unit_obj: u32, _edx: u32, slot_index: u32, spell_id: u32) c
 
             if (guid != 0) {
                 const dst_str = guidToString(guid);
+                const dst_name = wow.getNameByGUID(guid);
                 const aura_type: [*:0]const u8 = getAuraType(spell_id, slot_index);
                 const school = getSpellSchool(spell_id);
-                log.fmt("SPELL_AURA_APPLIED: spell={d} slot={d} unit=0x{x}\n", .{ spell_id, slot_index, guid });
-                fireSpellStr(SUB_SPELL_AURA_APPLIED, GUID_ZERO, dst_str, spell_id, school, aura_type);
+                log.fmt("SPELL_AURA_APPLIED: [{d}]{s} slot={d} unit=0x{x}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), slot_index, guid });
+                fireSpellStr(SUB_SPELL_AURA_APPLIED, GUID_ZERO, "", dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type);
             }
         }
     }
@@ -1227,15 +1371,16 @@ fn auraDoseDetour(unit_obj: u32, _edx: u32, slot_index: u32, old_count_raw: u32)
 
                         if (guid != 0) {
                             const dst_str = guidToString(guid);
+                            const dst_name = wow.getNameByGUID(guid);
                             const aura_type: [*:0]const u8 = getAuraType(spell_id, slot_index);
                             const school = getSpellSchool(spell_id);
 
                             if (new_count > old_count) {
-                                log.fmt("SPELL_AURA_APPLIED_DOSE: spell={d} slot={d} count={d}\n", .{ spell_id, slot_index, new_count });
-                                fireSpellStrD(SUB_SPELL_AURA_APPLIED_DOSE, GUID_ZERO, dst_str, spell_id, school, aura_type, new_count);
+                                log.fmt("SPELL_AURA_APPLIED_DOSE: [{d}]{s} slot={d} count={d}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), slot_index, new_count });
+                                fireSpellStrD(SUB_SPELL_AURA_APPLIED_DOSE, GUID_ZERO, "", dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type, new_count);
                             } else {
-                                log.fmt("SPELL_AURA_REMOVED_DOSE: spell={d} slot={d} count={d}\n", .{ spell_id, slot_index, new_count });
-                                fireSpellStrD(SUB_SPELL_AURA_REMOVED_DOSE, GUID_ZERO, dst_str, spell_id, school, aura_type, new_count);
+                                log.fmt("SPELL_AURA_REMOVED_DOSE: [{d}]{s} slot={d} count={d}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), slot_index, new_count });
+                                fireSpellStrD(SUB_SPELL_AURA_REMOVED_DOSE, GUID_ZERO, "", dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type, new_count);
                             }
                         }
                     }
@@ -1268,10 +1413,11 @@ fn extraAttacksDetour(caster_ptr: u32, count: u32, spell_id: u32) callconv(hook.
 
         if (caster_guid != 0) {
             const src_str = guidToString(caster_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
             const school = getSpellSchool(spell_id);
-            log.fmt("SPELL_EXTRA_ATTACKS: spell={d} count={d}\n", .{ spell_id, count });
+            log.fmt("SPELL_EXTRA_ATTACKS: [{d}]{s} count={d}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), count });
             // _EXTRA_ATTACKS: spellId, spellSchool, amount
-            fireCombatLog(SUB_SPELL_EXTRA_ATTACKS, src_str, GUID_ZERO, spell_id, school, count, 0, 0, 0, 0);
+            fireSpellExtraAttacks(src_str, src_name, GUID_ZERO, "", spell_id, getSpellName(spell_id), school, count);
         }
     }
 
@@ -1301,6 +1447,8 @@ fn dispelDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32) callconv(hook.c
         if (caster_guid != 0 and target_guid != 0) {
             const src_str = guidToString(caster_guid);
             const dst_str = guidToString(target_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
             const extra_school = getSpellSchool(spell_id);
             // Determine aura type from spell DB for the dispelled aura
             const aura_type_str: [*:0]const u8 = blk: {
@@ -1312,7 +1460,7 @@ fn dispelDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32) callconv(hook.c
             };
             log.fmt("SPELL_DISPEL: dispelled={d}\n", .{spell_id});
             // _DISPEL: dispelSpellId(0 — unknown), school, extraSpellId(dispelled aura), extraSchool, auraType
-            fireSpellDispel(SUB_SPELL_DISPEL, src_str, dst_str, 0, 0, spell_id, extra_school, aura_type_str);
+            fireSpellDispel(SUB_SPELL_DISPEL, src_str, src_name, dst_str, dst_name, 0, "", 0, spell_id, getSpellName(spell_id), extra_school, aura_type_str);
         }
     }
 
@@ -1329,6 +1477,32 @@ fn dispelDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32) callconv(hook.c
 
 const SPELL_DB_RECORDS: u32 = 0xC0D788; // m_recordsById pointer
 const SPELL_DB_MAX_ID: u32 = 0xC0D78C; // m_maxId
+
+/// GetSpellNameById (0x6264B0): __fastcall(ECX=spellId) -> EAX=char*
+/// Returns localized spell name string, or null if invalid.
+const GET_SPELL_NAME: u32 = 0x6264B0;
+
+/// Locale index global at 0xC0E080 — 0 for English.
+const LOCALE_INDEX: u32 = 0xC0E080;
+
+var spell_name_debug_count: u32 = 0;
+
+fn getSpellName(spell_id: u32) [*:0]const u8 {
+    if (spell_id == 0) return "";
+    // SpellRec name at offset 0x1E0 + locale*4 (verified from SuperWoW: puVar3[locale + 0x78])
+    // 0x78 * 4 = 0x1E0. Locale index global at 0xC0E080.
+    const rec = getSpellRecord(spell_id) orelse return "";
+    const locale = hook.readMem(u32, LOCALE_INDEX);
+    const name_ptr = hook.readMem(u32, rec + 0x1E0 + locale * 4);
+    if (name_ptr == 0) return "";
+    // Debug: log first 5 lookups
+    if (spell_name_debug_count < 5) {
+        spell_name_debug_count += 1;
+        const name: [*:0]const u8 = @ptrFromInt(name_ptr);
+        log.fmt("[SPELLNAME] id={d} locale={d} -> 0x{x} \"{s}\"\n", .{ spell_id, locale, name_ptr, std.mem.span(name) });
+    }
+    return @ptrFromInt(name_ptr);
+}
 
 fn getSpellRecord(spell_id: u32) ?u32 {
     if (spell_id == 0) return null;
@@ -1370,6 +1544,41 @@ fn getUnitMaxPower(guid: u64, power_type: u32) ?u32 {
     return hook.readMem(u32, m_data + DESC_MAXPOWER_BASE + power_type * 4);
 }
 
+/// Read a unit's current health from descriptors.
+fn getUnitHealth(guid: u64) ?u32 {
+    const obj = wow.getObjectByGUID(guid);
+    if (obj == 0) return null;
+    const m_data = hook.readMem(u32, obj + 0x08);
+    if (m_data == 0) return null;
+    return hook.readMem(u32, m_data + DESC_HEALTH);
+}
+
+/// Read a unit's max health from descriptors.
+fn getUnitMaxHealth(guid: u64) ?u32 {
+    const obj = wow.getObjectByGUID(guid);
+    if (obj == 0) return null;
+    const m_data = hook.readMem(u32, obj + 0x08);
+    if (m_data == 0) return null;
+    return hook.readMem(u32, m_data + DESC_MAXHEALTH);
+}
+
+/// Compute overkill: how much damage exceeded target's remaining HP.
+/// Returns -1 (as u32 bitcast) if the target survives — WotLK convention.
+fn computeOverkill(target_guid: u64, damage: u32) u32 {
+    const hp = getUnitHealth(target_guid) orelse return @bitCast(@as(i32, -1));
+    if (damage >= hp) return damage - hp;
+    return @bitCast(@as(i32, -1));
+}
+
+/// Compute overheal: how much healing exceeded the target's health deficit.
+fn computeOverheal(target_guid: u64, heal_amount: u32) u32 {
+    const cur = getUnitHealth(target_guid) orelse return 0;
+    const max = getUnitMaxHealth(target_guid) orelse return 0;
+    const deficit = if (max > cur) max - cur else 0;
+    if (heal_amount > deficit) return heal_amount - deficit;
+    return 0;
+}
+
 /// Vanilla spell effect types for summon abilities.
 fn isSummonEffect(e: u32) bool {
     return e == 28 or e == 42 or e == 56 or
@@ -1394,6 +1603,21 @@ fn isDamageSplitSpell(spell_id: u32) bool {
         inline for (0..3) |i| {
             const aura = hook.readMem(u32, rec + 0x16C + @as(u32, @intCast(i)) * 4);
             if (aura == 81 or aura == 153 or aura == 193) return true;
+        }
+    }
+    return false;
+}
+
+/// Check if spell has SPELL_AURA_PERIODIC_LEECH (53) — health drain (Drain Life, Siphon Life).
+/// Vanilla server routes these through SendSpellNonMeleeDamageLog, not PERIODICAURALOG,
+/// so we reclassify them from SPELL_DAMAGE to SPELL_PERIODIC_LEECH in the damage hook.
+fn isPeriodicLeechSpell(spell_id: u32) bool {
+    const rec = getSpellRecord(spell_id) orelse return false;
+    inline for (0..3) |i| {
+        const effect = hook.readMem(u32, rec + 0xF4 + i * 4);
+        if (effect == 6 or effect == 27) { // APPLY_AURA or APPLY_AREA_AURA
+            const aura = hook.readMem(u32, rec + 0x16C + i * 4);
+            if (aura == 53) return true;
         }
     }
     return false;
@@ -1494,41 +1718,39 @@ fn spellEffectDetour(caster_ptr: u32, target_ptr: u32, spell_id: u32) callconv(h
 
             const is_summon = isSummonEffect(e0) or isSummonEffect(e1) or isSummonEffect(e2);
             const is_resurrect = isResurrectEffect(e0) or isResurrectEffect(e1) or isResurrectEffect(e2);
-            const is_energize = isEnergizeEffect(e0) or isEnergizeEffect(e1) or isEnergizeEffect(e2);
 
-            if (is_summon or is_resurrect or is_energize) {
+            if (is_summon or is_resurrect) {
                 const caster_lo = hook.readMem(u32, caster_ptr);
                 const caster_hi = hook.readMem(u32, caster_ptr + 4);
                 const caster_guid: u64 = @as(u64, caster_hi) << 32 | @as(u64, caster_lo);
 
                 if (caster_guid != 0) {
                     const src_str = guidToString(caster_guid);
+                    const src_name = wow.getNameByGUID(caster_guid);
                     const school = hook.readMem(u32, rec + 0x04);
 
                     // Target may be NULL for summons (SPELLLOGEXECUTE case 10 passes NULL)
                     var dst_str: [*:0]const u8 = GUID_ZERO;
+                    var dst_name: [*:0]const u8 = "";
                     if (target_ptr != 0) {
                         const target_lo = hook.readMem(u32, target_ptr);
                         const target_hi = hook.readMem(u32, target_ptr + 4);
                         const target_guid: u64 = @as(u64, target_hi) << 32 | @as(u64, target_lo);
                         if (target_guid != 0) {
                             dst_str = guidToString(target_guid);
+                            dst_name = wow.getNameByGUID(target_guid);
                         }
                     }
 
                     if (is_summon) {
-                        log.fmt("SPELL_SUMMON: spell={d}\n", .{spell_id});
-                        fireSpell(SUB_SPELL_SUMMON, src_str, dst_str, spell_id, school);
+                        log.fmt("SPELL_SUMMON: [{d}]{s}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)) });
+                        fireSpell(SUB_SPELL_SUMMON, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school);
                     }
                     if (is_resurrect) {
-                        log.fmt("SPELL_RESURRECT: spell={d}\n", .{spell_id});
-                        fireSpell(SUB_SPELL_RESURRECT, src_str, dst_str, spell_id, school);
+                        log.fmt("SPELL_RESURRECT: [{d}]{s}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)) });
+                        fireSpell(SUB_SPELL_RESURRECT, src_str, src_name, dst_str, dst_name, spell_id, getSpellName(spell_id), school);
                     }
-                    if (is_energize) {
-                        log.fmt("SPELL_ENERGIZE: spell={d}\n", .{spell_id});
-                        // _ENERGIZE: spellId, amount(0 — not available from SPELLLOGEXECUTE), powerType(0 — unknown)
-                        fireCombatLog(SUB_SPELL_ENERGIZE, src_str, dst_str, spell_id, 0, 0, 0, 0, 0, 0);
-                    }
+                    // SPELL_ENERGIZE now handled by dedicated ProcessStandardPowerGainMessage hook
                 }
             }
         }
@@ -1589,10 +1811,11 @@ fn auraDurationDetour(slot: u32, duration: u32) callconv(hook.cc.fastcall) void 
                     if (is_active) {
                         // Slot already has this aura — this is a refresh
                         const dst_str = guidToString(player_guid);
+                        const dst_name = wow.getNameByGUID(player_guid);
                         const aura_type = getAuraType(spell_id, slot);
                         const school = getSpellSchool(spell_id);
-                        log.fmt("SPELL_AURA_REFRESH: spell={d} slot={d}\n", .{ spell_id, slot });
-                        fireSpellStr(SUB_SPELL_AURA_REFRESH, GUID_ZERO, dst_str, spell_id, school, aura_type);
+                        log.fmt("SPELL_AURA_REFRESH: [{d}]{s} slot={d}\n", .{ spell_id, std.mem.span(getSpellName(spell_id)), slot });
+                        fireSpellStr(SUB_SPELL_AURA_REFRESH, GUID_ZERO, "", dst_str, dst_name, spell_id, getSpellName(spell_id), school, aura_type);
                     }
                 }
             }
@@ -1632,6 +1855,8 @@ fn dispelFailedDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*anyop
         if (caster_guid != 0 and target_guid != 0) {
             const src_str = guidToString(caster_guid);
             const dst_str = guidToString(target_guid);
+            const src_name = wow.getNameByGUID(caster_guid);
+            const dst_name = wow.getNameByGUID(target_guid);
 
             // Loop: read spell IDs until buffer exhausted (ReadPointerFromStream reads u32)
             var count: u32 = 0;
@@ -1641,10 +1866,10 @@ fn dispelFailedDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*anyop
                 if (spell_id.? == 0) break;
 
                 const school = getSpellSchool(spell_id.?);
-                log.fmt("SPELL_DISPEL_FAILED: spell={d} caster=0x{x} target=0x{x}\n", .{
-                    spell_id.?, caster_guid, target_guid,
+                log.fmt("SPELL_DISPEL_FAILED: [{d}]{s} caster=0x{x} target=0x{x}\n", .{
+                    spell_id.?, std.mem.span(getSpellName(spell_id.?)), caster_guid, target_guid,
                 });
-                fireSpell(SUB_SPELL_DISPEL_FAILED, src_str, dst_str, spell_id.?, school);
+                fireSpellInterrupt(SUB_SPELL_DISPEL_FAILED, src_str, src_name, dst_str, dst_name, 0, "", 0, spell_id.?, getSpellName(spell_id.?), school);
             }
         }
     }
@@ -1747,6 +1972,12 @@ pub fn installHooks() void {
         log.print("Hooked ProcessSpellDrainEffectMessage (DAMAGE_SHIELD)\n");
     }
 
+    if (energize_hook.attach(0x62CA00, &energizeDetour) != .ok) {
+        log.print("FAILED to hook ProcessStandardPowerGainMessage\n");
+    } else {
+        log.print("Hooked ProcessStandardPowerGainMessage (SPELL_ENERGIZE)\n");
+    }
+
     if (spell_interrupt_hook.attach(0x626A10, &spellInterruptDetour) != .ok) {
         log.print("FAILED to hook DisplaySpellInterruptMessage\n");
     } else {
@@ -1844,4 +2075,120 @@ pub fn removeHooks() void {
         mod_mutex.release(&g_mutex);
     }
     g_is_hook_owner = false;
+}
+
+// =============================================================================
+// Lua function: GetSpellInfo(spellId) — WotLK-compatible
+// Returns: name, rank, icon, castTime, minRange, maxRange, spellId
+//
+// SpellRec field offsets (dword indices from SuperWoW, byte offset = index * 4):
+//   Name:           [0x78 + locale] = byte 0x1E0 + locale*4
+//   Rank:           [0x81 + locale] = byte 0x204 + locale*4  (SpellNameSubtext)
+//   SpellIconID:    [0x8A]          = byte 0x228
+//   CastingTimeIdx: [0x55]          = byte 0x154
+//   RangeIdx:       [0x54]          = byte 0x150
+// =============================================================================
+
+/// SpellRec field offsets (byte offsets from record base)
+/// Verified from nampower game.hpp SpellRec struct + SuperWoW Ghidra analysis.
+const SPELL_CAST_TIME_IDX: u32 = 0x48; // CastingTimeIndex — indexes SpellCastTimes.dbc
+const SPELL_RANGE_IDX: u32 = 0x90; // rangeIndex — indexes SpellRange.dbc
+const SPELL_ICON_ID: u32 = 0x1D4; // SpellIconID — indexes SpellIcon.dbc
+const SPELL_NAME_BASE: u32 = 0x1E0; // SpellName[0] — + locale*4 for localized name
+const SPELL_RANK_BASE: u32 = 0x204; // SpellNameSubtext[0] — + locale*4 for rank string
+
+/// SpellIcon.dbc (verified: nampower + SuperWoW)
+/// Record: [0]=ID, [0x04]=texture_path_string_ptr
+const SPELL_ICON_RECORDS: u32 = 0xC0D7EC; // m_recordsById
+const SPELL_ICON_MAX_ID: u32 = 0xC0D7F0;
+
+/// SpellRange.dbc (verified: nampower offsets.hpp)
+/// Record: [0]=ID, [0x04]=minRange(f32), [0x08]=maxRange(f32), [0x0C]=flags, [0x10]=name[8 locales]
+const SPELL_RANGE_RECORDS: u32 = 0xC0D79C; // m_recordsById
+const SPELL_RANGE_MAX_ID: u32 = 0xC0D7A0;
+
+/// SpellCastTimes.dbc (verified: Ghidra analysis of Spell_C_GetCastTime 0x6E3340)
+/// Record: [0]=ID, [0x04]=baseCastTime(ms), [0x08]=castTimePerLevel, [0x0C]=minCastTime
+const CAST_TIMES_RECORDS: u32 = 0xC0D878; // m_recordsById
+const CAST_TIMES_MAX_ID: u32 = 0xC0D87C;
+
+fn readDbRecord(records_ptr_addr: u32, max_id_addr: u32, id: u32) ?u32 {
+    if (id == 0) return null;
+    const max_id = hook.readMem(u32, max_id_addr);
+    if (id > max_id) return null;
+    const records_ptr = hook.readMem(u32, records_ptr_addr);
+    if (records_ptr == 0) return null;
+    const rec = hook.readMem(u32, records_ptr + id * 4);
+    if (rec == 0) return null;
+    return rec;
+}
+
+fn readLocString(rec: u32, base_offset: u32) [*:0]const u8 {
+    const locale = hook.readMem(u32, LOCALE_INDEX);
+    const ptr = hook.readMem(u32, rec + base_offset + locale * 4);
+    if (ptr == 0) return "";
+    return @ptrFromInt(ptr);
+}
+
+/// GetSpellInfo(spellId) -> name, rank, icon, castTime, minRange, maxRange, spellId
+/// Matches WotLK API. Returns nil if spell doesn't exist.
+pub fn luaGetSpellInfo(L: usize) callconv(hook.cc.fastcall) u32 {
+    const state: lua.State = @ptrFromInt(L);
+    const nargs = lua.gettop(state);
+    if (nargs < 1) return 0;
+
+    const spell_id: u32 = @intFromFloat(lua.tonumber(state, 1));
+    const rec = getSpellRecord(spell_id) orelse {
+        // Invalid spell — return nil (WotLK behavior)
+        lua.pushnil(state);
+        return 1;
+    };
+
+    // 1. name
+    lua.pushstring(state, readLocString(rec, SPELL_NAME_BASE));
+
+    // 2. rank (SpellNameSubtext)
+    lua.pushstring(state, readLocString(rec, SPELL_RANK_BASE));
+
+    // 3. icon texture path — resolve SpellIconID through SpellIcon.dbc
+    const icon_id = hook.readMem(u32, rec + SPELL_ICON_ID);
+    if (readDbRecord(SPELL_ICON_RECORDS, SPELL_ICON_MAX_ID, icon_id)) |icon_rec| {
+        // SpellIcon.dbc record: [0]=ID, [1]=texture path string
+        const tex_ptr = hook.readMem(u32, icon_rec + 4);
+        if (tex_ptr != 0) {
+            lua.pushstring(state, @ptrFromInt(tex_ptr));
+        } else {
+            lua.pushnil(state);
+        }
+    } else {
+        lua.pushnil(state);
+    }
+
+    // 4. castTime (ms) — resolve CastingTimeIndex through SpellCastTimes.dbc
+    const cast_idx = hook.readMem(u32, rec + SPELL_CAST_TIME_IDX);
+    if (readDbRecord(CAST_TIMES_RECORDS, CAST_TIMES_MAX_ID, cast_idx)) |ct_rec| {
+        // SpellCastTimes.dbc record: [0]=ID, [1]=castTime (ms)
+        const cast_time = hook.readMem(u32, ct_rec + 4);
+        lua.pushnumber(state, @floatFromInt(cast_time));
+    } else {
+        lua.pushnumber(state, 0);
+    }
+
+    // 5. minRange, 6. maxRange — resolve RangeIndex through SpellRange.dbc
+    const range_idx = hook.readMem(u32, rec + SPELL_RANGE_IDX);
+    if (readDbRecord(SPELL_RANGE_RECORDS, SPELL_RANGE_MAX_ID, range_idx)) |range_rec| {
+        // SpellRange.dbc record: [0]=ID, [1]=minRange(float), [2]=maxRange(float)
+        const min_range: f32 = @bitCast(hook.readMem(u32, range_rec + 4));
+        const max_range: f32 = @bitCast(hook.readMem(u32, range_rec + 8));
+        lua.pushnumber(state, @floatCast(min_range));
+        lua.pushnumber(state, @floatCast(max_range));
+    } else {
+        lua.pushnumber(state, 0);
+        lua.pushnumber(state, 0);
+    }
+
+    // 7. spellId (echo back — matches WotLK)
+    lua.pushnumber(state, @floatFromInt(spell_id));
+
+    return 7; // 7 return values
 }

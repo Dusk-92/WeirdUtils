@@ -109,6 +109,9 @@ fn registerLuaFunctions() void {
     if (build_opts.transform44) {
         registerFunction("SetWeatherOverride", @intFromPtr(&transform44.luaSetWeatherOverride));
     }
+    if (build_opts.dpslog) {
+        registerFunction("GetSpellInfo", @intFromPtr(&dpslog.luaGetSpellInfo));
+    }
     if (build_opts.addonperf) {
         registerFunction("GetAddOnMemoryUsage", @intFromPtr(&addonperf.luaGetAddOnMemoryUsage));
         registerFunction("UpdateAddOnMemoryUsage", @intFromPtr(&addonperf.luaUpdateAddOnMemoryUsage));
