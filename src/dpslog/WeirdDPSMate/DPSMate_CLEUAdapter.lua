@@ -280,8 +280,14 @@ local FailDB = DPSMate.Parser.FailDB
 
 cleuHandler = function()
     if not CombatLogGetCurrentEventInfo then return end
+    -- Single call — positions differ by prefix type:
+    --   Swing:  p1=amount, p2=overkill, p3=school, ...
+    --   Spell:  p1=spellId, p2=spellName, p3=spellSchool, p4=amount, ...
+    --   Env:    p1=envType, p2=amount, ...
     local sub, srcGUID, srcName, srcFlags, srcRaidFlags,
-          dstGUID, dstName, dstFlags, dstRaidFlags = CombatLogGetCurrentEventInfo()
+          dstGUID, dstName, dstFlags, dstRaidFlags,
+          p1, p2, p3, p4, p5, p6, p7, p8, p9,
+          p10, p11, p12 = CombatLogGetCurrentEventInfo()
     if not sub then return end
 
     if not srcName or srcName == "" then srcName = "Unknown" end
@@ -290,13 +296,10 @@ cleuHandler = function()
     -- ========================================================================
     -- DAMAGE events
     -- ========================================================================
-    -- SWING_DAMAGE: (base 9), amount, overkill, school, resisted,
-    --   blocked, absorbed, critical, glancing, crushing
 
     if sub == "SWING_DAMAGE" then
-        local _, _, _, _, _, _, _, _, _,
-              amount, overkill, school, resisted, blocked, absorbed,
-              critical, glancing, crushing = CombatLogGetCurrentEventInfo()
+        local amount, absorbed = p1, p6
+        local critical, glancing, crushing = p7, p8, p9
         -- numbers always non-nil from CombatLogGetCurrentEventInfo
         local crit  = critical and 1 or 0
         local glanc = glancing and 1 or 0
@@ -314,8 +317,7 @@ cleuHandler = function()
         end
 
     elseif sub == "SWING_MISSED" then
-        local _, _, _, _, _, _, _, _, _,
-              missType = CombatLogGetCurrentEventInfo()
+        local missType = p1
         local miss   = (missType == "MISS") and 1 or 0
         local parry  = (missType == "PARRY") and 1 or 0
         local dodge  = (missType == "DODGE") and 1 or 0
@@ -334,11 +336,9 @@ cleuHandler = function()
 
     elseif sub == "SPELL_DAMAGE" or sub == "RANGE_DAMAGE" or sub == "SPELL_PERIODIC_DAMAGE"
         or sub == "DAMAGE_SHIELD" or sub == "DAMAGE_SPLIT" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              amount, overkill, school, resisted, blocked, absorbed,
-              critical, glancing, crushing = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName, spellSchool = p2, p3
+        local amount, absorbed = p4, p9
+        local critical, glancing, crushing = p10, p11, p12
         -- numbers always non-nil from CombatLogGetCurrentEventInfo
         local crit  = critical and 1 or 0
         local glanc = glancing and 1 or 0
@@ -362,10 +362,8 @@ cleuHandler = function()
 
     elseif sub == "SPELL_MISSED" or sub == "RANGE_MISSED"
         or sub == "SPELL_PERIODIC_MISSED" or sub == "DAMAGE_SHIELD_MISSED" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              missType = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName = p2
+        local missType = p4
         local miss   = (missType == "MISS") and 1 or 0
         local parry  = (missType == "PARRY") and 1 or 0
         local dodge  = (missType == "DODGE") and 1 or 0
@@ -382,8 +380,7 @@ cleuHandler = function()
         end
 
     elseif sub == "ENVIRONMENTAL_DAMAGE" then
-        local _, _, _, _, _, _, _, _, _,
-              envType, amount = CombatLogGetCurrentEventInfo()
+        local envType, amount = p1, p2
         DB:DamageTaken(dstName, envType or "Environment", 1, 0, 0, 0, 0, 0, amount, envType or "Environment", 0, 0)
         DB:DeathHistory(dstName, envType or "Environment", envType or "Environment", amount, 1, 0, "hit", 0)
 
@@ -392,9 +389,8 @@ cleuHandler = function()
     -- ========================================================================
 
     elseif sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              amount, overheal, absorbed, critical = CombatLogGetCurrentEventInfo()
+        local spellName = p2
+        local amount, overheal, absorbed, critical = p4, p5, p6, p7
         local crit = critical and 1 or 0
         local hit  = crit == 0 and 1 or 0
         local effective = amount - overheal
@@ -410,9 +406,7 @@ cleuHandler = function()
     -- ========================================================================
 
     elseif sub == "SPELL_AURA_APPLIED" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, auraType = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName, auraType = p2, p4
         if auraType == "DEBUFF" then
             DB:BuildBuffs(srcName, dstName, spellName, false)
             if Parser.CC[spellName] then
@@ -429,9 +423,7 @@ cleuHandler = function()
         end
 
     elseif sub == "SPELL_AURA_REMOVED" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, auraType = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName, auraType = p2, p4
         DB:DestroyBuffs(dstName, spellName)
         if auraType == "DEBUFF" then
             DB:RemoveActiveCC(dstName, spellName)
@@ -442,9 +434,7 @@ cleuHandler = function()
         end
 
     elseif sub == "SPELL_AURA_BROKEN_SPELL" or sub == "SPELL_AURA_BROKEN" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName = p2
         DB:RemoveActiveCC(dstName, spellName)
         if Parser.CC[spellName] then
             DB:CCBreaker(dstName, spellName, srcName)
@@ -455,9 +445,7 @@ cleuHandler = function()
     -- ========================================================================
 
     elseif sub == "SPELL_CAST_SUCCESS" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
+        local spellName = p2
         if Parser.Kicks and Parser.Kicks[spellName] then
             DB:RegisterPotentialKick(srcName, spellName, GT())
         end
@@ -470,19 +458,13 @@ cleuHandler = function()
     -- ========================================================================
 
     elseif sub == "SPELL_INTERRUPT" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              extraSpellId, extraSpellName = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
-        extraSpellName = extraSpellName or "Unknown"
+        local spellName = p2
+        local extraSpellName = p5
         DB:Kick(srcName, dstName, spellName, extraSpellName)
 
     elseif sub == "SPELL_DISPEL" then
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              extraSpellId, extraSpellName = CombatLogGetCurrentEventInfo()
-        spellName = spellName or "Unknown"
-        extraSpellName = extraSpellName or "Unknown"
+        local spellName = p2
+        local extraSpellName = p5
         if isGroupMember(srcName) then
             DB:Dispels(srcName, spellName, dstName, extraSpellName)
         end

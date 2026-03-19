@@ -206,7 +206,9 @@ local cleuHandler
 cleuHandler = function()
     if not CombatLogGetCurrentEventInfo then return end
     local sub, srcGUID, srcName, srcFlags, srcRaidFlags,
-          dstGUID, dstName, dstFlags, dstRaidFlags = CombatLogGetCurrentEventInfo()
+          dstGUID, dstName, dstFlags, dstRaidFlags,
+          p1, p2, p3, p4, p5, p6, p7, p8, p9,
+          p10, p11, p12 = CombatLogGetCurrentEventInfo()
     if not sub then return end
 
     if not srcName or srcName == "" then srcName = "Unknown" end
@@ -221,12 +223,10 @@ cleuHandler = function()
     if sub == "SWING_DAMAGE" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              amount, overkill, school, resisted, blocked, absorbed,
-              critical, glancing, crushing = CombatLogGetCurrentEventInfo()
-        glancing = glancing and 1 or 0
-        crushing = crushing and 1 or 0
-        local hitType  = critical and HIT_CRIT or HIT_NORMAL
+        local amount, resisted, blocked, absorbed = p1, p4, p5, p6
+        local glancing = p8 and 1 or 0
+        local crushing = p9 and 1 or 0
+        local hitType  = p7 and HIT_CRIT or HIT_NORMAL
 
         local data = GetDamageData(dir, HIT, hitType, DMG_PHYSICAL, amount, nil, name)
         applyPartials(data, resisted, blocked, absorbed, glancing, crushing)
@@ -240,8 +240,7 @@ cleuHandler = function()
     elseif sub == "SWING_MISSED" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _, missType = CombatLogGetCurrentEventInfo()
-        local action = missActionMap[missType] or MISS
+        local action = missActionMap[p1] or MISS
         local data = GetDamageData(dir, action, nil, nil, nil, nil, name)
         SendEvent(data)
 
@@ -256,13 +255,11 @@ cleuHandler = function()
         or sub == "DAMAGE_SPLIT" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              amount, overkill, school, resisted, blocked, absorbed,
-              critical, glancing, crushing = CombatLogGetCurrentEventInfo()
-        crushing = crushing and 1 or 0
-        local hitType   = critical and HIT_CRIT or HIT_NORMAL
-        local dmgType   = schoolToDamageType(school)
+        local spellName = p2
+        local amount, school, resisted, blocked, absorbed = p4, p6, p7, p8, p9
+        local crushing = p12 and 1 or 0
+        local hitType  = p10 and HIT_CRIT or HIT_NORMAL
+        local dmgType  = schoolToDamageType(school)
 
         local data = GetDamageData(dir, HIT, hitType, dmgType, amount, spellName, name)
         applyPartials(data, resisted, blocked, absorbed, 0, crushing)
@@ -271,11 +268,9 @@ cleuHandler = function()
     elseif sub == "SPELL_PERIODIC_DAMAGE" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              amount, overkill, school, resisted, blocked, absorbed = CombatLogGetCurrentEventInfo()
-        -- numbers always non-nil from CombatLogGetCurrentEventInfo
-        local dmgType   = schoolToDamageType(school)
+        local spellName = p2
+        local amount, school, resisted, absorbed = p4, p6, p7, p9
+        local dmgType = schoolToDamageType(school)
 
         local data = GetDamageData(dir, HIT, HIT_DOT, dmgType, amount, spellName, name)
         applyPartials(data, resisted, 0, absorbed, 0, 0)
@@ -291,8 +286,7 @@ cleuHandler = function()
         or sub == "SPELL_PERIODIC_MISSED" or sub == "DAMAGE_SHIELD_MISSED" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, missType = CombatLogGetCurrentEventInfo()
+        local spellName, missType = p2, p4
         local action = missActionMap[missType] or MISS
         local data = GetDamageData(dir, action, nil, nil, nil, spellName, name)
         SendEvent(data)
@@ -305,7 +299,7 @@ cleuHandler = function()
 
     elseif sub == "ENVIRONMENTAL_DAMAGE" then
         if dstName ~= playerName then return end
-        local _, _, _, _, _, _, _, _, _, envType, amount = CombatLogGetCurrentEventInfo()
+        local envType, amount = p1, p2
         local action = envActionMap[envType] or HIT
         local data = GetDamageData(INCOMING, action, HIT_NORMAL, DMG_PHYSICAL, amount, nil, envType or "Environment")
         SendEvent(data)
@@ -319,9 +313,8 @@ cleuHandler = function()
     elseif sub == "SPELL_HEAL" or sub == "SPELL_PERIODIC_HEAL" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool,
-              amount, overheal, absorbed, critical = CombatLogGetCurrentEventInfo()
+        local spellName = p2
+        local amount, overheal, critical = p4, p5, p7
         local isPeriodic = (sub == "SPELL_PERIODIC_HEAL")
 
         local healType
@@ -352,9 +345,8 @@ cleuHandler = function()
 
     elseif sub == "SPELL_ENERGIZE" or sub == "SPELL_PERIODIC_ENERGIZE" then
         if dstName ~= playerName then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, amount, powerType = CombatLogGetCurrentEventInfo()
-        local powerName  = powerTypeNames[powerType] or "Mana"
+        local spellName, amount, powerType = p2, p4, p5
+        local powerName = powerTypeNames[powerType] or "Mana"
         local data = GetNotifData(NOTIF_POWER_GAIN, amount .. " " .. powerName, spellName)
         SendEvent(data)
 
@@ -366,8 +358,7 @@ cleuHandler = function()
 
     elseif sub == "SPELL_PERIODIC_DRAIN" then
         if dstName ~= playerName then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, amount, powerType = CombatLogGetCurrentEventInfo()
+        local spellName, amount, powerType = p2, p4, p5
         local powerName = powerTypeNames[powerType] or "Mana"
         local data = GetNotifData(NOTIF_POWER_LOSS, amount .. " " .. powerName, spellName)
         SendEvent(data)
@@ -375,8 +366,7 @@ cleuHandler = function()
     elseif sub == "SPELL_PERIODIC_LEECH" then
         local dir, name = getDirection(srcName, dstName)
         if not dir then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, amount = CombatLogGetCurrentEventInfo()
+        local spellName, spellSchool, amount = p2, p3, p4
         local dmgType = schoolToDamageType(spellSchool)
         local data = GetDamageData(dir, HIT, HIT_DOT, dmgType, amount, spellName, name)
         SendEvent(data)
@@ -389,8 +379,7 @@ cleuHandler = function()
 
     elseif sub == "SPELL_AURA_APPLIED" then
         if dstName ~= playerName then return end
-        local _, _, _, _, _, _, _, _, _,
-              spellId, spellName, spellSchool, auraType = CombatLogGetCurrentEventInfo()
+        local spellName, auraType = p2, p4
         if auraType == "DEBUFF" then
             local data = GetNotifData(NOTIF_DEBUFF, nil, spellName)
             SendEvent(data)
@@ -401,7 +390,7 @@ cleuHandler = function()
 
     elseif sub == "SPELL_AURA_REMOVED" then
         if dstName ~= playerName then return end
-        local _, _, _, _, _, _, _, _, _, spellId, spellName = CombatLogGetCurrentEventInfo()
+        local spellName = p2
         local data = GetNotifData(NOTIF_BUFF_FADE, nil, spellName)
         SendEvent(data)
 
@@ -447,27 +436,13 @@ end
 -- Patch MikCEH.OnEvent so the XML OnEvent handler calls the measured version
 MikCEH.OnEvent = measuredOrigOnEvent
 
-local cleuEventsSkipped = 0
-
 local function measuredCLEUHandler()
     if profiling and profCurrent == profCLEU then
-        -- Quick relevance check: is player or pet involved?
-        local _, _, srcName, _, _, _, dstName = CombatLogGetCurrentEventInfo()
-        srcName = srcName or ""
-        dstName = dstName or ""
-        local relevant = (srcName == playerName or dstName == playerName
-            or (petName and (srcName == petName or dstName == petName)))
-
         local before = debugprofilestop()
         cleuHandler()
         local after = debugprofilestop()
-
-        if relevant then
-            profCLEU.totalMs = profCLEU.totalMs + (after - before)
-            profCLEU.events = profCLEU.events + 1
-        else
-            cleuEventsSkipped = cleuEventsSkipped + 1
-        end
+        profCLEU.totalMs = profCLEU.totalMs + (after - before)
+        profCLEU.events = profCLEU.events + 1
     else
         cleuHandler()
     end
@@ -496,14 +471,9 @@ local function profReport(label, tbl)
         lastOrigAvg = avgUs
     end
 
-    local skipMsg = ""
-    if label == "CLEU" then
-        skipMsg = string.format(" (%d skipped)", cleuEventsSkipped)
-        cleuEventsSkipped = 0
-    end
     DEFAULT_CHAT_FRAME:AddMessage(string.format(
-        "|cff00ff00[WSBT %s]|r %d events%s, %.1fms total, %.1f us/event, %+.1f KB gc",
-        label, tbl.events, skipMsg, totalMs, avgUs, gcDelta))
+        "|cff00ff00[WSBT %s]|r %d events, %.1fms total, %.1f us/event, %+.1f KB gc",
+        label, tbl.events, totalMs, avgUs, gcDelta))
 
     if lastCLEUAvg and lastOrigAvg and lastOrigAvg > 0 then
         local pct = ((lastCLEUAvg - lastOrigAvg) / lastOrigAvg) * 100
