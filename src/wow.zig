@@ -203,7 +203,10 @@ pub fn getObjectByGUID(guid: u64) u32 {
     if (guid == 0) return 0;
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
+    const result = hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
+    // Guard: hash table can return stale/invalid pointers for destroyed objects
+    if (result != 0 and !isValidPtr(result)) return 0;
+    return result;
 }
 
 /// Split-GUID variant for callers that already have lo/hi parts.
@@ -224,18 +227,57 @@ pub fn getLocalPlayer() u32 {
     return getObjectByGUID(guid);
 }
 
-/// Resolve a GUID to a unit/NPC name via the name cache.
-/// Returns the name string or "" if not cached.
+/// Creature cache at address 0xC0E138 (not a pointer — the object IS at this address).
+const CREATURE_CACHE: u32 = 0xC0E138;
+
+/// Cache_RequestData — generic cache lookup.
+/// __thiscall(ECX=cacheObj, stack: entryId, guidPtr, callback, callbackArg, flags)
+/// Returns pointer to cache row or NULL.
+const FN_CACHE_REQUEST: usize = 0x566240;
+
+/// Resolve a GUID to a unit/NPC name.
+/// Players: uses the player name cache (keyed by GUID).
+/// Creatures: uses the creature cache via Cache_RequestData (keyed by entry ID from GUID).
+/// Both caches are safe to call during packet/update processing — no object manager access.
 pub fn getNameByGUID(guid: u64) [*:0]const u8 {
     if (guid == 0) return "";
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
-    var name_buf: [2]u32 = .{ 0, 0 };
-    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32, o.FN_NAME_CACHE_LOOKUP, .{
-        o.NAME_CACHE_OBJ, lo, hi, @intFromPtr(&name_buf), 0, 0, 0,
-    });
-    if (result != 0) {
-        return @ptrFromInt(result);
+
+    // Check GUID type — high bytes distinguish player vs creature
+    const guid_type: u32 = hi & 0xF0F00000;
+    if (guid_type == 0) {
+        // Player GUID — use player name cache (RetrieveNPCDataFromCache)
+        var name_buf: [2]u32 = .{ 0, 0 };
+        const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32, o.FN_NAME_CACHE_LOOKUP, .{
+            o.NAME_CACHE_OBJ, lo, hi, @intFromPtr(&name_buf), 0, 0, 0,
+        });
+        if (result != 0) {
+            return @ptrFromInt(result);
+        }
+    } else {
+        // Creature/pet GUID — resolve via object (safe during lazy resolution)
+        const obj = getObjectByGUID(guid);
+        if (obj != 0) {
+            const name = getNameByObject(obj);
+            if (@intFromPtr(name) != 0 and name[0] != 0) return name;
+        }
+    }
+    return "";
+}
+
+/// CGUnit_C::GetNameFromCacheOrUnknown — __thiscall(ECX=unitObj, stack=outPtr), returns char*.
+const FN_UNIT_GET_NAME: usize = 0x609210;
+
+/// Resolve a GUID to a unit name via the unit object. Only safe to call when the
+/// object manager is in a stable state (NOT during SMSG_UPDATE_OBJECT processing).
+pub fn getNameByObject(obj: u32) [*:0]const u8 {
+    if (obj == 0 or !isValidPtr(obj)) return "";
+    const desc = hook.readMem(u32, obj + 8);
+    if (desc == 0 or !isValidPtr(desc)) return "";
+    const name_ptr = hook.call(fn (u32, u32) callconv(hook.cc.thiscall) u32, FN_UNIT_GET_NAME, .{ obj, 0 });
+    if (name_ptr != 0 and isValidPtr(name_ptr)) {
+        return @ptrFromInt(name_ptr);
     }
     return "";
 }
