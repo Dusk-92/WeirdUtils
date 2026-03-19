@@ -148,6 +148,46 @@ fn clearAuraCaster(unit: u64, slot: u32) void {
     }
 }
 
+/// Scan a unit's aura slots for a damage shield spell matching the given school.
+/// Returns the spell ID or 0 if not found.
+/// SPELL_AURA_DAMAGE_SHIELD = 15 in EffectApplyAuraName.
+const AURA_DAMAGE_SHIELD: u32 = 15;
+const EFFECT_APPLY_AURA_NAME_BASE: u32 = 0x16C; // EffectApplyAuraName[0] in SpellRec
+
+fn findDamageShieldSpell(attacker_guid: u64, school: u32) u32 {
+    // Need the attacker's object to read aura descriptors.
+    // This runs during packet handler processing (not aura callbacks),
+    // but name resolution is deferred. We can safely look up the object here
+    // since this is a table-swapped handler (object manager is stable).
+    const obj = wow.getObjectByGUID(attacker_guid);
+    if (obj == 0) return 0;
+    const desc = wow.getDescriptor(obj);
+    if (desc == 0) return 0;
+
+    // UNIT_FIELD_AURA: 48 spell IDs at descriptor offset 0xA4 (index 0x29 from OBJECT_END=0x06)
+    const AURA_BASE: u32 = 0xA4;
+    var slot: u32 = 0;
+    while (slot < 48) : (slot += 1) {
+        const spell_id = hook.readMem(u32, desc + AURA_BASE + slot * 4);
+        if (spell_id == 0) continue;
+
+        // Check if this spell has a DAMAGE_SHIELD aura effect matching the school
+        if (getSpellRecord(spell_id)) |rec| {
+            const spell_school = hook.readMem(u32, rec + 0x04); // SpellRec.School
+            // School match: packet school should match the spell's school
+            if (spell_school & school != 0 or spell_school == school) {
+                // Check EffectApplyAuraName[0..2] for DAMAGE_SHIELD (15)
+                var eff: u32 = 0;
+                while (eff < 3) : (eff += 1) {
+                    const aura_name = hook.readMem(u32, rec + EFFECT_APPLY_AURA_NAME_BASE + eff * 4);
+                    if (aura_name == AURA_DAMAGE_SHIELD) return spell_id;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 /// SpellRec AuraInterruptFlags offset and damage-break bits.
 const SPELL_AURA_INTERRUPT_FLAGS_OFFSET: u32 = 0x58;
 const AURA_INTERRUPT_FLAG_DAMAGE: u32 = 0x02;
@@ -663,12 +703,18 @@ fn boolToLua(val: u32) u32 {
 // and spell lookups happen lazily in luaCombatLogGetCurrentEventInfo() when
 // addons request the data — at which point the object manager is stable.
 
-const CLEUArgType = enum { str, num, bool_val, nil, guid, spell_id };
+const CLEUArgType = enum { str, num, bool_val, nil, guid, spell_id, damage_shield_spell };
+
+const DamageShieldKey = struct {
+    attacker_guid: u64,
+    school: u32,
+};
 
 const CLEUArg = union {
     str: [*:0]const u8,
     num: u32,
-    guid: u64, // resolved to GUID string + name + flags + raidFlags (4 pushes)
+    guid: u64,
+    ds_key: DamageShieldKey,
     nil: void,
 };
 
@@ -720,6 +766,15 @@ fn cleuGuid(guid: u64) void {
 fn cleuSpellId(id: u32) void {
     if (g_cleu_count >= MAX_CLEU_ARGS) return;
     g_cleu_args[g_cleu_count] = .{ .arg = .{ .num = id }, .typ = .spell_id };
+    g_cleu_count += 1;
+}
+
+/// Store a damage shield spell lookup key. At request time, scans attacker's
+/// auras for a DAMAGE_SHIELD effect matching the school, then pushes:
+/// spellId, spellName, spellSchool (3 values)
+fn cleuDamageShieldSpell(attacker_guid: u64, school: u32) void {
+    if (g_cleu_count >= MAX_CLEU_ARGS) return;
+    g_cleu_args[g_cleu_count] = .{ .arg = .{ .ds_key = .{ .attacker_guid = attacker_guid, .school = school } }, .typ = .damage_shield_spell };
     g_cleu_count += 1;
 }
 
@@ -781,6 +836,15 @@ pub fn luaCombatLogGetCurrentEventInfo(L: usize) callconv(hook.cc.fastcall) u32 
                 lua.pushnumber(state, @floatFromInt(id));
                 lua.pushstring(state, getSpellName(id));
                 lua.pushnumber(state, @floatFromInt(getSpellSchool(id)));
+                push_count += 3;
+            },
+            .damage_shield_spell => {
+                // Deferred damage shield: scan attacker auras, push spellId, spellName, spellSchool
+                const key = entry.arg.ds_key;
+                const id = findDamageShieldSpell(key.attacker_guid, key.school);
+                lua.pushnumber(state, @floatFromInt(id));
+                lua.pushstring(state, getSpellName(id));
+                lua.pushnumber(state, @floatFromInt(if (id != 0) getSpellSchool(id) else key.school));
                 push_count += 3;
             },
         }
@@ -1463,9 +1527,12 @@ fn damageShieldDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.
         victim_guid.? != 0 and attacker_guid.? != 0)
     {
         const overkill = computeOverkill(victim_guid.?, damage.?);
-        log.fmt("DAMAGE_SHIELD: dmg={d} school={d}\n", .{ damage.?, school.? });
-        // No spellId in SMSG_SPELLDAMAGESHIELD packet — pass 0
-        fireSpellDamage(SUB_DAMAGE_SHIELD, attacker_guid.?, victim_guid.?, 0, damage.?, overkill, school.?, 0, 0, 0, 0, 0, 0);
+        // Build CLEU buffer directly — spell prefix is deferred via damage_shield_spell
+        cleuBase(SUB_DAMAGE_SHIELD, attacker_guid.?, victim_guid.?);
+        cleuDamageShieldSpell(victim_guid.?, school.?);
+        cleuNum(damage.?); cleuNum(overkill); cleuNum(school.?); cleuNum(0);
+        cleuNum(0); cleuNum(0); cleuBool(0); cleuBool(0); cleuBool(0);
+        signalEvent();
     }
 
     return callOriginalHandler(0x24F, unk, opcode, unk2, cds);

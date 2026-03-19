@@ -46,112 +46,110 @@ local function displayName(name, guid)
 end
 
 -- ============================================================================
--- Arg position constants -- WotLK CLEU parity
+-- Arg position constants -- CombatLogGetCurrentEventInfo() layout
 -- ============================================================================
 
--- Base: arg1=subevent, arg2=srcGUID, arg3=srcName, arg4=dstGUID, arg5=dstName
--- Spell prefix events: arg6=spellId, arg7=spellName, arg8=spellSchool
--- Suffix starts at arg9 for spell-prefix events
--- Swing events: suffix starts at arg6 (no prefix)
--- Env events: arg6=envType, suffix starts at arg7
-
--- _DAMAGE suffix (9 fields): amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
--- Spell damage: arg6-8=prefix, arg9-17=suffix
--- Swing damage: arg6-14=suffix
--- Env damage: arg6=envType, arg7-15=suffix
-
+-- CombatLogGetCurrentEventInfo() returns:
+--   sub, srcGUID, srcName, srcFlags, srcRaidFlags,
+--   dstGUID, dstName, dstFlags, dstRaidFlags, p1, p2, p3, ...
+--
+-- p1.. positions (after 9 base fields):
+-- Spell prefix: p1=spellId, p2=spellName, p3=spellSchool, p4+=suffix
+-- Swing prefix: (none) p1+=suffix
+-- Env prefix: p1=envType, p2+=suffix
+--
+-- _DAMAGE suffix: amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
+--   Spell: p4-p12    Swing: p1-p9    Env: p2-p10
 -- _MISSED suffix: missType, amountMissed
--- Spell missed: arg6-8=prefix, arg9=missType, arg10=amountMissed
--- Swing missed: arg6=missType, arg7=amountMissed
-
+--   Spell: p4-p5    Swing: p1-p2
 -- _HEAL suffix: amount, overheal, absorbed, critical
--- arg6-8=prefix, arg9-12=suffix
-
+--   Spell: p4-p7
 -- _ENERGIZE suffix: amount, powerType
--- arg6-8=prefix, arg9-10=suffix
-
+--   Spell: p4-p5
 -- _LEECH/_DRAIN suffix: amount, powerType, extraAmount
--- arg6-8=prefix, arg9-11=suffix
-
+--   Spell: p4-p6
 -- _EXTRA_ATTACKS suffix: amount
--- arg6-8=prefix, arg9=amount
-
+--   Spell: p4
 -- _INTERRUPT/_DISPEL_FAILED suffix: extraSpellId, extraSpellName, extraSchool
--- arg6-8=prefix, arg9-11=suffix
-
--- _DISPEL/_STOLEN/_AURA_BROKEN_SPELL suffix: extraSpellId, extraSpellName, extraSchool, auraType
--- arg6-8=prefix, arg9-12=suffix
-
+--   Spell: p4-p6
+-- _DISPEL/_AURA_BROKEN_SPELL suffix: extraSpellId, extraSpellName, extraSchool, auraType
+--   Spell: p4-p7
 -- _AURA_APPLIED/REMOVED/REFRESH/BROKEN: auraType
--- arg6-8=prefix, arg9=auraType
-
+--   Spell: p4
 -- _AURA_DOSE: auraType, amount
--- arg6-8=prefix, arg9=auraType, arg10=amount
-
+--   Spell: p4-p5
 -- _CAST_FAILED: failedType
--- arg6-8=prefix, arg9=failedType
+--   Spell: p4
 
 -- ============================================================================
 -- Subevent definitions -- variant checklist
 -- ============================================================================
 
 -- { displayName, subevent, [variantField], [variantValue] }
+-- Variant field indices are positions in the full CombatLogGetCurrentEventInfo() return:
+-- 1=sub, 2=srcGUID, 3=srcName, 4=srcFlags, 5=srcRaidFlags,
+-- 6=dstGUID, 7=dstName, 8=dstFlags, 9=dstRaidFlags,
+-- 10=p1, 11=p2, 12=p3, 13=p4, 14=p5, 15=p6, 16=p7, 17=p8, 18=p9, ...
+-- Spell prefix: p1(10)=spellId, p2(11)=spellName, p3(12)=spellSchool
+-- Swing prefix: (none), p1(10) is first suffix field
+-- Env prefix: p1(10)=envType
+
 local SUBEVENTS = {
-    -- Damage (spell prefix: arg9=amount ... arg15=critical, arg16=glancing, arg17=crushing)
+    -- Spell damage: p10(19)=critical
     { "SPELL_DAMAGE",            "SPELL_DAMAGE" },
-    { "SPELL_DAMAGE (crit)",     "SPELL_DAMAGE",          15, 1 },
+    { "SPELL_DAMAGE (crit)",     "SPELL_DAMAGE",          19 },  -- p10=critical (truthy)
     { "RANGE_DAMAGE",            "RANGE_DAMAGE" },
-    { "RANGE_DAMAGE (crit)",     "RANGE_DAMAGE",          15, 1 },
+    { "RANGE_DAMAGE (crit)",     "RANGE_DAMAGE",          19 },
     { "SPELL_PERIODIC_DAMAGE",   "SPELL_PERIODIC_DAMAGE" },
     { "DAMAGE_SHIELD",           "DAMAGE_SHIELD" },
     { "DAMAGE_SPLIT",            "DAMAGE_SPLIT" },
-    -- Swing damage: arg6=amount ... arg12=critical, arg13=glancing, arg14=crushing
+    -- Swing damage: p7(16)=critical, p8(17)=glancing, p9(18)=crushing
     { "SWING_DAMAGE",            "SWING_DAMAGE" },
-    { "SWING_DAMAGE (crit)",     "SWING_DAMAGE",          12, 1 },
-    { "SWING_DAMAGE (glancing)", "SWING_DAMAGE",          13, 1 },
-    { "SWING_DAMAGE (crushing)", "SWING_DAMAGE",          14, 1 },
-    -- Env damage: arg6=envType, arg7=amount ... arg15=crushing
-    { "ENVIRONMENTAL (DROWNING)",  "ENVIRONMENTAL_DAMAGE", 6, "DROWNING" },
-    { "ENVIRONMENTAL (FALLING)",   "ENVIRONMENTAL_DAMAGE", 6, "FALLING" },
-    { "ENVIRONMENTAL (LAVA)",      "ENVIRONMENTAL_DAMAGE", 6, "LAVA" },
-    { "ENVIRONMENTAL (SLIME)",     "ENVIRONMENTAL_DAMAGE", 6, "SLIME" },
-    { "ENVIRONMENTAL (FIRE)",      "ENVIRONMENTAL_DAMAGE", 6, "FIRE" },
-    { "ENVIRONMENTAL (EXHAUSTED)", "ENVIRONMENTAL_DAMAGE", 6, "EXHAUSTED" }, -- twow: no fatigue
-    -- Misses -- swing: arg6=missType
-    { "SWING_MISSED (MISS)",     "SWING_MISSED",    6, "MISS" },
-    { "SWING_MISSED (DODGE)",    "SWING_MISSED",    6, "DODGE" },
-    { "SWING_MISSED (PARRY)",    "SWING_MISSED",    6, "PARRY" },
-    { "SWING_MISSED (BLOCK)",    "SWING_MISSED",    6, "BLOCK" },
-    { "SWING_MISSED (EVADE)",    "SWING_MISSED",    6, "EVADE" },
-    { "SWING_MISSED (IMMUNE)",   "SWING_MISSED",    6, "IMMUNE" },
-    { "SWING_MISSED (RESIST)",   "SWING_MISSED",    6, "RESIST" },
-    { "SWING_MISSED (ABSORB)",   "SWING_MISSED",    6, "ABSORB" },
-    -- Misses -- spell: arg9=missType (after prefix)
-    { "SPELL_MISSED (MISS)",     "SPELL_MISSED",    9, "MISS" },
-    { "SPELL_MISSED (DODGE)",    "SPELL_MISSED",    9, "DODGE" },
-    { "SPELL_MISSED (PARRY)",    "SPELL_MISSED",    9, "PARRY" },
-    { "SPELL_MISSED (IMMUNE)",   "SPELL_MISSED",    9, "IMMUNE" },
-    { "SPELL_MISSED (RESIST)",   "SPELL_MISSED",    9, "RESIST" },
-    { "SPELL_MISSED (ABSORB)",   "SPELL_MISSED",    9, "ABSORB" },
-    { "SPELL_MISSED (DEFLECT)",  "SPELL_MISSED",    9, "DEFLECT" }, -- dead in vanilla
-    { "SPELL_MISSED (REFLECT)",  "SPELL_MISSED",    9, "REFLECT" },
+    { "SWING_DAMAGE (crit)",     "SWING_DAMAGE",          16 },
+    { "SWING_DAMAGE (glancing)", "SWING_DAMAGE",          17 },
+    { "SWING_DAMAGE (crushing)", "SWING_DAMAGE",          18 },
+    -- Env damage: p1(10)=envType
+    { "ENVIRONMENTAL (DROWNING)",  "ENVIRONMENTAL_DAMAGE", 10, "DROWNING" },
+    { "ENVIRONMENTAL (FALLING)",   "ENVIRONMENTAL_DAMAGE", 10, "FALLING" },
+    { "ENVIRONMENTAL (LAVA)",      "ENVIRONMENTAL_DAMAGE", 10, "LAVA" },
+    { "ENVIRONMENTAL (SLIME)",     "ENVIRONMENTAL_DAMAGE", 10, "SLIME" },
+    { "ENVIRONMENTAL (FIRE)",      "ENVIRONMENTAL_DAMAGE", 10, "FIRE" },
+    { "ENVIRONMENTAL (EXHAUSTED)", "ENVIRONMENTAL_DAMAGE", 10, "EXHAUSTED" },
+    -- Swing missed: p1(10)=missType
+    { "SWING_MISSED (MISS)",     "SWING_MISSED",    10, "MISS" },
+    { "SWING_MISSED (DODGE)",    "SWING_MISSED",    10, "DODGE" },
+    { "SWING_MISSED (PARRY)",    "SWING_MISSED",    10, "PARRY" },
+    { "SWING_MISSED (BLOCK)",    "SWING_MISSED",    10, "BLOCK" },
+    { "SWING_MISSED (EVADE)",    "SWING_MISSED",    10, "EVADE" },
+    { "SWING_MISSED (IMMUNE)",   "SWING_MISSED",    10, "IMMUNE" },
+    { "SWING_MISSED (RESIST)",   "SWING_MISSED",    10, "RESIST" },
+    { "SWING_MISSED (ABSORB)",   "SWING_MISSED",    10, "ABSORB" },
+    -- Spell missed: p4(13)=missType
+    { "SPELL_MISSED (MISS)",     "SPELL_MISSED",    13, "MISS" },
+    { "SPELL_MISSED (DODGE)",    "SPELL_MISSED",    13, "DODGE" },
+    { "SPELL_MISSED (PARRY)",    "SPELL_MISSED",    13, "PARRY" },
+    { "SPELL_MISSED (IMMUNE)",   "SPELL_MISSED",    13, "IMMUNE" },
+    { "SPELL_MISSED (RESIST)",   "SPELL_MISSED",    13, "RESIST" },
+    { "SPELL_MISSED (ABSORB)",   "SPELL_MISSED",    13, "ABSORB" },
+    { "SPELL_MISSED (DEFLECT)",  "SPELL_MISSED",    13, "DEFLECT" },
+    { "SPELL_MISSED (REFLECT)",  "SPELL_MISSED",    13, "REFLECT" },
     { "RANGE_MISSED",            "RANGE_MISSED" },
     { "SPELL_PERIODIC_MISSED",   "SPELL_PERIODIC_MISSED" },
     { "DAMAGE_SHIELD_MISSED",    "DAMAGE_SHIELD_MISSED" },
-    -- Heals: arg9=amount, arg10=overheal, arg11=absorbed, arg12=critical
+    -- Heals: p7(16)=critical
     { "SPELL_HEAL",              "SPELL_HEAL" },
-    { "SPELL_HEAL (crit)",       "SPELL_HEAL",      12, 1 },
+    { "SPELL_HEAL (crit)",       "SPELL_HEAL",      16 },
     { "SPELL_PERIODIC_HEAL",     "SPELL_PERIODIC_HEAL" },
-    -- Power: arg9=amount, arg10=powerType
+    -- Power
     { "SPELL_ENERGIZE",          "SPELL_ENERGIZE" },
     { "SPELL_PERIODIC_ENERGIZE", "SPELL_PERIODIC_ENERGIZE" },
     { "SPELL_PERIODIC_DRAIN",    "SPELL_PERIODIC_DRAIN" },
     { "SPELL_PERIODIC_LEECH",    "SPELL_PERIODIC_LEECH" },
-    -- Auras: arg9=auraType
-    { "SPELL_AURA_APPLIED (BUFF)",   "SPELL_AURA_APPLIED",  9, "BUFF" },
-    { "SPELL_AURA_APPLIED (DEBUFF)", "SPELL_AURA_APPLIED",  9, "DEBUFF" },
-    { "SPELL_AURA_REMOVED (BUFF)",   "SPELL_AURA_REMOVED",  9, "BUFF" },
-    { "SPELL_AURA_REMOVED (DEBUFF)", "SPELL_AURA_REMOVED",  9, "DEBUFF" },
+    -- Auras: p4(13)=auraType
+    { "SPELL_AURA_APPLIED (BUFF)",   "SPELL_AURA_APPLIED",  13, "BUFF" },
+    { "SPELL_AURA_APPLIED (DEBUFF)", "SPELL_AURA_APPLIED",  13, "DEBUFF" },
+    { "SPELL_AURA_REMOVED (BUFF)",   "SPELL_AURA_REMOVED",  13, "BUFF" },
+    { "SPELL_AURA_REMOVED (DEBUFF)", "SPELL_AURA_REMOVED",  13, "DEBUFF" },
     { "SPELL_AURA_APPLIED_DOSE",     "SPELL_AURA_APPLIED_DOSE" },
     { "SPELL_AURA_REMOVED_DOSE",     "SPELL_AURA_REMOVED_DOSE" },
     { "SPELL_AURA_REFRESH",          "SPELL_AURA_REFRESH" },
@@ -193,118 +191,108 @@ local seenCount = 0
 -- ============================================================================
 -- Arg formatters (summary string for tracker display)
 -- ============================================================================
--- Formatters receive args starting from arg6 (after base: sub, srcGUID, srcName, dstGUID, dstName)
+-- Formatters receive p1..p12 (fields after the 9-field base from CombatLogGetCurrentEventInfo)
 
--- Spell-prefix damage: spellId, spellName, spellSchool, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
-local function fmtSpellDmg(spellId, spellName, spellSchool, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing)
-    local c = (critical == 1) and " CRIT" or ""
-    local ok = (overkill and overkill >= 0) and format(" OK=%s", s(overkill)) or ""
-    local g = (glancing == 1) and " GLANC" or ""
-    local cr = (crushing == 1) and " CRUSH" or ""
-    return format("[%s] %s amt=%s %s res=%s blk=%s abs=%s%s%s%s%s",
-        s(spellId), s(spellName), s(amount), schoolName(school or 0), s(resisted), s(blocked), s(absorbed), c, ok, g, cr)
-end
-
--- Swing damage: amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
-local function fmtSwingDmg(amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing)
-    local c = (critical == 1) and " CRIT" or ""
-    local ok = (overkill and overkill >= 0) and format(" OK=%s", s(overkill)) or ""
-    local g = (glancing == 1) and " GLANC" or ""
-    local cr = (crushing == 1) and " CRUSH" or ""
-    return format("amt=%s %s res=%s blk=%s abs=%s%s%s%s%s",
-        s(amount), schoolName(school or 0), s(resisted), s(blocked), s(absorbed), c, ok, g, cr)
-end
-
--- Spell prefix helper
 local function spellPrefix(spellId, spellName, spellSchool)
     return format("[%s] %s %s", s(spellId), s(spellName), schoolName(spellSchool or 0))
 end
 
+local function fmtBool(v) return v and "Y" or "" end
+
 local argFormatters = {}
 
--- Spell-prefix damage (args start at a6=spellId)
-argFormatters["SPELL_DAMAGE"]          = function(...) return fmtSpellDmg(arg[1],arg[2],arg[3],arg[4],arg[5],arg[6],arg[7],arg[8],arg[9],arg[10],arg[11],arg[12]) end
+-- Spell-prefix damage: p1=spellId, p2=spellName, p3=spellSchool, p4=amount, p5=overkill, p6=school, p7=resisted, p8=blocked, p9=absorbed, p10=critical, p11=glancing, p12=crushing
+argFormatters["SPELL_DAMAGE"] = function(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12)
+    local ok = (p5 and p5 >= 0) and format(" OK=%s", s(p5)) or ""
+    return format("%s amt=%s %s res=%s blk=%s abs=%s%s%s%s%s",
+        spellPrefix(p1,p2,p3), s(p4), schoolName(p6 or 0), s(p7), s(p8), s(p9),
+        p10 and " CRIT" or "", ok, p11 and " GLANC" or "", p12 and " CRUSH" or "")
+end
 argFormatters["RANGE_DAMAGE"]          = argFormatters["SPELL_DAMAGE"]
 argFormatters["SPELL_PERIODIC_DAMAGE"] = argFormatters["SPELL_DAMAGE"]
 argFormatters["DAMAGE_SHIELD"]         = argFormatters["SPELL_DAMAGE"]
 argFormatters["DAMAGE_SPLIT"]          = argFormatters["SPELL_DAMAGE"]
 
--- Swing damage (no prefix, args start at a6=amount)
-argFormatters["SWING_DAMAGE"] = function(...) return fmtSwingDmg(arg[1],arg[2],arg[3],arg[4],arg[5],arg[6],arg[7],arg[8],arg[9]) end
-
--- Env damage: a6=envType, a7-a15=damage suffix
-argFormatters["ENVIRONMENTAL_DAMAGE"] = function(...)
-    local ok = (arg[3] and arg[3] >= 0) and format(" OK=%s", s(arg[3])) or ""
-    return format("env=%s amt=%s %s abs=%s%s", s(arg[1]), s(arg[2]), schoolName(arg[4] or 0), s(arg[7]), ok)
+-- Swing damage: p1=amount, p2=overkill, p3=school, p4=resisted, p5=blocked, p6=absorbed, p7=critical, p8=glancing, p9=crushing
+argFormatters["SWING_DAMAGE"] = function(p1,p2,p3,p4,p5,p6,p7,p8,p9)
+    local ok = (p2 and p2 >= 0) and format(" OK=%s", s(p2)) or ""
+    return format("amt=%s %s res=%s blk=%s abs=%s%s%s%s%s",
+        s(p1), schoolName(p3 or 0), s(p4), s(p5), s(p6),
+        p7 and " CRIT" or "", ok, p8 and " GLANC" or "", p9 and " CRUSH" or "")
 end
 
--- Swing missed: a6=missType, a7=amountMissed
-argFormatters["SWING_MISSED"] = function(...) return format("%s amt=%s", s(arg[1]), s(arg[2])) end
+-- Env damage: p1=envType, p2=amount, p3=overkill, p4=school, p5=resisted, p6=blocked, p7=absorbed
+argFormatters["ENVIRONMENTAL_DAMAGE"] = function(p1,p2,p3,p4,p5,p6,p7)
+    local ok = (p3 and p3 >= 0) and format(" OK=%s", s(p3)) or ""
+    return format("env=%s amt=%s %s abs=%s%s", s(p1), s(p2), schoolName(p4 or 0), s(p7), ok)
+end
 
--- Spell missed: a6-a8=prefix, a9=missType, a10=amountMissed
-argFormatters["SPELL_MISSED"]          = function(...) return format("%s %s amt=%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[5])) end
+-- Swing missed: p1=missType, p2=amountMissed
+argFormatters["SWING_MISSED"] = function(p1,p2) return format("%s amt=%s", s(p1), s(p2)) end
+
+-- Spell missed: p1-p3=prefix, p4=missType, p5=amountMissed
+argFormatters["SPELL_MISSED"]          = function(p1,p2,p3,p4,p5) return format("%s %s amt=%s", spellPrefix(p1,p2,p3), s(p4), s(p5)) end
 argFormatters["SPELL_PERIODIC_MISSED"] = argFormatters["SPELL_MISSED"]
 argFormatters["DAMAGE_SHIELD_MISSED"]  = argFormatters["SPELL_MISSED"]
 argFormatters["RANGE_MISSED"]          = argFormatters["SPELL_MISSED"]
 
--- Spell heal: a6-a8=prefix, a9=amount, a10=overheal, a11=absorbed, a12=critical
-argFormatters["SPELL_HEAL"] = function(...)
-    local c = (arg[7] == 1) and " CRIT" or ""
-    local oh = (arg[5] and arg[5] > 0) and format(" OH=%s", s(arg[5])) or ""
-    return format("%s amt=%s abs=%s%s%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[6]), c, oh)
+-- Spell heal: p1-p3=prefix, p4=amount, p5=overheal, p6=absorbed, p7=critical
+argFormatters["SPELL_HEAL"] = function(p1,p2,p3,p4,p5,p6,p7)
+    local oh = (p5 and p5 > 0) and format(" OH=%s", s(p5)) or ""
+    return format("%s amt=%s abs=%s%s%s", spellPrefix(p1,p2,p3), s(p4), s(p6), p7 and " CRIT" or "", oh)
 end
 argFormatters["SPELL_PERIODIC_HEAL"] = argFormatters["SPELL_HEAL"]
 
--- Spell energize: a6-a8=prefix, a9=amount, a10=powerType
-argFormatters["SPELL_ENERGIZE"] = function(...)
-    return format("%s amt=%s type=%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), powerNames[arg[5]] or s(arg[5]))
+-- Energize: p1-p3=prefix, p4=amount, p5=powerType
+argFormatters["SPELL_ENERGIZE"] = function(p1,p2,p3,p4,p5)
+    return format("%s amt=%s type=%s", spellPrefix(p1,p2,p3), s(p4), powerNames[p5] or s(p5))
 end
 argFormatters["SPELL_PERIODIC_ENERGIZE"] = argFormatters["SPELL_ENERGIZE"]
 
--- Spell leech/drain: a6-a8=prefix, a9=amount, a10=powerType, a11=extraAmount
-argFormatters["SPELL_PERIODIC_LEECH"] = function(...)
-    return format("%s amt=%s type=%s gain=%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[5]), s(arg[6]))
+-- Leech/drain: p1-p3=prefix, p4=amount, p5=powerType, p6=extraAmount
+argFormatters["SPELL_PERIODIC_LEECH"] = function(p1,p2,p3,p4,p5,p6)
+    return format("%s amt=%s type=%s gain=%s", spellPrefix(p1,p2,p3), s(p4), s(p5), s(p6))
 end
 argFormatters["SPELL_PERIODIC_DRAIN"] = argFormatters["SPELL_PERIODIC_LEECH"]
 
--- Extra attacks: a6-a8=prefix, a9=amount
-argFormatters["SPELL_EXTRA_ATTACKS"] = function(...)
-    return format("%s amt=%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]))
+-- Extra attacks: p1-p3=prefix, p4=amount
+argFormatters["SPELL_EXTRA_ATTACKS"] = function(p1,p2,p3,p4)
+    return format("%s amt=%s", spellPrefix(p1,p2,p3), s(p4))
 end
 
--- Aura applied/removed/refresh/broken: a6-a8=prefix, a9=auraType
-argFormatters["SPELL_AURA_APPLIED"] = function(...) return format("%s %s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4])) end
+-- Aura: p1-p3=prefix, p4=auraType
+argFormatters["SPELL_AURA_APPLIED"] = function(p1,p2,p3,p4) return format("%s %s", spellPrefix(p1,p2,p3), s(p4)) end
 argFormatters["SPELL_AURA_REMOVED"]  = argFormatters["SPELL_AURA_APPLIED"]
 argFormatters["SPELL_AURA_REFRESH"]  = argFormatters["SPELL_AURA_APPLIED"]
 argFormatters["SPELL_AURA_BROKEN"]   = argFormatters["SPELL_AURA_APPLIED"]
 
--- Aura dose: a6-a8=prefix, a9=auraType, a10=amount
-argFormatters["SPELL_AURA_APPLIED_DOSE"] = function(...) return format("%s %s x%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[5])) end
+-- Aura dose: p1-p3=prefix, p4=auraType, p5=stacks
+argFormatters["SPELL_AURA_APPLIED_DOSE"] = function(p1,p2,p3,p4,p5) return format("%s %s x%s", spellPrefix(p1,p2,p3), s(p4), s(p5)) end
 argFormatters["SPELL_AURA_REMOVED_DOSE"] = argFormatters["SPELL_AURA_APPLIED_DOSE"]
 
--- Cast: a6-a8=prefix only
-argFormatters["SPELL_CAST_START"]   = function(...) return spellPrefix(arg[1],arg[2],arg[3]) end
+-- Cast: p1-p3=prefix only
+argFormatters["SPELL_CAST_START"]   = function(p1,p2,p3) return spellPrefix(p1,p2,p3) end
 argFormatters["SPELL_CAST_SUCCESS"] = argFormatters["SPELL_CAST_START"]
 argFormatters["SPELL_SUMMON"]       = argFormatters["SPELL_CAST_START"]
 argFormatters["SPELL_RESURRECT"]    = argFormatters["SPELL_CAST_START"]
 argFormatters["SPELL_INSTAKILL"]    = argFormatters["SPELL_CAST_START"]
 
--- Cast failed: a6-a8=prefix, a9=failedType
-argFormatters["SPELL_CAST_FAILED"] = function(...) return format("%s reason=%s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4])) end
+-- Cast failed: p1-p3=prefix, p4=failedType
+argFormatters["SPELL_CAST_FAILED"] = function(p1,p2,p3,p4) return format("%s reason=%s", spellPrefix(p1,p2,p3), s(p4)) end
 
--- Interrupt/dispel_failed: a6-a8=prefix, a9=extraSpellId, a10=extraSpellName, a11=extraSchool
-argFormatters["SPELL_INTERRUPT"] = function(...)
-    return format("%s -> extra=[%s] %s %s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[5]), schoolName(arg[6] or 0))
+-- Interrupt/dispel_failed: p1-p3=prefix, p4=extraSpellId, p5=extraSpellName, p6=extraSchool
+argFormatters["SPELL_INTERRUPT"] = function(p1,p2,p3,p4,p5,p6)
+    return format("%s -> extra=[%s] %s %s", spellPrefix(p1,p2,p3), s(p4), s(p5), schoolName(p6 or 0))
 end
 argFormatters["SPELL_DISPEL_FAILED"] = argFormatters["SPELL_INTERRUPT"]
 
--- Dispel/stolen/aura_broken_spell: a6-a8=prefix, a9=extraSpellId, a10=extraSpellName, a11=extraSchool, a12=auraType
-argFormatters["SPELL_DISPEL"] = function(...)
-    return format("%s -> extra=[%s] %s %s %s", spellPrefix(arg[1],arg[2],arg[3]), s(arg[4]), s(arg[5]), schoolName(arg[6] or 0), s(arg[7]))
+-- Dispel/aura_broken_spell: p1-p3=prefix, p4=extraSpellId, p5=extraSpellName, p6=extraSchool, p7=auraType
+argFormatters["SPELL_DISPEL"] = function(p1,p2,p3,p4,p5,p6,p7)
+    return format("%s -> extra=[%s] %s %s %s", spellPrefix(p1,p2,p3), s(p4), s(p5), schoolName(p6 or 0), s(p7))
 end
 argFormatters["SPELL_AURA_BROKEN_SPELL"] = argFormatters["SPELL_DISPEL"]
 
--- Base (no args)
+-- Base (no suffix args)
 argFormatters["UNIT_DIED"]      = function() return "" end
 argFormatters["PARTY_KILL"]     = function() return "" end
 argFormatters["UNIT_DESTROYED"] = function() return "" end
@@ -314,157 +302,159 @@ argFormatters["UNIT_DESTROYED"] = function() return "" end
 -- ============================================================================
 -- All chatHandlers receive: (src, srcName, dst, dstName, ...) where ... starts at arg6
 
+-- chatHandlers receive: (srcName, dstName, p1, p2, ...) where p1.. are the suffix fields from CombatLogGetCurrentEventInfo
+
 local chatHandlers = {}
 
--- Spell damage: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overkill, school, resisted, blocked, absorbed, critical
-chatHandlers["SPELL_DAMAGE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overkill, school, resisted, blocked, absorbed, critical)
-    local crit = critical == 1 and " (CRIT)" or ""
-    local ok = (overkill and overkill >= 0) and format(" (OK %d)", overkill) or ""
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000SPELL_DAMAGE|r %s -> %s: %s[%d] for %d %s%s%s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, schoolName(school), crit, ok))
+-- Spell damage: p1=spellId, p2=spellName, p3=spellSchool, p4=amount, p5=overkill, p6=school, ..., p10=critical
+local function spellDamageChatHandler(sub)
+    return function(srcName, dstName, p1,p2,p3,p4,p5,p6,p7,p8,p9,p10)
+        DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000%s|r %s -> %s: %s[%d] for %d %s%s%s",
+            sub, srcName, dstName, p2 or "", p1, p4, schoolName(p6), p10 and " (CRIT)" or "",
+            (p5 and p5 >= 0) and format(" (OK %d)", p5) or ""))
+    end
 end
-chatHandlers["RANGE_DAMAGE"] = chatHandlers["SPELL_DAMAGE"]
-chatHandlers["DAMAGE_SPLIT"] = chatHandlers["SPELL_DAMAGE"]
+chatHandlers["SPELL_DAMAGE"] = spellDamageChatHandler("SPELL_DAMAGE")
+chatHandlers["RANGE_DAMAGE"] = spellDamageChatHandler("RANGE_DAMAGE")
+chatHandlers["DAMAGE_SPLIT"] = spellDamageChatHandler("DAMAGE_SPLIT")
+chatHandlers["SPELL_PERIODIC_DAMAGE"] = spellDamageChatHandler("SPELL_PERIODIC_DAMAGE")
+chatHandlers["DAMAGE_SHIELD"] = spellDamageChatHandler("DAMAGE_SHIELD")
 
-chatHandlers["SPELL_PERIODIC_DAMAGE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overkill, school)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffcc0000SPELL_PERIODIC_DAMAGE|r %s -> %s: %s[%d] for %d %s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, schoolName(school)))
-end
-
-chatHandlers["DAMAGE_SHIELD"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overkill, school)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff4400DAMAGE_SHIELD|r %s -> %s: %d %s", displayName(srcName, src), displayName(dstName, dst), amount, schoolName(school)))
-end
-
--- Swing damage: src, srcName, dst, dstName, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing
-chatHandlers["SWING_DAMAGE"] = function(src, srcName, dst, dstName, amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing)
+-- Swing damage: p1=amount, p2=overkill, p3=school, ..., p7=critical, p8=glancing, p9=crushing
+chatHandlers["SWING_DAMAGE"] = function(srcName, dstName, p1,p2,p3,p4,p5,p6,p7,p8,p9)
     local extra = ""
-    if critical == 1 then extra = extra .. " CRIT" end
-    if overkill and overkill >= 0 then extra = extra .. format(" OK=%d", overkill) end
-    if glancing == 1 then extra = extra .. " GLANCING" end
-    if crushing == 1 then extra = extra .. " CRUSHING" end
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000SWING_DAMAGE|r %s -> %s: %d%s", displayName(srcName, src), displayName(dstName, dst), amount, extra))
+    if p7 then extra = extra .. " CRIT" end
+    if p2 and p2 >= 0 then extra = extra .. format(" OK=%d", p2) end
+    if p8 then extra = extra .. " GLANCING" end
+    if p9 then extra = extra .. " CRUSHING" end
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000SWING_DAMAGE|r %s -> %s: %d%s", srcName, dstName, p1, extra))
 end
 
--- Swing missed: src, srcName, dst, dstName, missType, amountMissed
-chatHandlers["SWING_MISSED"] = function(src, srcName, dst, dstName, missType, amountMissed)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffaaaaaaSWING_MISSED|r %s -> %s: %s", displayName(srcName, src), displayName(dstName, dst), missType))
+-- Swing missed: p1=missType
+chatHandlers["SWING_MISSED"] = function(srcName, dstName, p1)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffaaaaaaSWING_MISSED|r %s -> %s: %s", srcName, dstName, p1))
 end
 
--- Spell missed: src, srcName, dst, dstName, spellId, spellName, spellSchool, missType, amountMissed
-chatHandlers["SPELL_MISSED"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, missType, amountMissed)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffaaaaaaSPELL_MISSED|r %s -> %s: %s[%d] %s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, missType))
+-- Spell missed: p1-p3=prefix, p4=missType
+local function spellMissedChatHandler(sub)
+    return function(srcName, dstName, p1,p2,p3,p4)
+        DEFAULT_CHAT_FRAME:AddMessage(format("|cffa0a0a0%s|r %s -> %s: %s[%d] %s", sub, srcName, dstName, p2 or "", p1, p4))
+    end
 end
-chatHandlers["RANGE_MISSED"]          = chatHandlers["SPELL_MISSED"]
-chatHandlers["SPELL_PERIODIC_MISSED"] = chatHandlers["SPELL_MISSED"]
-chatHandlers["DAMAGE_SHIELD_MISSED"]  = chatHandlers["SPELL_MISSED"]
+chatHandlers["SPELL_MISSED"]          = spellMissedChatHandler("SPELL_MISSED")
+chatHandlers["RANGE_MISSED"]          = spellMissedChatHandler("RANGE_MISSED")
+chatHandlers["SPELL_PERIODIC_MISSED"] = spellMissedChatHandler("SPELL_PERIODIC_MISSED")
+chatHandlers["DAMAGE_SHIELD_MISSED"]  = spellMissedChatHandler("DAMAGE_SHIELD_MISSED")
 
--- Env damage: src, srcName, dst, dstName, envType, amount, overkill, school, resisted, blocked, absorbed
-chatHandlers["ENVIRONMENTAL_DAMAGE"] = function(src, srcName, dst, dstName, envType, amount)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800ENVIRONMENTAL_DAMAGE|r %s: %s for %d", displayName(dstName, dst), envType, amount))
-end
-
--- Spell heal: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overheal, absorbed, critical
-chatHandlers["SPELL_HEAL"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overheal, absorbed, critical)
-    local crit = critical == 1 and " (CRIT)" or ""
-    local oh = (overheal and overheal > 0) and format(" (OH %d)", overheal) or ""
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff00ff00SPELL_HEAL|r %s -> %s: %s[%d] for %d%s%s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, crit, oh))
-end
-chatHandlers["SPELL_PERIODIC_HEAL"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, overheal)
-    local oh = (overheal and overheal > 0) and format(" (OH %d)", overheal) or ""
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff00cc00SPELL_PERIODIC_HEAL|r %s -> %s: %s[%d] for %d%s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, oh))
+-- Env damage: p1=envType, p2=amount
+chatHandlers["ENVIRONMENTAL_DAMAGE"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800ENVIRONMENTAL_DAMAGE|r %s: %s for %d", dstName, p1, p2))
 end
 
--- Energize: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType
-chatHandlers["SPELL_ENERGIZE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff4488ffSPELL_ENERGIZE|r %s -> %s: %s[%d] +%d %s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, powerNames[powerType] or "?"))
+-- Spell heal: p1-p3=prefix, p4=amount, p5=overheal, p6=absorbed, p7=critical
+local function spellHealChatHandler(sub)
+    return function(srcName, dstName, p1,p2,p3,p4,p5,p6,p7)
+        DEFAULT_CHAT_FRAME:AddMessage(format("|cff00ff00%s|r %s -> %s: %s[%d] for %d%s%s",
+            sub, srcName, dstName, p2 or "", p1, p4, p7 and " (CRIT)" or "",
+            (p5 and p5 > 0) and format(" (OH %d)", p5) or ""))
+    end
 end
-chatHandlers["SPELL_PERIODIC_ENERGIZE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff4488ffSPELL_PERIODIC_ENERGIZE|r %s -> %s: %s[%d] +%d %s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, powerNames[powerType] or "?"))
+chatHandlers["SPELL_HEAL"] = spellHealChatHandler("SPELL_HEAL")
+chatHandlers["SPELL_PERIODIC_HEAL"] = spellHealChatHandler("SPELL_PERIODIC_HEAL")
+
+-- Energize: p1-p3=prefix, p4=amount, p5=powerType
+local function spellEnergizeChatHandler(sub)
+    return function(srcName, dstName, p1,p2,p3,p4,p5)
+        DEFAULT_CHAT_FRAME:AddMessage(format("|cff4488ff%s|r %s -> %s: %s[%d] +%d %s", sub, srcName, dstName, p2 or "", p1, p4, powerNames[p5] or "?"))
+    end
+end
+chatHandlers["SPELL_ENERGIZE"] = spellEnergizeChatHandler("SPELL_ENERGIZE")
+chatHandlers["SPELL_PERIODIC_ENERGIZE"] = spellEnergizeChatHandler("SPELL_PERIODIC_ENERGIZE")
+
+-- Leech: p1-p3=prefix, p4=amount, p5=powerType, p6=extraAmount
+chatHandlers["SPELL_PERIODIC_LEECH"] = function(srcName, dstName, p1,p2,p3,p4,p5,p6)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8844ffSPELL_PERIODIC_LEECH|r %s -> %s: %s[%d] drained %d, gained %d", srcName, dstName, p2 or "", p1, p4, p6 or 0))
 end
 
--- Leech: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType, extraAmount
-chatHandlers["SPELL_PERIODIC_LEECH"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType, extraAmount)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8844ffSPELL_PERIODIC_LEECH|r %s -> %s: %s[%d] drained %d, gained %d", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, extraAmount or 0))
+-- Drain: p1-p3=prefix, p4=amount, p5=powerType
+chatHandlers["SPELL_PERIODIC_DRAIN"] = function(srcName, dstName, p1,p2,p3,p4,p5)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8844ffSPELL_PERIODIC_DRAIN|r %s -> %s: %s[%d] drained %d %s", srcName, dstName, p2 or "", p1, p4, powerNames[p5] or "?"))
 end
 
--- Drain: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType, extraAmount
-chatHandlers["SPELL_PERIODIC_DRAIN"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount, powerType, extraAmount)
-    local pname = powerNames[powerType] or "?"
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8844ffSPELL_PERIODIC_DRAIN|r %s -> %s: %s[%d] drained %d %s", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, amount, pname))
+-- Aura: p1-p3=prefix, p4=auraType
+chatHandlers["SPELL_AURA_APPLIED"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8888ffSPELL_AURA_APPLIED|r %s: %s[%d] (%s)", dstName, p2 or "", p1, p4))
+end
+chatHandlers["SPELL_AURA_REMOVED"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff6666ccSPELL_AURA_REMOVED|r %s: %s[%d] (%s)", dstName, p2 or "", p1, p4))
+end
+chatHandlers["SPELL_AURA_REFRESH"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff7777ddSPELL_AURA_REFRESH|r %s: %s[%d] (%s)", dstName, p2 or "", p1, p4))
+end
+chatHandlers["SPELL_AURA_BROKEN"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_AURA_BROKEN|r %s -> %s: %s[%d] broken (%s)", srcName, dstName, p2 or "", p1, p4))
+end
+chatHandlers["SPELL_AURA_APPLIED_DOSE"] = function(srcName, dstName, p1,p2,p3,p4,p5)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8888ffSPELL_AURA_APPLIED_DOSE|r %s: %s[%d] x%d (%s)", dstName, p2 or "", p1, p5, p4))
+end
+chatHandlers["SPELL_AURA_REMOVED_DOSE"] = function(srcName, dstName, p1,p2,p3,p4,p5)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff6666ccSPELL_AURA_REMOVED_DOSE|r %s: %s[%d] x%d (%s)", dstName, p2 or "", p1, p5, p4))
+end
+chatHandlers["SPELL_AURA_BROKEN_SPELL"] = function(srcName, dstName, p1,p2,p3,p4,p5,p6,p7)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_AURA_BROKEN_SPELL|r %s -> %s: %s[%d] broken by %s[%d]", srcName, dstName, p2 or "", p1, p5 or "", p4))
 end
 
--- Aura: src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType
-chatHandlers["SPELL_AURA_APPLIED"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8888ffSPELL_AURA_APPLIED|r %s: %s[%d] (%s)", displayName(dstName, dst), spellName or "", spellId, auraType))
+-- Cast: p1-p3=prefix
+chatHandlers["SPELL_CAST_START"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffffff00SPELL_CAST_START|r %s: %s[%d]", srcName, p2 or "", p1))
 end
-chatHandlers["SPELL_AURA_REMOVED"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff6666ccSPELL_AURA_REMOVED|r %s: %s[%d] (%s)", displayName(dstName, dst), spellName or "", spellId, auraType))
+chatHandlers["SPELL_CAST_SUCCESS"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffffff00SPELL_CAST_SUCCESS|r %s: %s[%d]", srcName, p2 or "", p1))
 end
-chatHandlers["SPELL_AURA_REFRESH"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff7777ddSPELL_AURA_REFRESH|r %s: %s[%d] (%s)", displayName(dstName, dst), spellName or "", spellId, auraType))
-end
-chatHandlers["SPELL_AURA_BROKEN"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_AURA_BROKEN|r %s -> %s: %s[%d] broken (%s)", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, auraType))
-end
-chatHandlers["SPELL_AURA_APPLIED_DOSE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType, stacks)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff8888ffSPELL_AURA_APPLIED_DOSE|r %s: %s[%d] x%d (%s)", displayName(dstName, dst), spellName or "", spellId, stacks, auraType))
-end
-chatHandlers["SPELL_AURA_REMOVED_DOSE"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, auraType, stacks)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff6666ccSPELL_AURA_REMOVED_DOSE|r %s: %s[%d] x%d (%s)", displayName(dstName, dst), spellName or "", spellId, stacks, auraType))
-end
-chatHandlers["SPELL_AURA_BROKEN_SPELL"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_AURA_BROKEN_SPELL|r %s -> %s: %s[%d] broken by %s[%d]", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId, extraSpellName or "", extraSpellId))
+chatHandlers["SPELL_CAST_FAILED"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff4444SPELL_CAST_FAILED|r %s: %s[%d] (%s)", srcName, p2 or "", p1, p4))
 end
 
--- Cast
-chatHandlers["SPELL_CAST_START"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffffff00SPELL_CAST_START|r %s: %s[%d]", displayName(srcName, src), spellName or "", spellId))
-end
-chatHandlers["SPELL_CAST_SUCCESS"] = function(src, srcName, dst, dstName, spellId, spellName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffffff00SPELL_CAST_SUCCESS|r %s: %s[%d]", displayName(srcName, src), spellName or "", spellId))
-end
-chatHandlers["SPELL_CAST_FAILED"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, failedType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff4444SPELL_CAST_FAILED|r %s: %s[%d] (%s)", displayName(srcName, src), spellName or "", spellId, failedType))
+-- Interrupt: p1-p3=prefix, p4=extraSpellId, p5=extraSpellName
+chatHandlers["SPELL_INTERRUPT"] = function(srcName, dstName, p1,p2,p3,p4,p5)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_INTERRUPT|r %s interrupted %s: %s[%d]", srcName, dstName, p5 or "", p4))
 end
 
--- Interrupt: src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool
-chatHandlers["SPELL_INTERRUPT"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_INTERRUPT|r %s interrupted %s: %s[%d]", displayName(srcName, src), displayName(dstName, dst), extraSpellName or "", extraSpellId))
+-- Dispel: p1-p3=prefix, p4=extraSpellId, p5=extraSpellName, p6=extraSchool, p7=auraType
+chatHandlers["SPELL_DISPEL"] = function(srcName, dstName, p1,p2,p3,p4,p5,p6,p7)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ffffSPELL_DISPEL|r %s dispelled %s: %s[%d] (%s)", srcName, dstName, p5 or "", p4, p7))
 end
 
--- Dispel: src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool, auraType
-chatHandlers["SPELL_DISPEL"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool, auraType)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ffffSPELL_DISPEL|r %s dispelled %s: %s[%d] (%s)", displayName(srcName, src), displayName(dstName, dst), extraSpellName or "", extraSpellId, auraType))
+-- Dispel failed: p1-p3=prefix, p4=extraSpellId, p5=extraSpellName
+chatHandlers["SPELL_DISPEL_FAILED"] = function(srcName, dstName, p1,p2,p3,p4,p5)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff888888SPELL_DISPEL_FAILED|r %s -> %s: %s[%d] resisted", srcName, dstName, p5 or "", p4))
 end
 
--- Dispel failed: src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool
-chatHandlers["SPELL_DISPEL_FAILED"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, extraSpellId, extraSpellName, extraSchool)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff888888SPELL_DISPEL_FAILED|r %s -> %s: %s[%d] resisted", displayName(srcName, src), displayName(dstName, dst), extraSpellName or "", extraSpellId))
+-- Extra attacks: p1-p3=prefix, p4=amount
+chatHandlers["SPELL_EXTRA_ATTACKS"] = function(srcName, dstName, p1,p2,p3,p4)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_EXTRA_ATTACKS|r %s: %s[%d] x%d", srcName, p2 or "", p1, p4))
 end
 
--- Extra attacks: src, srcName, dst, dstName, spellId, spellName, spellSchool, amount
-chatHandlers["SPELL_EXTRA_ATTACKS"] = function(src, srcName, dst, dstName, spellId, spellName, spellSchool, amount)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800SPELL_EXTRA_ATTACKS|r %s: %s[%d] x%d", displayName(srcName, src), spellName or "", spellId, amount))
+-- Summon/resurrect/instakill: p1-p3=prefix
+chatHandlers["SPELL_SUMMON"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ff88SPELL_SUMMON|r %s summoned %s: %s[%d]", srcName, dstName, p2 or "", p1))
 end
-
--- Summon/resurrect/instakill
-chatHandlers["SPELL_SUMMON"] = function(src, srcName, dst, dstName, spellId, spellName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ff88SPELL_SUMMON|r %s summoned %s: %s[%d]", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId))
+chatHandlers["SPELL_RESURRECT"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ff88SPELL_RESURRECT|r %s resurrected %s: %s[%d]", srcName, dstName, p2 or "", p1))
 end
-chatHandlers["SPELL_RESURRECT"] = function(src, srcName, dst, dstName, spellId, spellName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff88ff88SPELL_RESURRECT|r %s resurrected %s: %s[%d]", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId))
-end
-chatHandlers["SPELL_INSTAKILL"] = function(src, srcName, dst, dstName, spellId, spellName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000SPELL_INSTAKILL|r %s killed %s: %s[%d]", displayName(srcName, src), displayName(dstName, dst), spellName or "", spellId))
+chatHandlers["SPELL_INSTAKILL"] = function(srcName, dstName, p1,p2)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff0000SPELL_INSTAKILL|r %s killed %s: %s[%d]", srcName, dstName, p2 or "", p1))
 end
 
 -- Deaths
-chatHandlers["UNIT_DIED"] = function(src, srcName, dst, dstName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff888888UNIT_DIED|r %s", displayName(dstName, dst)))
+chatHandlers["UNIT_DIED"] = function(srcName, dstName)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff888888UNIT_DIED|r %s", dstName))
 end
-chatHandlers["PARTY_KILL"] = function(src, srcName, dst, dstName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800PARTY_KILL|r %s killed %s", displayName(srcName, src), displayName(dstName, dst)))
+chatHandlers["PARTY_KILL"] = function(srcName, dstName)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cffff8800PARTY_KILL|r %s killed %s", srcName, dstName))
 end
-chatHandlers["UNIT_DESTROYED"] = function(src, srcName, dst, dstName)
-    DEFAULT_CHAT_FRAME:AddMessage(format("|cff666666UNIT_DESTROYED|r %s", displayName(dstName, dst)))
+chatHandlers["UNIT_DESTROYED"] = function(srcName, dstName)
+    DEFAULT_CHAT_FRAME:AddMessage(format("|cff666666UNIT_DESTROYED|r %s", dstName))
 end
 
 -- ============================================================================
@@ -589,19 +579,27 @@ end)
 -- Event dispatcher
 -- ============================================================================
 
--- Expand args table to handle up to 17 args (spell damage has the most: 5 base + 3 prefix + 9 suffix)
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 
 eventFrame:SetScript("OnEvent", function()
-    local subevent = arg1
-    if not subevent then return end
+    if not CombatLogGetCurrentEventInfo then return end
+    local sub, srcGUID, srcName, srcFlags, srcRaidFlags,
+          dstGUID, dstName, dstFlags, dstRaidFlags,
+          p1, p2, p3, p4, p5, p6, p7, p8, p9,
+          p10, p11, p12 = CombatLogGetCurrentEventInfo()
+    if not sub then return end
 
-    local args = { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
-                   arg11, arg12, arg13, arg14, arg15, arg16, arg17 }
+    if not srcName or srcName == "" then srcName = "Unknown" end
+    if not dstName or dstName == "" then dstName = "Unknown" end
 
-    local indices = subeventIndices[subevent]
+    local indices = subeventIndices[sub]
     if not indices then return end
+
+    -- Build full args array for variant field checks (1-based, matching CombatLogGetCurrentEventInfo positions)
+    local args = { sub, srcGUID, srcName, srcFlags, srcRaidFlags,
+                   dstGUID, dstName, dstFlags, dstRaidFlags,
+                   p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12 }
 
     local any_new = false
     for _, idx in ipairs(indices) do
@@ -612,26 +610,28 @@ eventFrame:SetScript("OnEvent", function()
 
             local matches = true
             if varField then
-                matches = (args[varField] == varValue)
+                if varValue then
+                    matches = (args[varField] == varValue)
+                else
+                    -- Boolean check (truthy): critical, glancing, crushing
+                    matches = (args[varField] ~= nil)
+                end
             end
 
             if matches then
                 seen[idx] = true
                 seenCount = seenCount + 1
-                local formatter = argFormatters[subevent]
+                local formatter = argFormatters[sub]
                 if formatter then
-                    -- Pass args starting from arg6 (after base: sub, srcGUID, srcName, dstGUID, dstName)
-                    seenArgs[idx] = formatter(arg6, arg7, arg8, arg9, arg10, arg11, arg12,
-                                              arg13, arg14, arg15, arg16, arg17)
+                    seenArgs[idx] = formatter(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12)
                 else
                     seenArgs[idx] = ""
                 end
                 any_new = true
 
-                local chatHandler = chatHandlers[subevent]
+                local chatHandler = chatHandlers[sub]
                 if chatHandler then
-                    chatHandler(arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
-                                arg11, arg12, arg13, arg14, arg15, arg16, arg17)
+                    chatHandler(srcName, dstName, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12)
                 end
             end
         end
