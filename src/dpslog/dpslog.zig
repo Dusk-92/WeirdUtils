@@ -869,7 +869,9 @@ fn createEventsDetour(param1: u32, max_event_id: u32) callconv(hook.cc.fastcall)
 }
 
 fn installHandlerSwaps() void {
-    if (swap_count > 0) return; // already installed
+    // Always re-install — InitializeGameEngine re-registers all handlers,
+    // overwriting any previous swaps (even if NetClient pointer is the same).
+    swap_count = 0;
     // Packet handler table swaps (no code patching, heap pointer writes only)
     if (!swapHandler(0x250, @intFromPtr(&spellNonMeleeDmgLogDetour)))
         log.print("FAILED to swap SPELLNONMELEEDAMAGELOG (0x250)\n")
