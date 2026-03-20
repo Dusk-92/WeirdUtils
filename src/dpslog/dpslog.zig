@@ -791,7 +791,133 @@ fn cleuSpellPrefix(id: u32) void {
     cleuSpellId(id);
 }
 
+// =============================================================================
+// Combat log file writer — WotLK CSV format
+// =============================================================================
+// Writes to Logs\WeirdCombatLog.txt when the game's /combatlog is active.
+// Checks COMBAT_LOG_HANDLE (0xB50544) each event — zero cost when logging is off.
+
+const COMBAT_LOG_HANDLE_ADDR: u32 = 0xB50544;
+
+const WINAPI = std.builtin.CallingConvention.winapi;
+extern "kernel32" fn CreateFileA(lpFileName: [*:0]const u8, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ?*anyopaque, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ?*anyopaque) callconv(WINAPI) usize;
+extern "kernel32" fn WriteFile(hFile: usize, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ?*u32, lpOverlapped: ?*anyopaque) callconv(WINAPI) i32;
+extern "kernel32" fn GetLocalTime(lpSystemTime: *SystemTime) callconv(WINAPI) void;
+
+const SystemTime = extern struct {
+    wYear: u16, wMonth: u16, wDayOfWeek: u16, wDay: u16,
+    wHour: u16, wMinute: u16, wSecond: u16, wMilliseconds: u16,
+};
+
+const INVALID_HANDLE: usize = 0xFFFFFFFF;
+var g_logfile_handle: usize = INVALID_HANDLE;
+
+fn ensureLogFile() usize {
+    if (g_logfile_handle != INVALID_HANDLE) return g_logfile_handle;
+    g_logfile_handle = CreateFileA(
+        "Logs\\WeirdCombatLog.txt",
+        0x40000000, // GENERIC_WRITE
+        0x00000001, // FILE_SHARE_READ
+        null,
+        4, // OPEN_ALWAYS
+        0x80, // FILE_ATTRIBUTE_NORMAL
+        null,
+    );
+    if (g_logfile_handle == INVALID_HANDLE) return INVALID_HANDLE;
+    // Seek to end
+    const SetFilePointer = @extern(*const fn (usize, i32, ?*i32, u32) callconv(WINAPI) u32, .{ .name = "SetFilePointer", .library_name = "kernel32" });
+    _ = SetFilePointer(g_logfile_handle, 0, null, 2);
+    return g_logfile_handle;
+}
+
+fn writeLogEvent() void {
+    // Check if game's combat logging is active
+    if (hook.readMem(u32, COMBAT_LOG_HANDLE_ADDR) == 0) return;
+
+    const handle = ensureLogFile();
+    if (handle == INVALID_HANDLE) return;
+
+    var buf: [2048]u8 = undefined;
+    var pos: usize = 0;
+
+    // Timestamp: M/D HH:MM:SS.mmm  (two trailing spaces before event data)
+    var st: SystemTime = undefined;
+    GetLocalTime(&st);
+    pos += (std.fmt.bufPrint(buf[pos..], "{d}/{d} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}  ", .{
+        st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+    }) catch return).len;
+
+    // Resolve and format each CLEU entry
+    var first = true;
+    var i: u32 = 0;
+    while (i < g_cleu_count) : (i += 1) {
+        if (!first and pos < buf.len) {
+            buf[pos] = ',';
+            pos += 1;
+        }
+
+        const entry = g_cleu_args[i];
+        const written: []const u8 = switch (entry.typ) {
+            .str => std.fmt.bufPrint(buf[pos..], "{s}", .{std.mem.span(entry.arg.str)}) catch break,
+            .num => std.fmt.bufPrint(buf[pos..], "{d}", .{@as(i32, @bitCast(entry.arg.num))}) catch break,
+            .bool_val => std.fmt.bufPrint(buf[pos..], "1", .{}) catch break,
+            .nil => std.fmt.bufPrint(buf[pos..], "nil", .{}) catch break,
+            .guid => blk: {
+                const guid = entry.arg.guid;
+                if (guid == 0) {
+                    const w = std.fmt.bufPrint(buf[pos..], "0x0000000000000000,nil,0x80000000,0x0", .{}) catch break;
+                    first = false;
+                    break :blk w;
+                }
+                const name = wow.getNameByGUID(guid);
+                const name_span = std.mem.span(name);
+                const flags = computeUnitFlags(guid);
+                const rflags = computeRaidFlags(guid);
+                const w = if (name_span.len == 0)
+                    std.fmt.bufPrint(buf[pos..], "{s},nil,0x{x},0x{x}", .{
+                        std.mem.span(guidToString(guid)), flags, rflags,
+                    }) catch break
+                else
+                    std.fmt.bufPrint(buf[pos..], "{s},\"{s}\",0x{x},0x{x}", .{
+                        std.mem.span(guidToString(guid)), name_span, flags, rflags,
+                    }) catch break;
+                first = false;
+                break :blk w;
+            },
+            .spell_id => blk: {
+                const id = entry.arg.num;
+                const w = std.fmt.bufPrint(buf[pos..], "{d},\"{s}\",0x{x}", .{
+                    id, std.mem.span(getSpellName(id)), getSpellSchool(id),
+                }) catch break;
+                first = false;
+                break :blk w;
+            },
+            .damage_shield_spell => blk: {
+                const key = entry.arg.ds_key;
+                const id = findDamageShieldSpell(key.attacker_guid, key.school);
+                const school = if (id != 0) getSpellSchool(id) else key.school;
+                const w = std.fmt.bufPrint(buf[pos..], "{d},\"{s}\",0x{x}", .{
+                    id, std.mem.span(getSpellName(id)), school,
+                }) catch break;
+                first = false;
+                break :blk w;
+            },
+        };
+        pos += written.len;
+        first = false;
+    }
+
+    if (pos < buf.len) {
+        buf[pos] = '\n';
+        pos += 1;
+    }
+
+    var bytes_written: u32 = 0;
+    _ = WriteFile(handle, &buf, @intCast(pos), &bytes_written, null);
+}
+
 fn signalEvent() void {
+    writeLogEvent();
     const F = fn (u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
     @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "" });
 }
