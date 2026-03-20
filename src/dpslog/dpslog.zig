@@ -197,6 +197,13 @@ pub fn isActive() bool {
     return g_is_hook_owner;
 }
 
+/// Called from DestroyObjectManager hook — flush queued log events while objects are still alive.
+fn destroyObjMgrDetour() callconv(hook.cc.stdcall) void {
+    flushAllLogEvents();
+    destroy_objmgr_hook.callOriginal(.{});
+}
+var destroy_objmgr_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+
 // =============================================================================
 // COMBAT_LOG_EVENT_UNFILTERED — slot assigned dynamically in createEventsDetour
 // =============================================================================
@@ -277,6 +284,31 @@ const MISS_REFLECT: [*:0]const u8 = "REFLECT";
 
 /// Zero GUID for events without a source.
 const GUID_ZERO: [*:0]const u8 = "0x0000000000000000";
+
+/// "Unknown Being" fallback from CGUnit_C::GetNameFromCacheOrUnknown
+const UNKNOWN_BEING_PTR: usize = 0x860FA4;
+
+/// Check if a name returned by getNameByGUID is a placeholder ("Unknown Being"
+/// or localized "UNKNOWNOBJECT"). These should be treated as nil/empty in logs.
+fn isUnknownName(name: [*:0]const u8) bool {
+    const ptr = @intFromPtr(name);
+    if (ptr == UNKNOWN_BEING_PTR) return true;
+    // Lazy-resolve localized "UNKNOWNOBJECT" string
+    // GetLocalizedText: __fastcall(ECX=textKey, EDX=playerGender, stack: pluralCount), RET 0x4
+    if (!g_unknown_resolved) {
+        // GetLocalizedText: __fastcall(ECX=textKey, EDX=playerGender, stack: pluralCount), RET 0x4
+        const result = hook.call(
+            fn ([*:0]const u8, i32, u32) callconv(hook.cc.fastcall) usize,
+            0x703BF0,
+            .{ @as([*:0]const u8, @ptrFromInt(0x850ED0)), @as(i32, -1), @as(u32, 0) },
+        );
+        g_unknown_localized = result;
+        g_unknown_resolved = true;
+    }
+    return ptr == g_unknown_localized;
+}
+var g_unknown_localized: usize = 0;
+var g_unknown_resolved: bool = false;
 
 // Environmental damage type strings (WotLK naming)
 const ENV_EXHAUSTED: [*:0]const u8 = "EXHAUSTED";
@@ -656,12 +688,12 @@ fn computeRaidFlags(guid: u64) u32 {
 fn isInRaid(guid: u64) bool {
     const count = hook.readMem(u32, RAID_MEMBER_COUNT);
     if (count == 0) return false;
-    const arr = hook.readMem(u32, RAID_ROSTER_ARRAY);
-    if (arr == 0) return false;
+    // RAID_ROSTER_ARRAY is a static array of 40 pointers at 0xB712A8 (not a pointer-to-array).
+    // Each entry is a pointer to a roster struct with GUID at +0/+4.
     var i: u32 = 0;
     while (i < count and i < 40) : (i += 1) {
-        const entry_ptr = hook.readMem(u32, arr + i * 4);
-        if (entry_ptr == 0 or !wow.isValidPtr(entry_ptr)) continue;
+        const entry_ptr = hook.readMem(u32, RAID_ROSTER_ARRAY + i * 4);
+        if (entry_ptr == 0) continue;
         const member_guid = wow.readGUID(entry_ptr);
         if (member_guid == guid) return true;
     }
@@ -803,10 +835,17 @@ const WINAPI = std.builtin.CallingConvention.winapi;
 extern "kernel32" fn CreateFileA(lpFileName: [*:0]const u8, dwDesiredAccess: u32, dwShareMode: u32, lpSecurityAttributes: ?*anyopaque, dwCreationDisposition: u32, dwFlagsAndAttributes: u32, hTemplateFile: ?*anyopaque) callconv(WINAPI) usize;
 extern "kernel32" fn WriteFile(hFile: usize, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: ?*u32, lpOverlapped: ?*anyopaque) callconv(WINAPI) i32;
 extern "kernel32" fn GetLocalTime(lpSystemTime: *SystemTime) callconv(WINAPI) void;
+extern "kernel32" fn GetTickCount() callconv(WINAPI) u32;
 
 const SystemTime = extern struct {
-    wYear: u16, wMonth: u16, wDayOfWeek: u16, wDay: u16,
-    wHour: u16, wMinute: u16, wSecond: u16, wMilliseconds: u16,
+    wYear: u16,
+    wMonth: u16,
+    wDayOfWeek: u16,
+    wDay: u16,
+    wHour: u16,
+    wMinute: u16,
+    wSecond: u16,
+    wMilliseconds: u16,
 };
 
 const INVALID_HANDLE: usize = 0xFFFFFFFF;
@@ -830,47 +869,78 @@ fn ensureLogFile() usize {
     return g_logfile_handle;
 }
 
-fn writeLogEvent() void {
-    // Check if game's combat logging is active
+// =============================================================================
+// Log event queue — buffers events for deferred file writing.
+// GUIDs are re-resolved at flush time so names that weren't available at
+// event fire time (despawned mob, out-of-range unit) can be filled in from
+// packets that arrived in the interim.
+// =============================================================================
+
+const LOG_QUEUE_SIZE = 256;
+const LOG_FLUSH_INTERVAL_MS = 3000;
+
+const QueuedEvent = struct {
+    args: [MAX_CLEU_ARGS]CLEUEntry = undefined,
+    count: u32 = 0,
+    timestamp: SystemTime = undefined,
+    tick: u32 = 0, // GetTickCount at queue time — used for age check
+};
+
+var log_queue: [LOG_QUEUE_SIZE]QueuedEvent = [_]QueuedEvent{.{}} ** LOG_QUEUE_SIZE;
+var log_queue_head: u32 = 0; // next write position
+var log_queue_tail: u32 = 0; // next read position
+
+fn queueLogEvent() void {
     if (hook.readMem(u32, COMBAT_LOG_HANDLE_ADDR) == 0) return;
+    if (g_cleu_count == 0) return;
 
-    const handle = ensureLogFile();
-    if (handle == INVALID_HANDLE) return;
+    // Snapshot current CLEU args + timestamp into queue
+    var entry = &log_queue[log_queue_head];
+    @memcpy(entry.args[0..g_cleu_count], g_cleu_args[0..g_cleu_count]);
+    entry.count = g_cleu_count;
+    GetLocalTime(&entry.timestamp);
+    entry.tick = GetTickCount();
 
+    log_queue_head = (log_queue_head + 1) % LOG_QUEUE_SIZE;
+    // If head catches tail, drop oldest event
+    if (log_queue_head == log_queue_tail) {
+        log_queue_tail = (log_queue_tail + 1) % LOG_QUEUE_SIZE;
+    }
+}
+
+/// Format and write a single queued event to the log file.
+fn writeQueuedEvent(handle: usize, entry: *const QueuedEvent) void {
     var buf: [2048]u8 = undefined;
     var pos: usize = 0;
 
-    // Timestamp: M/D HH:MM:SS.mmm  (two trailing spaces before event data)
-    var st: SystemTime = undefined;
-    GetLocalTime(&st);
+    const st = entry.timestamp;
     pos += (std.fmt.bufPrint(buf[pos..], "{d}/{d} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}  ", .{
         st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
     }) catch return).len;
 
-    // Resolve and format each CLEU entry
     var first = true;
     var i: u32 = 0;
-    while (i < g_cleu_count) : (i += 1) {
+    while (i < entry.count) : (i += 1) {
         if (!first and pos < buf.len) {
             buf[pos] = ',';
             pos += 1;
         }
 
-        const entry = g_cleu_args[i];
-        const written: []const u8 = switch (entry.typ) {
-            .str => std.fmt.bufPrint(buf[pos..], "{s}", .{std.mem.span(entry.arg.str)}) catch break,
-            .num => std.fmt.bufPrint(buf[pos..], "{d}", .{@as(i32, @bitCast(entry.arg.num))}) catch break,
+        const arg = entry.args[i];
+        const written: []const u8 = switch (arg.typ) {
+            .str => std.fmt.bufPrint(buf[pos..], "{s}", .{std.mem.span(arg.arg.str)}) catch break,
+            .num => std.fmt.bufPrint(buf[pos..], "{d}", .{@as(i32, @bitCast(arg.arg.num))}) catch break,
             .bool_val => std.fmt.bufPrint(buf[pos..], "1", .{}) catch break,
             .nil => std.fmt.bufPrint(buf[pos..], "nil", .{}) catch break,
             .guid => blk: {
-                const guid = entry.arg.guid;
+                const guid = arg.arg.guid;
                 if (guid == 0) {
                     const w = std.fmt.bufPrint(buf[pos..], "0x0000000000000000,nil,0x80000000,0x0", .{}) catch break;
                     first = false;
                     break :blk w;
                 }
-                const name = wow.getNameByGUID(guid);
-                const name_span = std.mem.span(name);
+                const raw_name = wow.getNameByGUID(guid);
+                const name_span = if (raw_name[0] == 0 or isUnknownName(raw_name)) "" else std.mem.span(raw_name);
                 const flags = computeUnitFlags(guid);
                 const rflags = computeRaidFlags(guid);
                 const w = if (name_span.len == 0)
@@ -885,7 +955,7 @@ fn writeLogEvent() void {
                 break :blk w;
             },
             .spell_id => blk: {
-                const id = entry.arg.num;
+                const id = arg.arg.num;
                 const w = std.fmt.bufPrint(buf[pos..], "{d},\"{s}\",0x{x}", .{
                     id, std.mem.span(getSpellName(id)), getSpellSchool(id),
                 }) catch break;
@@ -893,7 +963,7 @@ fn writeLogEvent() void {
                 break :blk w;
             },
             .damage_shield_spell => blk: {
-                const key = entry.arg.ds_key;
+                const key = arg.arg.ds_key;
                 const id = findDamageShieldSpell(key.attacker_guid, key.school);
                 const school = if (id != 0) getSpellSchool(id) else key.school;
                 const w = std.fmt.bufPrint(buf[pos..], "{d},\"{s}\",0x{x}", .{
@@ -916,8 +986,48 @@ fn writeLogEvent() void {
     _ = WriteFile(handle, &buf, @intCast(pos), &bytes_written, null);
 }
 
+/// Flush queued events older than LOG_FLUSH_INTERVAL_MS to disk.
+/// Re-resolves GUIDs at write time so names may be filled in.
+fn flushOldLogEvents() void {
+    if (log_queue_tail == log_queue_head) return; // empty
+    if (hook.readMem(u32, COMBAT_LOG_HANDLE_ADDR) == 0) {
+        // Logging was turned off — discard queue
+        log_queue_tail = log_queue_head;
+        return;
+    }
+
+    const handle = ensureLogFile();
+    if (handle == INVALID_HANDLE) return;
+
+    const now = GetTickCount();
+    while (log_queue_tail != log_queue_head) {
+        const entry = &log_queue[log_queue_tail];
+        if (now -% entry.tick < LOG_FLUSH_INTERVAL_MS) break; // too recent, stop
+        writeQueuedEvent(handle, entry);
+        log_queue_tail = (log_queue_tail + 1) % LOG_QUEUE_SIZE;
+    }
+}
+
+/// Force-flush everything remaining in the queue (logout, disconnect).
+fn flushAllLogEvents() void {
+    if (log_queue_tail == log_queue_head) return;
+    if (hook.readMem(u32, COMBAT_LOG_HANDLE_ADDR) == 0) {
+        log_queue_tail = log_queue_head;
+        return;
+    }
+
+    const handle = ensureLogFile();
+    if (handle == INVALID_HANDLE) return;
+
+    while (log_queue_tail != log_queue_head) {
+        writeQueuedEvent(handle, &log_queue[log_queue_tail]);
+        log_queue_tail = (log_queue_tail + 1) % LOG_QUEUE_SIZE;
+    }
+}
+
 fn signalEvent() void {
-    writeLogEvent();
+    queueLogEvent();
+    flushOldLogEvents();
     const F = fn (u32, [*:0]const u8) callconv(hook.cc.cdecl) void;
     @call(.auto, @as(*const F, @ptrFromInt(SIGNAL)), .{ g_event_combat_log, "" });
 }
@@ -950,10 +1060,22 @@ pub fn luaCombatLogGetCurrentEventInfo(L: usize) callconv(hook.cc.fastcall) u32 
             .guid => {
                 // Deferred GUID: push guidString, name, flags, raidFlags
                 const guid = entry.arg.guid;
-                lua.pushstring(state, guidToString(guid));
-                lua.pushstring(state, wow.getNameByGUID(guid));
-                lua.pushnumber(state, @floatFromInt(computeUnitFlags(guid)));
-                lua.pushnumber(state, @floatFromInt(computeRaidFlags(guid)));
+                if (guid == 0) {
+                    lua.pushstring(state, GUID_ZERO);
+                    lua.pushnil(state);
+                    lua.pushnumber(state, @floatFromInt(@as(u32, 0x80000000)));
+                    lua.pushnumber(state, 0);
+                } else {
+                    lua.pushstring(state, guidToString(guid));
+                    const name = wow.getNameByGUID(guid);
+                    if (name[0] == 0 or isUnknownName(name)) {
+                        lua.pushnil(state);
+                    } else {
+                        lua.pushstring(state, name);
+                    }
+                    lua.pushnumber(state, @floatFromInt(computeUnitFlags(guid)));
+                    lua.pushnumber(state, @floatFromInt(computeRaidFlags(guid)));
+                }
                 push_count += 4;
             },
             .spell_id => {
@@ -983,57 +1105,86 @@ pub fn luaCombatLogGetCurrentEventInfo(L: usize) callconv(hook.cc.fastcall) u32 
 fn fireSpellDamage(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, amount: u32, overkill: u32, dmg_school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuNum(amount); cleuNum(overkill); cleuNum(dmg_school); cleuNum(resisted);
-    cleuNum(blocked); cleuNum(absorbed); cleuBool(critical); cleuBool(glancing); cleuBool(crushing);
+    cleuNum(amount);
+    cleuNum(overkill);
+    cleuNum(dmg_school);
+    cleuNum(resisted);
+    cleuNum(blocked);
+    cleuNum(absorbed);
+    cleuBool(critical);
+    cleuBool(glancing);
+    cleuBool(crushing);
     signalEvent();
 }
 
 fn fireSwingDamage(src_guid: u64, dst_guid: u64, amount: u32, overkill: u32, school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
     cleuBase(SUB_SWING_DAMAGE, src_guid, dst_guid);
-    cleuNum(amount); cleuNum(overkill); cleuNum(school); cleuNum(resisted);
-    cleuNum(blocked); cleuNum(absorbed); cleuBool(critical); cleuBool(glancing); cleuBool(crushing);
+    cleuNum(amount);
+    cleuNum(overkill);
+    cleuNum(school);
+    cleuNum(resisted);
+    cleuNum(blocked);
+    cleuNum(absorbed);
+    cleuBool(critical);
+    cleuBool(glancing);
+    cleuBool(crushing);
     signalEvent();
 }
 
 fn fireEnvDamage(dst_guid: u64, env_str: [*:0]const u8, amount: u32, overkill: u32, school: u32, resisted: u32, blocked: u32, absorbed: u32, critical: u32, glancing: u32, crushing: u32) void {
     cleuBase(SUB_ENV_DAMAGE, 0, dst_guid);
     cleuStr(env_str);
-    cleuNum(amount); cleuNum(overkill); cleuNum(school); cleuNum(resisted);
-    cleuNum(blocked); cleuNum(absorbed); cleuBool(critical); cleuBool(glancing); cleuBool(crushing);
+    cleuNum(amount);
+    cleuNum(overkill);
+    cleuNum(school);
+    cleuNum(resisted);
+    cleuNum(blocked);
+    cleuNum(absorbed);
+    cleuBool(critical);
+    cleuBool(glancing);
+    cleuBool(crushing);
     signalEvent();
 }
 
 fn fireSwingMissed(src_guid: u64, dst_guid: u64, miss_type: [*:0]const u8, amount_missed: u32) void {
     cleuBase(SUB_SWING_MISSED, src_guid, dst_guid);
-    cleuStr(miss_type); cleuNum(amount_missed);
+    cleuStr(miss_type);
+    cleuNum(amount_missed);
     signalEvent();
 }
 
 fn fireSpellMissed(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, miss_type: [*:0]const u8, amount_missed: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuStr(miss_type); cleuNum(amount_missed);
+    cleuStr(miss_type);
+    cleuNum(amount_missed);
     signalEvent();
 }
 
 fn fireSpellHeal(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, amount: u32, overheal: u32, absorbed: u32, critical: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuNum(amount); cleuNum(overheal); cleuNum(absorbed); cleuBool(critical);
+    cleuNum(amount);
+    cleuNum(overheal);
+    cleuNum(absorbed);
+    cleuBool(critical);
     signalEvent();
 }
 
 fn fireSpellEnergize(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, amount: u32, power_type: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuNum(amount); cleuNum(power_type);
+    cleuNum(amount);
+    cleuNum(power_type);
     signalEvent();
 }
 
 fn fireSpellLeech(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, amount: u32, power_type: u32, extra_amount: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuNum(amount); cleuNum(power_type); cleuNum(extra_amount);
+    cleuNum(amount);
+    cleuNum(power_type);
+    cleuNum(extra_amount);
     signalEvent();
 }
 
@@ -1054,7 +1205,8 @@ fn fireSpellStr(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, str_a
 fn fireSpellStrD(sub: [*:0]const u8, src_guid: u64, dst_guid: u64, id: u32, str_arg: [*:0]const u8, amount: u32) void {
     cleuBase(sub, src_guid, dst_guid);
     cleuSpellPrefix(id);
-    cleuStr(str_arg); cleuNum(amount);
+    cleuStr(str_arg);
+    cleuNum(amount);
     signalEvent();
 }
 
@@ -1324,7 +1476,6 @@ fn periodicAuraLogDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
     const count = cdsGet(u32, cds);
 
     if (target_guid != null and caster_guid != null and spell_id != null and count != null) {
-
         const aura_type = cdsGet(u32, cds);
         if (aura_type) |at| {
             switch (at) {
@@ -1495,7 +1646,6 @@ fn parseMeleePacket(cds: u32) void {
         blocked = cdsGet(u32, cds) orelse 0;
     }
 
-
     // Determine miss type from victimState
     const miss_type: ?[*:0]const u8 = switch (victim_state) {
         VS_UNAFFECTED => if (hit_info & HITINFO_MISS != 0) MISS_MISS else null,
@@ -1656,8 +1806,15 @@ fn damageShieldDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.
         // Build CLEU buffer directly — spell prefix is deferred via damage_shield_spell
         cleuBase(SUB_DAMAGE_SHIELD, attacker_guid.?, victim_guid.?);
         cleuDamageShieldSpell(victim_guid.?, school.?);
-        cleuNum(damage.?); cleuNum(overkill); cleuNum(school.?); cleuNum(0);
-        cleuNum(0); cleuNum(0); cleuBool(0); cleuBool(0); cleuBool(0);
+        cleuNum(damage.?);
+        cleuNum(overkill);
+        cleuNum(school.?);
+        cleuNum(0);
+        cleuNum(0);
+        cleuNum(0);
+        cleuBool(0);
+        cleuBool(0);
+        cleuBool(0);
         signalEvent();
     }
 
@@ -1840,7 +1997,6 @@ fn spellLogExecuteDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(ho
                         const target = cdsGet(u64, cds) orelse break;
 
                         if (target != 0) {
-
                             if (effect_type == EFFECT_INSTAKILL) {
                                 // SPELL_INSTAKILL with caster from SPELLLOGEXECUTE (packet-level casterGUID)
                                 log.fmt("SPELL_INSTAKILL: [{d}]{s} caster=0x{x} victim=0x{x}\n", .{ spell_id.?, std.mem.span(spell_name), caster_guid.?, target });
@@ -1912,46 +2068,58 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
         const cast_flags = cdsGet(u16, cds);
 
         if (caster_guid != null and spell_id != null and cast_flags != null) {
-            // SPELL_START has timer before targets, SPELL_GO has hit/miss lists
-            if (opcode == OPCODE_SPELL_START) {
-                _ = cdsGet(u32, cds); // timer
-            }
-
-            // Parse target mask and extract unit target
-            const target_mask = cdsGet(u16, cds) orelse 0;
-            const TARGET_FLAG_UNIT: u16 = 0x0002;
             var spell_target: u64 = 0;
-            if (target_mask & TARGET_FLAG_UNIT != 0) {
-                spell_target = cdsGetPackedGuid(cds) orelse 0;
-            }
 
             if (opcode == OPCODE_SPELL_START) {
+                // SPELL_START: timer(u32), then targetMask(u16), [unitTargetPackGUID if flag 0x2]
+                _ = cdsGet(u32, cds); // timer
+                const target_mask = cdsGet(u16, cds) orelse 0;
+                if (target_mask & 0x0002 != 0) { // TARGET_FLAG_UNIT
+                    spell_target = cdsGetPackedGuid(cds) orelse 0;
+                }
                 fireSpell(SUB_SPELL_CAST_START, caster_guid.?, spell_target, spell_id.?);
             } else {
+                // SPELL_GO: hit_count(u8), [hitTargetPackGUID...], miss_count(u8), ...
+                // Parse hit list once — use for destination, cast recording, and aura refresh
+                var hit_targets: [20]u64 = [_]u64{0} ** 20;
+                var hit_target_count: u8 = 0;
+                if (cdsGet(u8, cds)) |hit_count| {
+                    var h: u8 = 0;
+                    while (h < hit_count and h < 20) : (h += 1) {
+                        hit_targets[h] = cdsGet(u64, cds) orelse 0;
+                        hit_target_count += 1;
+                    }
+                    // Skip any beyond our buffer
+                    while (h < hit_count) : (h += 1) {
+                        _ = cdsGet(u64, cds);
+                    }
+                }
+
+                // First hit target is the spell destination
+                if (hit_target_count > 0) {
+                    spell_target = hit_targets[0];
+                }
+
                 fireSpell(SUB_SPELL_CAST_SUCCESS, caster_guid.?, spell_target, spell_id.?);
 
-                // Record cast for aura caster inference
-                recordCast(caster_guid.?, spell_target, spell_id.?);
+                // Record casts for aura caster inference
+                var t: u8 = 0;
+                while (t < hit_target_count) : (t += 1) {
+                    if (hit_targets[t] != 0) {
+                        recordCast(caster_guid.?, hit_targets[t], spell_id.?);
+                    }
+                }
 
-                // Heuristic SPELL_AURA_REFRESH for all units:
-                // Parse SPELL_GO hit targets. If a hit target already has this aura
-                // in their descriptors, infer a refresh. This is best-effort — the
-                // server sends NO explicit refresh notification to observers in vanilla.
+                // Heuristic SPELL_AURA_REFRESH: if hit target already has this aura, infer refresh
                 if (hasApplyAuraEffect(spell_id.?)) {
-                    // Skip local player — SetActionCooldownTimer hook handles their
-                    // refreshes reliably via SMSG_UPDATE_AURA_DURATION.
                     const local_guid = getActivePlayerGuid();
-                    _ = cdsGet(u16, cds); // castFlags
-                    if (cdsGet(u8, cds)) |hit_count| {
-                        var hits: u8 = 0;
-                        while (hits < hit_count) : (hits += 1) {
-                            const target_guid = cdsGetPackedGuid(cds) orelse break;
-                            if (target_guid != 0) recordCast(caster_guid.?, target_guid, spell_id.?);
-                            if (target_guid != 0 and target_guid != local_guid) {
-                                if (unitHasAura(target_guid, spell_id.?)) |slot| {
-                                    const aura_type = getAuraType(spell_id.?, slot);
-                                    fireSpellStr(SUB_SPELL_AURA_REFRESH, caster_guid.?, target_guid, spell_id.?, aura_type);
-                                }
+                    t = 0;
+                    while (t < hit_target_count) : (t += 1) {
+                        const tgt = hit_targets[t];
+                        if (tgt != 0 and tgt != local_guid) {
+                            if (unitHasAura(tgt, spell_id.?)) |slot| {
+                                const aura_type = getAuraType(spell_id.?, slot);
+                                fireSpellStr(SUB_SPELL_AURA_REFRESH, caster_guid.?, tgt, spell_id.?, aura_type);
                             }
                         }
                     }
@@ -2708,13 +2876,11 @@ pub fn installHooks() void {
         log.print("Hooked ProcessEnvironmentalDamage\n");
     }
 
-
     if (spell_failed_other_hook.attach(0x6E75F0, &spellFailedOtherDetour) != .ok) {
         log.print("FAILED to hook HandleSpellInterruptUpdate\n");
     } else {
         log.print("Hooked HandleSpellInterruptUpdate (SPELL_CAST_FAILED others)\n");
     }
-
 
     if (unit_death_hook.attach(0x605860, &unitDeathDetour) != .ok) {
         log.print("FAILED to hook HandleUnitDeath\n");
@@ -2761,6 +2927,12 @@ pub fn installHooks() void {
     } else {
         log.print("Hooked ProcessMultipleSpellInterrupts (SPELL_DISPEL_FAILED)\n");
     }
+
+    if (destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour) != .ok) {
+        log.print("FAILED to hook DestroyObjectManager\n");
+    } else {
+        log.print("Hooked DestroyObjectManager (log queue flush before shutdown)\n");
+    }
 }
 
 pub fn removeHooks() void {
@@ -2782,6 +2954,7 @@ pub fn removeHooks() void {
         init_engine_hook.detach();
         create_events_hook.detach();
         resize_events_hook.detach();
+        destroy_objmgr_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
     }

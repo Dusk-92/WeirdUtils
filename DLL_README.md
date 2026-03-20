@@ -169,7 +169,9 @@ Provides WotLK 3.3.5-style `COMBAT_LOG_EVENT_UNFILTERED` for the vanilla client.
 
 37 subevents covering all combat interactions: damage (spell, melee, periodic, environmental, damage shield, damage split), healing (direct, periodic, overheal tracking), misses (all types), auras (applied, removed, refreshed, broken, dose changes), casts (start, success, failed, interrupted), power (energize, drain, leech), dispels, extra attacks, deaths, and kills.
 
-Each event includes source/destination GUIDs, names, unit flags, raid flags, spell info, and all WotLK-standard suffix fields. Booleans (critical, glancing, crushing) use WotLK semantics: `nil` for false, `"1"` for true.
+Each event includes source/destination GUIDs, names, unit flags, raid flags, spell info, and all WotLK-standard suffix fields. Booleans (critical, glancing, crushing) use WotLK semantics: `nil` for false, `"1"` for true. Names are `nil` when the client can't resolve the unit (despawned, out-of-range). Null GUIDs use `0x80000000` flags.
+
+When `/combatlog` is active, also writes structured WotLK-style CSV to `Logs\WeirdCombatLog.txt` (replaces vanilla's combat log file with parseable data).
 
 Also provides:
 

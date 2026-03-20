@@ -236,9 +236,6 @@ const CREATURE_CACHE: u32 = 0xC0E138;
 const FN_CACHE_REQUEST: usize = 0x566240;
 
 /// Resolve a GUID to a unit/NPC name.
-/// Players: uses the player name cache (keyed by GUID).
-/// Creatures: uses the creature cache via Cache_RequestData (keyed by entry ID from GUID).
-/// Both caches are safe to call during packet/update processing — no object manager access.
 pub fn getNameByGUID(guid: u64) [*:0]const u8 {
     if (guid == 0) return "";
     const lo: u32 = @truncate(guid);

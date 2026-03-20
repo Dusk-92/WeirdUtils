@@ -93,7 +93,7 @@ local NPC_CATEGORIES = {
     { name = "Brainwasher",   trackingType = "brainwasher",  icon = "Interface\\Minimap\\Tracking\\Brainwasher", scale = 1.8, default = 1 },
     { name = "Innkeeper",     trackingType = "innkeeper",    icon = "Interface\\Minimap\\Tracking\\Innkeeper", default = 1 },
     { name = "Flight Master", trackingType = "flightmaster", icon = "Interface\\Minimap\\Tracking\\FlightMaster" },
-    { name = "Quest Available", trackingType = "quest_available", icon = "Interface\\GossipFrame\\AvailableQuestIcon", default = 1 },
+    { name = "Quest Available", trackingType = "quest_available", icon = "Interface\\Minimap\\Tracking\\QuestAvailable", default = 1 },
     { name = "Reagent Vendor", trackingType = "vendor",      icon = "Interface\\Minimap\\Tracking\\Reagents",
         getFilter = function() return getLocaleFilter(REAGENT_FILTERS) end },
     { name = "Poison Vendor", trackingType = "vendor",       icon = "Interface\\Minimap\\Tracking\\Poison",
@@ -229,6 +229,7 @@ UIDropDownMenu_Initialize(dropdown, function()
     local cityInfo = {}
     cityInfo.text = "Hide in Cities"
     cityInfo.icon = "Interface\\Minimap\\Tracking\\City"
+    cityInfo.tCoordLeft = 0; cityInfo.tCoordRight = 1; cityInfo.tCoordTop = 0; cityInfo.tCoordBottom = 1
     cityInfo.checked = activeNpcCategories["City Toggle"]
     cityInfo.keepShownOnClick = 1
     cityInfo.func = function()
@@ -247,6 +248,7 @@ UIDropDownMenu_Initialize(dropdown, function()
         local info = {}
         info.text = catName
         info.icon = cat.icon
+        info.tCoordLeft = 0; info.tCoordRight = 1; info.tCoordTop = 0; info.tCoordBottom = 1
         info.checked = activeNpcCategories[catName]
         info.keepShownOnClick = 1
         info.func = function()
