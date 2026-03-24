@@ -189,14 +189,12 @@ const VBState = struct {
         // All strides are 24 except normal (0, shared global).
         // Write contiguously when stride == 24 and layout matches.
         if (s.pos_stride == 24 and s.color_ptr == s.pos + 12 and s.texcoord == s.pos + 16) {
-            // Fast path: single contiguous 24-byte vertex write
-            const p: [*]u32 = @ptrFromInt(s.pos);
-            p[0] = @bitCast(px); // x
-            p[1] = @bitCast(py); // y
-            p[2] = @bitCast(pz); // z
-            p[3] = color; // color at +12
-            p[4] = @bitCast(tu); // u at +16
-            p[5] = @bitCast(tv); // v at +20
+            // Fast path: contiguous 24-byte vertex. V4 store for xyz+color (16 bytes),
+            // then 2 scalar stores for uv (8 bytes). Unaligned V4 store via vmovups.
+            const xyzc = V4{ px, py, pz, @bitCast(color) };
+            @as(*align(1) V4, @ptrFromInt(s.pos)).* = xyzc;
+            wf32(s.pos + 16, tu);
+            wf32(s.pos + 20, tv);
             s.pos += 24;
             s.color_ptr += 24;
             s.texcoord += 24;
@@ -478,18 +476,21 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
                 // Assembly: eax starts at 0, adds 8 between X and Y reads.
                 //   X: [eax+0x87D714], eax+=8, Y: [eax+0x87D710]=[eax_new+0x87D710]
                 //   texU: [eax+0x87D72C], texV: [eax+0x87D730] (eax already incremented)
-                // 4 vertices with cached VB state to avoid pointer re-reads.
+                // Unrolled — inline for lets LLVM schedule stores across vertices.
                 {
                     var vs = VBState.load(vb);
-                    var loop_off: u32 = 0;
-                    while (loop_off < 0x20) : (loop_off += 8) {
+                    const wpx = world_pos[0];
+                    const wpy = world_pos[1];
+                    const wpz = world_pos[2];
+                    inline for (0..4) |i| {
+                        const off: u32 = @intCast(i * 8);
                         vs.emit(
-                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_x + loop_off), world_pos[0]),
-                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_y + loop_off), world_pos[1]),
-                            world_pos[2],
+                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_x + off), wpx),
+                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_y + off), wpy),
+                            wpz,
                             color_value,
-                            @mulAdd(f32, rf32(G.sprite_tex_u + loop_off + 8), tex_scale_u, tex_u_base),
-                            @mulAdd(f32, rf32(G.sprite_tex_v + loop_off + 8), tex_scale_v, tex_v_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_u + off + 8), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_v + off + 8), tex_scale_v, tex_v_base),
                         );
                     }
                     vs.writeback();
@@ -538,17 +539,20 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
 
                 {
                     var vs = VBState.load(vb);
-                    var loop_off: u32 = 0;
-                    while (loop_off < 0x20) : (loop_off += 8) {
-                        const ox = rf32(G.billboard_offsets_x + loop_off);
-                        const oy = rf32(G.billboard_offsets_y + loop_off);
+                    const wpx = world_pos[0];
+                    const wpy = world_pos[1];
+                    const wpz = world_pos[2];
+                    inline for (0..4) |i| {
+                        const off: u32 = @intCast(i * 8);
+                        const ox = rf32(G.billboard_offsets_x + off);
+                        const oy = rf32(G.billboard_offsets_y + off);
                         vs.emit(
-                            @mulAdd(f32, ox, scaled_cos, world_pos[0]) - oy * scaled_sin,
-                            @mulAdd(f32, oy, scaled_cos, @mulAdd(f32, ox, scaled_sin, world_pos[1])),
-                            world_pos[2],
+                            @mulAdd(f32, ox, scaled_cos, wpx) - oy * scaled_sin,
+                            @mulAdd(f32, oy, scaled_cos, @mulAdd(f32, ox, scaled_sin, wpy)),
+                            wpz,
                             color_value,
-                            @mulAdd(f32, rf32(G.sprite_tex_u + loop_off + 8), tex_scale_u, tex_u_base),
-                            @mulAdd(f32, rf32(G.sprite_tex_v + loop_off + 8), tex_scale_v, tex_v_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_u + off + 8), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_v + off + 8), tex_scale_v, tex_v_base),
                         );
                     }
                     vs.writeback();
