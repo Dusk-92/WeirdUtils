@@ -34,6 +34,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "filecache", .desc = "Enable MPQ archive file cache" },
     .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
+    .{ .name = "performance", .desc = "Enable production SSE hooks (bone, particle, glyph cache)", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
@@ -55,11 +56,12 @@ pub fn build(b: *std.Build) void {
     });
     const zhook_mod = zhook_dep.module("zhook");
 
-    // Hot math — separate compilation units, always ReleaseFast
+    // Hot math — separate compilation units, always ReleaseFast.
+    // Source lives in src/performance/ — the production SSE module.
     const clip_sse_obj = b.addObject(.{
         .name = "clip_sse",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/transform44/clip_sse.zig"),
+            .root_source_file = b.path("src/performance/clip_sse.zig"),
             .target = target,
             .optimize = .ReleaseFast,
         }),
@@ -73,7 +75,7 @@ pub fn build(b: *std.Build) void {
     const bone_sse_obj = b.addObject(.{
         .name = "bone_sse",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/transform44/bone_sse.zig"),
+            .root_source_file = b.path("src/performance/bone_sse.zig"),
             .target = bone_sse_target,
             .optimize = .ReleaseFast,
         }),
@@ -106,7 +108,7 @@ pub fn build(b: *std.Build) void {
     const silicon_sse_obj = b.addObject(.{
         .name = "silicon_sse",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/silicon/silicon_sse.zig"),
+            .root_source_file = b.path("src/performance/silicon_sse.zig"),
             .target = bone_sse_target, // SSE4.1+FMA+AVX, same as bone_sse
             .optimize = .ReleaseFast,
         }),
@@ -115,7 +117,7 @@ pub fn build(b: *std.Build) void {
     const particle_sse_obj = b.addObject(.{
         .name = "particle_sse",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/transform44/particle_sse.zig"),
+            .root_source_file = b.path("src/performance/particle_sse.zig"),
             .target = bone_sse_target,
             .optimize = .ReleaseFast,
         }),
@@ -181,7 +183,7 @@ pub fn build(b: *std.Build) void {
         const bench_silicon_sse = b.addObject(.{
             .name = "bench_silicon_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/silicon/silicon_sse.zig"),
+                .root_source_file = b.path("src/performance/silicon_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,
@@ -193,7 +195,7 @@ pub fn build(b: *std.Build) void {
         const bench_bone_sse = b.addObject(.{
             .name = "bench_bone_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/transform44/bone_sse.zig"),
+                .root_source_file = b.path("src/performance/bone_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,
@@ -217,7 +219,7 @@ pub fn build(b: *std.Build) void {
         const bench_particle_sse = b.addObject(.{
             .name = "bench_particle_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/transform44/particle_sse.zig"),
+                .root_source_file = b.path("src/performance/particle_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,

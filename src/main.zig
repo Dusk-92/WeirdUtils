@@ -23,6 +23,7 @@ const build_opts = struct {
     const filecache = @import("build_options").enable_filecache;
     const ssemaths = @import("build_options").enable_ssemaths;
     const silicon = @import("build_options").enable_silicon;
+    const performance = @import("build_options").enable_performance;
 };
 
 // Conditional module imports
@@ -44,6 +45,7 @@ const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") e
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
 const file_cache = if (build_opts.filecache) @import("filecache/filecache.zig") else struct {};
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
+const performance = if (build_opts.performance) @import("performance/performance.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -112,6 +114,8 @@ fn registerLuaFunctions() void {
     if (build_opts.dpslog) {
         registerFunction("GetSpellInfo", @intFromPtr(&dpslog.luaGetSpellInfo));
         registerFunction("CombatLogGetCurrentEventInfo", @intFromPtr(&dpslog.luaCombatLogGetCurrentEventInfo));
+        registerFunction("UnitCastingInfo", @intFromPtr(&dpslog.luaUnitCastingInfo));
+        registerFunction("UnitChannelInfo", @intFromPtr(&dpslog.luaUnitChannelInfo));
     }
     if (build_opts.addonperf) {
         registerFunction("GetAddOnMemoryUsage", @intFromPtr(&addonperf.luaGetAddOnMemoryUsage));
@@ -853,6 +857,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
     if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
     if (build_opts.silicon) .{ .name = silicon.module_name, .install = silicon.installHooks, .remove = silicon.removeHooks, .is_active = silicon.isActive } else .{},
+    if (build_opts.performance) .{ .name = performance.module_name, .install = performance.installHooks, .remove = performance.removeHooks, .is_active = performance.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
