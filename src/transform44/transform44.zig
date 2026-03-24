@@ -23,6 +23,7 @@ extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
 extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 
 /// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
 /// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
@@ -925,7 +926,14 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
     return ret;
 }
 fn particleDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // a=ECX(emitter), b=EDX(unused), c=particleData, d=vertexBuffers
     const s = rdtsc();
+    if (ab_use_custom) {
+        const result = renderParticleSprites_SSE(a, c, d);
+        prof.particle_cycles +|= rdtsc() - s;
+        prof.particle_calls +|= 1;
+        return @ptrFromInt(result);
+    }
     const ret = particle_hook.callOriginal(.{ a, b, c, d });
     prof.particle_cycles +|= rdtsc() - s;
     prof.particle_calls +|= 1;
