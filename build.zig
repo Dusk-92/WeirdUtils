@@ -29,12 +29,12 @@ const module_list = [_]ModuleDesc{
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
     .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
-    .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
+    .{ .name = "transform44", .desc = "Enable transform44 profiling/A/B testing (dev only)", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API", .default = false },
     .{ .name = "filecache", .desc = "Enable MPQ archive file cache" },
     .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
-    .{ .name = "performance", .desc = "Enable production SSE hooks (bone, particle, glyph cache)", .default = false },
+    .{ .name = "performance", .desc = "Enable production SSE hooks (bone, particle, glyph cache)", .default = true },
 };
 
 pub fn build(b: *std.Build) void {

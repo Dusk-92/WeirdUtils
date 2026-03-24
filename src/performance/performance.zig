@@ -142,6 +142,91 @@ fn teardownDetour() callconv(.{ .x86_stdcall = .{} }) void {
 }
 
 // =============================================================================
+// Silicon SSE JMP patches — binary patches at game function addresses
+// =============================================================================
+
+const sse = struct {
+    extern fn si_normalizeVec3() callconv(.naked) void;
+    extern fn si_mulMat3x4(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    extern fn si_rotateMatByQuat(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    extern fn si_classifyPointFrustum(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_checkBoxLineIntersect(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    extern fn si_testOBBFrustum(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_testSphereFrustum(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_quatSlerp(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    extern fn si_calculateSinCos(u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void;
+    extern fn si_createZRotMat3x3(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_transposeMat4x4() callconv(.naked) void;
+    extern fn si_mulMat3x4InPlace(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+    extern fn si_normalizeVec3InPlace(u32) callconv(.{ .x86_thiscall = .{} }) void;
+    extern fn si_addVec3ToAccumulator(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+    extern fn si_addToColorAccumulator() callconv(.naked) void;
+    extern fn si_packParticleColor(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+    extern fn si_setParticleAlpha() callconv(.naked) void;
+    extern fn si_ftol() callconv(.naked) void;
+    extern fn si_translateBoundingVol(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+    extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    extern fn si_frustumCullBBox(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+};
+
+const PatchEntry = struct {
+    target: u32,
+    replacement: u32,
+    name: [*:0]const u8,
+    direct_size: u8 = 0,
+};
+
+fn patchJmp(target: u32, replacement: u32) void {
+    const rel = @as(i32, @bitCast(replacement -% target -% 5));
+    var patch = [5]u8{ 0xE9, 0, 0, 0, 0 };
+    @as(*align(1) i32, @ptrCast(patch[1..5])).* = rel;
+    hook.writeProtected(target, &patch);
+}
+
+fn patchDirect(target: u32, src: [*]const u8, size: usize) void {
+    hook.writeProtected(target, src[0..size]);
+}
+
+fn installPatches() u32 {
+    const patches = [_]PatchEntry{
+        .{ .target = 0x4549C0, .replacement = @intFromPtr(&sse.si_normalizeVec3), .name = "normalizeVec3" },
+        .{ .target = 0x7BAE60, .replacement = @intFromPtr(&sse.si_mulMat3x4), .name = "mulMat3x4" },
+        .{ .target = 0x7BDDB0, .replacement = @intFromPtr(&sse.si_rotateMatByQuat), .name = "rotateMatByQuat" },
+        .{ .target = 0x7BB860, .replacement = @intFromPtr(&sse.si_createRotMat3x4), .name = "createRotMat3x4" },
+        .{ .target = 0x686C20, .replacement = @intFromPtr(&sse.si_classifyPointFrustum), .name = "classifyPointFrustum" },
+        .{ .target = 0x6DC5A0, .replacement = @intFromPtr(&sse.si_checkBoxLineIntersect), .name = "checkBoxLineIntersect" },
+        .{ .target = 0x6869C0, .replacement = @intFromPtr(&sse.si_testOBBFrustum), .name = "testOBBFrustum" },
+        .{ .target = 0x686B80, .replacement = @intFromPtr(&sse.si_testSphereFrustum), .name = "testSphereFrustum" },
+        .{ .target = 0x7C0570, .replacement = @intFromPtr(&sse.si_quatSlerp), .name = "quatSlerp" },
+        .{ .target = 0x749280, .replacement = @intFromPtr(&sse.si_calculateSinCos), .name = "calculateSinCos" },
+        .{ .target = 0x7BE5B0, .replacement = @intFromPtr(&sse.si_createZRotMat3x3), .name = "createZRotMat3x3" },
+        .{ .target = 0x7BCEF0, .replacement = @intFromPtr(&sse.si_transposeMat4x4), .name = "transposeMat4x4", .direct_size = 64 },
+        .{ .target = 0x7BB420, .replacement = @intFromPtr(&sse.si_mulMat3x4InPlace), .name = "mulMat3x4InPlace" },
+        .{ .target = 0x6720F0, .replacement = @intFromPtr(&sse.si_normalizeVec3InPlace), .name = "normalizeVec3InPlace" },
+        .{ .target = 0x71BC70, .replacement = @intFromPtr(&sse.si_addVec3ToAccumulator), .name = "addVec3ToAccumulator" },
+        .{ .target = 0x71BF60, .replacement = @intFromPtr(&sse.si_addToColorAccumulator), .name = "addToColorAccumulator" },
+        .{ .target = 0x7B7A80, .replacement = @intFromPtr(&sse.si_packParticleColor), .name = "packParticleColor" },
+        .{ .target = 0x7B7B10, .replacement = @intFromPtr(&sse.si_setParticleAlpha), .name = "setParticleAlpha" },
+        .{ .target = 0x40A2B0, .replacement = @intFromPtr(&sse.si_ftol), .name = "__ftol", .direct_size = 9 },
+        .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
+        .{ .target = 0x6ABC40, .replacement = @intFromPtr(&sse.si_processLinkedListCollision), .name = "processLinkedListCollision" },
+        .{ .target = 0x686000, .replacement = @intFromPtr(&sse.si_frustumCullBBox), .name = "frustumCullBBox" },
+    };
+
+    var count: u32 = 0;
+    for (patches) |p| {
+        if (p.direct_size > 0) {
+            patchDirect(p.target, @ptrFromInt(p.replacement), p.direct_size);
+        } else {
+            patchJmp(p.target, p.replacement);
+        }
+        count += 1;
+    }
+    return count;
+}
+
+// =============================================================================
 // Install / Remove
 // =============================================================================
 
@@ -169,7 +254,10 @@ pub fn installHooks() void {
     // Teardown guard
     if (teardown_hook.attach(0x491180, &teardownDetour) == .ok) installed += 1;
 
-    log.fmt("performance: {d} hooks installed\n", .{installed});
+    // Silicon SSE binary patches
+    const patched = installPatches();
+
+    log.fmt("performance: {d} hooks, {d} patches installed\n", .{ installed, patched });
 }
 
 pub fn removeHooks() void {
