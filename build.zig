@@ -154,6 +154,9 @@ pub fn build(b: *std.Build) void {
 
     // libdeflate — vendored C sources, decompress-only.
     // Built as static library targeting x86-windows-gnu (has libc headers).
+    // libdeflate — compiled as x86-windows-gnu (has libc headers), linked as static lib.
+    // Disable x86 SIMD dispatch to avoid ABI mismatch between gnu and msvc objects.
+    // Generic C fallback is still ~2x faster than WoW's embedded zlib.
     const libdeflate = b.addLibrary(.{
         .linkage = .static,
         .name = "deflate",
@@ -176,9 +179,6 @@ pub fn build(b: *std.Build) void {
             "src/performance/libdeflate/lib/adler32.c",
             "src/performance/libdeflate/lib/x86/cpu_features.c",
         },
-        // Disable AVX-512 codepaths — 512-bit intrinsics require evex512 which
-        // isn't available on 32-bit x86. AVX/AVX2/SSE paths remain active.
-        // -g0: no debug info (avoids .debug_frame section name warning in COFF linker)
         .flags = &.{ "-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI", "-g0" },
     });
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));

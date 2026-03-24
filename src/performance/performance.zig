@@ -24,16 +24,28 @@ pub const module_name: [*:0]const u8 = "performance";
 // Use game's Storm memory manager:
 //   ReallocMemory (0x646320): __stdcall(ptr, size, filename, line, flags) → ptr
 //     When ptr=NULL, acts as malloc via AllocateBufferWithPowerOfTwo.
-//   FreeMemory (0x646430): __stdcall(ptr, filename, line) → always returns 1
+//   FreeMemory (0x646430): __stdcall(ptr, filename, line, flags) RET 0x10 = 4 params
 const gameRealloc: *const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) ?*anyopaque = @ptrFromInt(0x646320);
-const gameFree: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) u32 = @ptrFromInt(0x646430);
+const gameFree: *const fn (u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) u32 = @ptrFromInt(0x646430);
+
+// Static buffer for libdeflate's decompressor struct (~11.5KB).
+// Avoids game allocator which may not be fully malloc-compatible.
+var static_alloc_buf: [16384]u8 align(16) = undefined;
+var static_alloc_used: bool = false;
 
 export fn malloc(size: usize) callconv(.c) ?*anyopaque {
+    // First allocation goes to static buffer (the decompressor struct)
+    if (!static_alloc_used and size <= static_alloc_buf.len) {
+        static_alloc_used = true;
+        return @ptrCast(&static_alloc_buf);
+    }
     return gameRealloc(0, @intCast(size), 0, 0, 0);
 }
 
 export fn free(ptr: ?*anyopaque) callconv(.c) void {
-    if (ptr) |p| _ = gameFree(@intFromPtr(p), 0, 0);
+    // Don't free static buffer
+    if (ptr == @as(?*anyopaque, @ptrCast(&static_alloc_buf))) return;
+    if (ptr) |p| _ = gameFree(@intFromPtr(p), 0, 0, 0);
 }
 
 var g_mutex: ?*anyopaque = null;
