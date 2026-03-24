@@ -109,17 +109,19 @@ No configuration needed, install and forget.
 
 ### Utility Minimap Trackings
 
-Adds TBC-style minimap tracking icons for NPC types (vendors, trainers, innkeepers, etc.) and game objects (mailboxes).  
-Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
-Can be disabled easily from normal AddOn menu.  
+Adds TBC/WotLK-style minimap tracking icons for NPC types, game objects, and quest givers.
+Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.
+Can be disabled from the normal AddOn menu. Preferences saved per-character.
 
 - Click the minimap tracking icon to open the dropdown
 - Check/uncheck NPC categories to toggle their minimap icons
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
+- "Hide in Cities" toggle suppresses NPC icons in capital cities
 
-Supports many NPC types such as Auctioneer, Banker, Flightmaster, Repair, Reagents, Poisons, and more
-Supported game objects: Mailbox, Brainwasher
-Quest tracking: shows nearby NPCs with available quests (yellow !) on the minimap
+NPC types: Auctioneer, Banker, Battle Master, Flight Master, Innkeeper, Repair, Stable Master, Class Trainer, Profession Trainer, and five vendor subtypes (Reagent, Poison, Trade Goods, Ammunition, General)
+Game objects: Mailbox, Refreshment Table, Goblin Brainwashing Device
+Quest tracking: nearby NPCs with available quests (yellow !) on the minimap
+Vendor subtypes are identified by localized subname matching (EN, FR, DE, CN, ES, RU)
 
 **DLL:** `minimapicons.dll`
 
@@ -127,11 +129,12 @@ Quest tracking: shows nearby NPCs with available quests (yellow !) on the minima
 
 ### Clickthrough
 
-Makes interactable Objects and NPCs clickable through players and units.
+Makes interactable objects and NPCs clickable through players and units that are blocking them. When you click a player or unit that's standing on top of a vendor, mailbox, or other interactable target, the click passes through to the target behind them.
 
-- Players blocking interactable NPCs (vendors, trainers, flight masters, bankers, etc.) or Objects (mailboxes, summoning portals, soulwells) become transparent to clicks
-- Units (pets, NPCs) blocking interactable Objects become transparent to clicks
-- PvP objects and Non-interactable objects (other players' pets, random mobs) are not affected, this solely helps with player dogpiles
+- Players blocking interactable NPCs (vendors, trainers, flight masters, bankers, quest givers, etc.) or game objects become transparent to clicks
+- Players blocking lootable corpses become transparent to clicks
+- Units (pets, NPCs) blocking interactable game objects become transparent to clicks
+- Disabled inside battlegrounds to prevent targeting objectives through enemy players
 
 No configuration needed, install and forget.
 

@@ -18,7 +18,7 @@ local SPELL_CATEGORIES = {
         -- "Sense Undead", "Sense Demons",
     -- }},
     { name = "Professions", spells = {
-        "Find Herbs", "Find Minerals", "Find Treasure",
+        "Find Herbs", "Find Minerals", "Find Treasure", "Find Trees", "Find Fish",
     }},
 }
 
@@ -360,12 +360,3 @@ events:SetScript("OnEvent", function()
     updateTrackingIcon()
 end)
 
--- =============================================================================
--- Slash command
--- =============================================================================
-
-SLASH_TRACKING1 = "/tracking"
-SlashCmdList["TRACKING"] = function()
-    scanSpellbook()
-    ToggleDropDownMenu(1, nil, dropdown, MiniMapTrackingFrame, 0, 0)
-end
