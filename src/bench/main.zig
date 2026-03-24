@@ -49,6 +49,7 @@ extern fn si_mulMat3x4InPlace(u32, u32) callconv(cc_tc) u32;
 extern fn si_normalizeVec3InPlace(u32) callconv(cc_tc) void;
 extern fn si_vec3Dot(u32, u32) callconv(cc_fc) f64;
 extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
+extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_addVec3ToAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
@@ -1767,7 +1768,149 @@ pub fn main() void {
         }
     }
 
+    // si_processLinkedListCollision -- fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack) -> u32
+    // Builds a fake linked list with 8 nodes to benchmark AABB overlap test.
+    bench_processLinkedListCollision();
+
     print("\n", .{});
+}
+
+fn bench_processLinkedListCollision() void {
+    // Map page for sentinel global at 0xC89F20
+    _ = mapZeroed(0xC89000, 0x1000);
+    // Map page for addGeometryToBuffer's result_buf writes (just needs writable memory)
+    // Also need pages at 0xCA0000 range for any globals addGeometryToBuffer touches
+
+    const NODE_COUNT = 8;
+
+    // Sentinel: just a unique non-zero value. Original code reads *(u32*)0xC89F20.
+    const sentinel: u32 = 0xDEADBEEF;
+    @as(*u32, @ptrFromInt(0xC89F20)).* = sentinel;
+
+    // --- Build fake node data blocks (need offsets: +0x0C, +0x88, +0x8C, +0x14C-0x164, +0x180, +0x184) ---
+    // Each node_data needs at least 0x188 bytes
+    const NODE_DATA_SIZE = 0x190;
+    var node_data_buf: [NODE_COUNT * NODE_DATA_SIZE]u8 align(4) = std.mem.zeroes([NODE_COUNT * NODE_DATA_SIZE]u8);
+
+    // Query box: min=(0,0,0), max=(10,10,10)
+    var query_box = [6]f32{ 0.0, 0.0, 0.0, 10.0, 10.0, 10.0 };
+
+    // Stub addGeometryToBuffer at 0x6ABD90 → RET 0x4 (just returns, no side effects).
+    // Both original and SSE call the same stub, isolating the linked list walk + AABB test.
+    // Original bytes are in mapped .text — overwrite with: C2 04 00 (RET 4)
+    @as(*[3]u8, @ptrFromInt(0x6ABD90)).* = .{ 0xC2, 0x04, 0x00 };
+
+    // Set up each node_data
+    for (0..NODE_COUNT) |i| {
+        const nd = @intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE;
+        // flags at +0x0C: bit 0x80 set (required, else returns 0), no 0x100 (not skipped)
+        @as(*align(1) u16, @ptrFromInt(nd + 0x0C)).* = 0x80;
+        // active at +0x88: non-zero (just needs to pass != 0 check)
+        @as(*align(1) u32, @ptrFromInt(nd + 0x88)).* = 1;
+        // visited at +0x8C: NOT sentinel (so it gets processed)
+        @as(*align(1) u32, @ptrFromInt(nd + 0x8C)).* = 0;
+        // type discriminator: both zero → use flags & 0xF
+        @as(*align(1) u32, @ptrFromInt(nd + 0x180)).* = 0;
+        @as(*align(1) u32, @ptrFromInt(nd + 0x184)).* = 0;
+
+        // AABB at +0x14C: alternate overlapping and non-overlapping
+        const aabb: *align(1) [6]f32 = @ptrFromInt(nd + 0x14C);
+        if (i % 2 == 0) {
+            // Overlapping: min=(1,1,1), max=(5,5,5)
+            aabb.* = .{ 1.0, 1.0, 1.0, 5.0, 5.0, 5.0 };
+        } else {
+            // Non-overlapping: min=(20,20,20), max=(30,30,30)
+            aabb.* = .{ 20.0, 20.0, 20.0, 30.0, 30.0, 30.0 };
+        }
+    }
+
+    // --- Build linked list nodes ---
+    // Intrusive list: node = { ??, node_data_ptr, ... }
+    // link_offset stored at listHead[0], next at *(link_offset + node + 4)
+    // Simplest: link_offset = 0, so next = *(node + 4) ... no wait.
+    // Re-reading assembly: next = *(*(listHead) + prev_node + 4)
+    // listHead[0] = link_offset (byte offset within node to find next-ptr)
+    // Actually from the asm: MOV EAX,[EBP-0xc] (=listHead), MOV EAX,[EAX] (=*listHead = link_offset)
+    //   MOV ECX,[EAX + EDX*1 + 4] where EDX=node
+    // So: next = *(link_offset + node + 4)
+    // If link_offset = 0: next = *(node + 4), but node+4 is node_data_ptr!
+    // We need link_offset such that (link_offset + node + 4) points to a "next" field.
+    // Let's use link_offset = 4, so next = *(node + 8).
+    // Node layout: [node_data_ptr(+0), ?(+4), next(+8)]
+    // But wait, node+4 is where node_data is read: MOV EBX,[EDX+4] (EDX=node)
+    // So node = { pad(+0), node_data(+4), next(+8) } and link_offset = 4.
+
+    const NODE_SIZE = 12; // pad, node_data_ptr, next_ptr
+    var nodes: [NODE_COUNT * NODE_SIZE]u8 align(4) = std.mem.zeroes([NODE_COUNT * NODE_SIZE]u8);
+
+    for (0..NODE_COUNT) |i| {
+        const n = @intFromPtr(&nodes) + i * NODE_SIZE;
+        // node+4 = node_data pointer
+        @as(*align(1) u32, @ptrFromInt(n + 4)).* = @intCast(@intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE);
+        // node+8 = next node (link_offset=4, so *(link_offset + node + 4) = *(node + 8))
+        if (i + 1 < NODE_COUNT) {
+            @as(*align(1) u32, @ptrFromInt(n + 8)).* = @intCast(@intFromPtr(&nodes) + (i + 1) * NODE_SIZE);
+        } else {
+            @as(*align(1) u32, @ptrFromInt(n + 8)).* = 0; // end: NULL terminates
+        }
+    }
+
+    // listHead: [0]=link_offset, [4]=??, [8]=first_node
+    var list_head = [3]u32{
+        4, // link_offset
+        0,
+        @intCast(@intFromPtr(&nodes)), // first node
+    };
+
+    // Result buffer: addGeometryToBuffer writes here. Just needs writable memory.
+    var result_buf: [4096]u8 = std.mem.zeroes([4096]u8);
+
+    // flags: 0xF (low nibble set, matching type discriminator for both-zero type)
+    const flags: u32 = 0x8F; // bit 7 set + low nibble
+
+    // --- Correctness check ---
+    const of = origFn(fn (u32, u32, u32, u32) callconv(cc_fc) u32, 0x6ABC40);
+
+    // Reset visited markers before each call
+    for (0..NODE_COUNT) |i| {
+        @as(*align(1) u32, @ptrFromInt(@intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE + 0x8C)).* = 0;
+    }
+    const ret_orig = of(a(&list_head), a(&query_box), a(&result_buf), flags);
+
+    for (0..NODE_COUNT) |i| {
+        @as(*align(1) u32, @ptrFromInt(@intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE + 0x8C)).* = 0;
+    }
+    const ret_sse = si_processLinkedListCollision(a(&list_head), a(&query_box), a(&result_buf), flags);
+    const ok = ret_orig == ret_sse;
+
+    // --- Benchmark ---
+    var t: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            // Reset visited markers each iteration (original marks them)
+            for (0..NODE_COUNT) |i| {
+                @as(*align(1) u32, @ptrFromInt(@intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE + 0x8C)).* = 0;
+            }
+            _ = of(a(&list_head), a(&query_box), a(&result_buf), flags);
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < t) t = _te;
+    }
+
+    var s: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            for (0..NODE_COUNT) |i| {
+                @as(*align(1) u32, @ptrFromInt(@intFromPtr(&node_data_buf) + i * NODE_DATA_SIZE + 0x8C)).* = 0;
+            }
+            _ = si_processLinkedListCollision(a(&list_head), a(&query_box), a(&result_buf), flags);
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < s) s = _te;
+    }
+    report("processLinkedListCollision", t, s, ok);
 }
 
 // =========================================================================

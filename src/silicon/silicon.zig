@@ -2088,6 +2088,7 @@ const sse = struct {
     extern fn si_ftol() callconv(.naked) void;
     extern fn si_vec3Dot() callconv(.naked) void;
     extern fn si_translateBoundingVol(u32, u32) callconv(TC) void;
+    extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(FC) u32;
 };
 
 const PatchEntry = struct {
@@ -2122,6 +2123,7 @@ fn getPatchTable() []const PatchEntry {
         .{ .target = 0x40A2B0, .replacement = @intFromPtr(&sse.si_ftol), .name = "__ftol", .direct_size = 9 },
         // vec3Dot (0x602630): removed — 0.6x regression, x87 is optimal for this ABI
         .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
+        .{ .target = 0x6ABC40, .replacement = @intFromPtr(&sse.si_processLinkedListCollision), .name = "processLinkedListCollision" },
     };
     return &table;
 }

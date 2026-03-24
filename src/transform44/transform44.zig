@@ -298,10 +298,8 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
 
     if (teardown_active) {
         transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
-    } else if (ab_use_custom) {
-        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
     } else {
-        transformMatrix4x4_REF(this, mat1, mat2, mat3, mat4);
+        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
     }
 
     t44_depth -|= 1;

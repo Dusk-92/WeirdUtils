@@ -515,3 +515,81 @@ export fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
     obj[48] += dx; obj[49] += dy; obj[50] += dz;
     obj[51] += dx; obj[52] += dy; obj[53] += dz;
 }
+
+// --- 0x6ABC40: processLinkedListCollision ---
+// Walks intrusive linked list, per-node AABB overlap test, calls addGeometryToBuffer on hit.
+// Original: 329 bytes, 6 x87 FCOMP/FNSTSW comparisons per node.
+// SSE: 2 V4 loads + 2 CMPPS + AND + MOVMSK replaces the 6 scalar comparisons.
+//
+// __fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack), RET 0x8
+// addGeometryToBuffer at 0x6ABD90: __fastcall(queryBox_ECX, nodeData_EDX, resultBuf_stack), RET 0x4
+// Visited sentinel: *(u32*)0xC89F20
+export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_buf: u32, flags: u32) callconv(FC) u32 {
+    if (flags & 0xF0000F == 0) return 1;
+
+    const addGeometryToBuffer: *const fn (u32, u32, u32) callconv(FC) void = @ptrFromInt(0x6ABD90);
+
+    // Load query box min/max as V4 for SSE AABB test
+    // queryBox layout: min(+0,+4,+8), max(+0xC,+0x10,+0x14)
+    const q_min = loadV4(query_box); // {qmin.x, qmin.y, qmin.z, <garbage>}
+    const q_max = loadV4(query_box + 0x0C); // {qmax.x, qmax.y, qmax.z, <garbage>}
+
+    const sentinel = @as(*const u32, @ptrFromInt(0xC89F20)).*;
+    const link_offset = @as(*const u32, @ptrFromInt(list_head)).*;
+
+    // First node: listHead[2] (offset +8)
+    var node: u32 = @as(*const u32, @ptrFromInt(list_head + 8)).*;
+
+    // Linked list tag bit: bit 0 set = end sentinel
+    if (node & 1 != 0 or node == 0) return 1;
+
+    while (node & 1 == 0 and node != 0) {
+        const node_data = @as(*const u32, @ptrFromInt(node + 4)).*;
+        const prev_node = node;
+
+        // Skip: flags bit 0x100 set
+        const node_flags = @as(*const u16, @ptrFromInt(node_data + 0x0C)).*;
+        if (node_flags & 0x100 == 0) {
+            // Skip: already visited or null
+            const visited = @as(*const u32, @ptrFromInt(node_data + 0x8C)).*;
+            const active = @as(*const u32, @ptrFromInt(node_data + 0x88)).*;
+            if (visited != sentinel and active != 0) {
+                // Type discriminator: pick flag mask
+                const type_a = @as(*const u32, @ptrFromInt(node_data + 0x180)).*;
+                const type_b = @as(*const u32, @ptrFromInt(node_data + 0x184)).*;
+                const mask = if (type_a | type_b != 0) flags & 0xF00000 else flags & 0xF;
+
+                if (mask != 0) {
+                    // Bit 7 of flags byte: if clear, abort with 0
+                    if (@as(i8, @bitCast(@as(u8, @truncate(node_flags)))) >= 0) return 0;
+
+                    // --- SSE AABB overlap test ---
+                    // node AABB at node_data+0x14C: min(3 floats), max(3 floats)
+                    const n_min = loadV4(node_data + 0x14C); // {nmin.x, nmin.y, nmin.z, <nmax.x>}
+                    const n_max = loadV4(node_data + 0x158); // {nmax.x, nmax.y, nmax.z, <garbage>}
+
+                    // Overlap: nodeMin < queryMax AND queryMin <= nodeMax
+                    // Compare lane-wise, check low 3 bits of mask
+                    const lt_mask = n_min < q_max;
+                    const le_mask = q_min <= n_max;
+                    const lt_bits: u4 = @bitCast(lt_mask);
+                    const le_bits: u4 = @bitCast(le_mask);
+                    const bits = lt_bits & le_bits;
+
+                    if (bits & 0x7 == 0x7) {
+                        addGeometryToBuffer(query_box, node_data, result_buf);
+                    }
+
+                    // Mark visited
+                    @as(*u32, @ptrFromInt(node_data + 0x8C)).* = sentinel;
+                }
+            }
+        }
+
+        // Advance: next = *(node + link_offset + 4)
+        // Original: MOV ECX,[EAX + EDX*1 + 4] where EAX=*listHead, EDX=node
+        node = @as(*const u32, @ptrFromInt(link_offset + prev_node + 4)).*;
+    }
+
+    return 1;
+}
