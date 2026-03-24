@@ -878,38 +878,47 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
 
     const s = rdtsc();
 
-    // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
-    const hash = std.hash.Murmur2_32.hashUint32WithSeed(c, a ^ d) & GLYPH_CACHE_MASK;
-    const entry = &glyph_cache[hash];
+    if (ab_use_custom) {
+        // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
+        // Fast integer mix — golden ratio hash. Murmur2 was overkill for 3 integer keys.
+        const hash = ((a ^ c *% 0x9E3779B9) ^ d) & GLYPH_CACHE_MASK;
+        const entry = &glyph_cache[hash];
 
-    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
-        // Cache hit — load cached width into ST(0) for caller
-        asm volatile ("flds (%[p])"
-            :: [p] "r" (&entry.width_bits)
+        if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
+            // Cache hit — load cached width into ST(0) for caller
+            asm volatile ("flds (%[p])"
+                :: [p] "r" (&entry.width_bits)
+            );
+            prof.glyph_hits +|= 1;
+            prof.glyph_cycles +|= rdtsc() - s;
+            prof.glyph_calls +|= 1;
+            return null; // EAX unused by callers, they read ST(0)
+        }
+
+        // Cache miss — call original (sets ST(0)), then capture the result
+        const ret = glyph_hook.callOriginal(.{ a, b, c, d });
+
+        // Read ST(0) without popping — original's float return is still on FPU stack
+        var width_bits: u32 = undefined;
+        asm volatile ("fsts (%[p])"
+            :: [p] "r" (&width_bits)
         );
-        prof.glyph_hits +|= 1;
+
+        entry.* = .{
+            .font_ptr = a,
+            .char_code = c,
+            .param2 = d,
+            .width_bits = width_bits,
+        };
+
+        prof.glyph_misses +|= 1;
         prof.glyph_cycles +|= rdtsc() - s;
         prof.glyph_calls +|= 1;
-        return null; // EAX unused by callers, they read ST(0)
+        return ret;
     }
 
-    // Cache miss — call original (sets ST(0)), then capture the result
+    // BASELINE: just call original, measure cycles
     const ret = glyph_hook.callOriginal(.{ a, b, c, d });
-
-    // Read ST(0) without popping — original's float return is still on FPU stack
-    var width_bits: u32 = undefined;
-    asm volatile ("fsts (%[p])"
-        :: [p] "r" (&width_bits)
-    );
-
-    entry.* = .{
-        .font_ptr = a,
-        .char_code = c,
-        .param2 = d,
-        .width_bits = width_bits,
-    };
-
-    prof.glyph_misses +|= 1;
     prof.glyph_cycles +|= rdtsc() - s;
     prof.glyph_calls +|= 1;
     return ret;
