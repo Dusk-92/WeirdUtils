@@ -30,6 +30,27 @@ inline fn dot4v(a: V4, b: V4) f32 {
     return @mulAdd(f32, a[3], b[3], @mulAdd(f32, a[2], b[2], @mulAdd(f32, a[1], b[1], a[0] * b[0])));
 }
 
+/// Fast reciprocal via vrcpss + Newton-Raphson. ~5 cycles, ~23-bit accuracy (vs vdivss ~14 cycles).
+inline fn fastRecip(x: f32) f32 {
+    var rcp: f32 = undefined;
+    // vrcpss: 12-bit approximation of 1/x
+    rcp = asm ("vrcpss %[x], %[x], %[rcp]"
+        : [rcp] "=x" (-> f32),
+        : [x] "x" (x),
+    );
+    // Newton-Raphson: rcp = rcp * (2 - x * rcp)
+    return rcp * @mulAdd(f32, -x, rcp, 2.0);
+}
+
+/// Round float to nearest integer via cvtss2si (uses MXCSR rounding mode, default = round-to-nearest).
+/// Single instruction, replaces @round + @intFromFloat (~6 instructions).
+inline fn cvtss2si(x: f32) i32 {
+    return asm ("vcvtss2si %[x], %[out]"
+        : [out] "=r" (-> i32),
+        : [x] "x" (x),
+    );
+}
+
 // --- 0x4549C0: normalizeVec3 (137K/7.5s) ---
 // Naked thiscall: ECX=vec, [ESP+4]=length_bits. RET 4. Original: 38 bytes.
 // rcpss + NR for fast reciprocal, then 3 multiplies.
@@ -524,7 +545,7 @@ export fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
 // __fastcall(bbox_ECX, flags_EDX, radius_stack), RET 0x4
 export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) u32 {
     // Early out: global occlusion flag bit 5
-    if (@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20 == 0) return 0;
+    if ((@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20) == 0) return 0;
 
     // Early out: radius too small
     const radius: f32 = @bitCast(radius_bits);
@@ -553,27 +574,30 @@ export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(F
     const extent = @mulAdd(V4, rv, loadV4(m2 + 16), @mulAdd(V4, rv, loadV4(m2), loadV4(m2 + 48)));
 
     // Behind-camera check (unless flags & 8)
-    if (flags & 0x8 == 0) {
+    if ((flags & 0x8) == 0) {
         if (center[2] < @as(*align(1) const f32, @ptrFromInt(0x80FED4)).*) return 0;
     }
 
-    // Perspective divide: inv_w = K / center.z
+    // Perspective divide: inv_w = K * rcpss(center.z) with Newton-Raphson refinement.
+    // vrcpss + NR: ~5 cycles vs vdivss ~14 cycles. Column indices only need ~1px accuracy.
     const K: f32 = @as(*align(1) const f32, @ptrFromInt(0x7FF9D8)).*;
-    const inv_w = K / center[2];
-    const cx = center[0] * inv_w; // projected center x
-    const ex = extent[0] * inv_w; // projected extent x
-    const ey = extent[1] * inv_w; // projected extent y
-    const depth = center[1] * inv_w + ex; // depth for horizon test
+    const cz = center[2];
+    const inv_w = K * fastRecip(cz);
+    const cx = center[0] * inv_w;
+    const ex = extent[0] * inv_w;
+    const ey = extent[1] * inv_w;
+    const depth = @mulAdd(f32, center[1], inv_w, ex);
 
     // Column projection: convert to 320-column indices
     const col_scale: f32 = @as(*align(1) const f32, @ptrFromInt(0x810170)).*;
     const col_offset: f32 = @as(*align(1) const f32, @ptrFromInt(0x86861C)).*;
 
-    // FISTP uses default x87 round-to-nearest; match with @round
-    var left_col: i32 = @intFromFloat(@round((cx - ey) * col_scale - col_offset));
-    left_col += 0xA0; // +160 center offset
-    var right_col: i32 = @intFromFloat(@round((ey + cx) * col_scale - col_offset));
-    right_col += 0xA1; // +161
+    // cvtss2si: round-to-nearest in one instruction (MXCSR default mode).
+    // Replaces @round + @intFromFloat which generates vroundss + sign handling (~6 insns).
+    var left_col: i32 = cvtss2si(@mulAdd(f32, cx - ey, col_scale, -col_offset));
+    left_col += 0xA0;
+    var right_col: i32 = cvtss2si(@mulAdd(f32, ey + cx, col_scale, -col_offset));
+    right_col += 0xA1;
 
     // Bounds check — off-screen culling
     if (left_col >= 0x140) return 0; // fully right of screen (320)
@@ -615,7 +639,7 @@ export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(F
 // addGeometryToBuffer at 0x6ABD90: __fastcall(queryBox_ECX, nodeData_EDX, resultBuf_stack), RET 0x4
 // Visited sentinel: *(u32*)0xC89F20
 export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_buf: u32, flags: u32) callconv(FC) u32 {
-    if (flags & 0xF0000F == 0) return 1;
+    if ((flags & 0xF0000F) == 0) return 1;
 
     const addGeometryToBuffer: *const fn (u32, u32, u32) callconv(FC) void = @ptrFromInt(0x6ABD90);
 
@@ -639,7 +663,7 @@ export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_b
 
         // Skip: flags bit 0x100 set
         const node_flags = @as(*const u16, @ptrFromInt(node_data + 0x0C)).*;
-        if (node_flags & 0x100 == 0) {
+        if ((node_flags & 0x100) == 0) {
             // Skip: already visited or null
             const visited = @as(*const u32, @ptrFromInt(node_data + 0x8C)).*;
             const active = @as(*const u32, @ptrFromInt(node_data + 0x88)).*;
@@ -647,7 +671,7 @@ export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_b
                 // Type discriminator: pick flag mask
                 const type_a = @as(*const u32, @ptrFromInt(node_data + 0x180)).*;
                 const type_b = @as(*const u32, @ptrFromInt(node_data + 0x184)).*;
-                const mask = if (type_a | type_b != 0) flags & 0xF00000 else flags & 0xF;
+                const mask = if ((type_a | type_b) != 0) flags & 0xF00000 else flags & 0xF;
 
                 if (mask != 0) {
                     // Bit 7 of flags byte: if clear, abort with 0
@@ -666,7 +690,7 @@ export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_b
                     const le_bits: u4 = @bitCast(le_mask);
                     const bits = lt_bits & le_bits;
 
-                    if (bits & 0x7 == 0x7) {
+                    if ((bits & 0x7) == 0x7) {
                         addGeometryToBuffer(query_box, node_data, result_buf);
                     }
 
