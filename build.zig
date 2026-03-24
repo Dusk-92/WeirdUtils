@@ -120,6 +120,14 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    const particle_ref_obj = b.addObject(.{
+        .name = "particle_sse_ref",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/particle_sse_reference.zig"),
+            .target = bone_sse_target,
+            .optimize = .ReleaseFast,
+        }),
+    });
 
     const lib = b.addLibrary(.{
         .name = "weirdutils",
@@ -140,6 +148,7 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(math_sse_obj);
     lib.root_module.addObject(silicon_sse_obj);
     lib.root_module.addObject(particle_sse_obj);
+    lib.root_module.addObject(particle_ref_obj);
     b.installArtifact(lib);
 
     // Benchmark harness — native x86 Linux executable for profiling SSE replacements

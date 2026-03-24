@@ -364,10 +364,10 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
     const blue_f = @mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x10))), t,
         @as(f32, @floatFromInt(@as(i32, ru8(color_ctx + 0))))) + magic;
 
-    var color_value: u32 = @as(u32, @truncate(@as(u32, @bitCast(blue_f)) >> 14)) |
-        (@as(u32, @truncate(@as(u32, @bitCast(green_f)) >> 14)) << 8) |
-        (@as(u32, @truncate(@as(u32, @bitCast(red_f)) >> 14)) << 16) |
-        (@as(u32, @truncate(@as(u32, @bitCast(alpha_f)) >> 14)) << 24);
+    var color_value: u32 = ((@as(u32, @bitCast(blue_f)) >> 14) & 0xFF) |
+        (((@as(u32, @bitCast(green_f)) >> 14) & 0xFF) << 8) |
+        (((@as(u32, @bitCast(red_f)) >> 14) & 0xFF) << 16) |
+        (((@as(u32, @bitCast(alpha_f)) >> 14) & 0xFF) << 24);
 
     // Sprite scale: t * ctx.scaleDelta + ctx.scaleBase
     var sprite_scale: f32 = @mulAdd(f32, t, rf32(color_ctx + 0x28), rf32(color_ctx + 0x24));

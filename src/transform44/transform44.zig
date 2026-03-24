@@ -24,6 +24,7 @@ extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
 extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn renderParticleSprites_REF(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn resetParticleCache() void;
 extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
@@ -924,7 +925,7 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
     return ret;
 }
 fn particleDetour(a: u32, _: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
-    // a=ECX(emitter), _=EDX(unused), c=particleData, d=vertexBuffers
+    // a=ECX(emitter), c=particleData, d=vertexBuffers
     const s = rdtsc();
     const result = renderParticleSprites_SSE(a, c, d);
     prof.particle_cycles +|= rdtsc() - s;
