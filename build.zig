@@ -151,6 +151,39 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(silicon_sse_obj);
     lib.root_module.addObject(particle_sse_obj);
     lib.root_module.addObject(particle_ref_obj);
+
+    // libdeflate — vendored C sources, decompress-only.
+    // Built as static library targeting x86-windows-gnu (has libc headers).
+    const libdeflate = b.addLibrary(.{
+        .linkage = .static,
+        .name = "deflate",
+        .root_module = b.createModule(.{
+            .root_source_file = null,
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .x86,
+                .os_tag = .windows,
+                .abi = .gnu,
+            }),
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    libdeflate.root_module.addCSourceFiles(.{
+        .files = &.{
+            "src/performance/libdeflate/lib/deflate_decompress.c",
+            "src/performance/libdeflate/lib/zlib_decompress.c",
+            "src/performance/libdeflate/lib/utils.c",
+            "src/performance/libdeflate/lib/adler32.c",
+            "src/performance/libdeflate/lib/x86/cpu_features.c",
+        },
+        // Disable AVX-512 codepaths — 512-bit intrinsics require evex512 which
+        // isn't available on 32-bit x86. AVX/AVX2/SSE paths remain active.
+        .flags = &.{"-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI"},
+    });
+    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
+    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
+    lib.root_module.addObjectFile(libdeflate.getEmittedBin());
+
     b.installArtifact(lib);
 
     // Benchmark harness — native x86 Linux executable for profiling SSE replacements
