@@ -51,6 +51,7 @@ extern fn si_vec3Dot(u32, u32) callconv(cc_fc) f64;
 extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
 extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_frustumCullBBox(u32, u32, u32) callconv(cc_fc) u32;
+extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(cc_tc) void;
 extern fn si_addVec3ToAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
@@ -1769,6 +1770,9 @@ pub fn main() void {
         }
     }
 
+    // calcColorValues_SSE -- thiscall(ctx_ECX, time, scale, outColor, outAlpha1, outAlpha2, outFloat)
+    bench_calcColorValues();
+
     // si_frustumCullBBox -- fastcall(bbox_ECX, flags_EDX, radius_stack) -> u32
     bench_frustumCullBBox();
 
@@ -1777,6 +1781,99 @@ pub fn main() void {
     bench_processLinkedListCollision();
 
     print("\n", .{});
+}
+
+fn bench_calcColorValues() void {
+    // Map pages for global constants used by calculateColorValues
+    // 0x808AAC and 0x807A3C are in .rdata range (already mapped)
+    // 0x8029CC is in .rdata range (already mapped)
+    // 0x8015B8 is in .rdata range (already mapped) — pow exponent constant
+
+    // Build fake ColorCtx struct
+    // Layout: +0x00..0x03 = base bytes [B,G,R,A], +0x04..0x10 = deltas (4×i32),
+    //   +0x14..0x20 = alpha base/delta pairs (4×i32), +0x24 = float_base(f32),
+    //   +0x28 = float_scale(f32), +0x2C = time_base(f32), +0x30 = time_scale(f32),
+    //   +0x50 = alpha_power(f32)
+    var ctx: [0x54]u8 align(4) = std.mem.zeroes([0x54]u8);
+    // Base color: BGRA = {100, 150, 200, 220}
+    ctx[0] = 100; ctx[1] = 150; ctx[2] = 200; ctx[3] = 220;
+    // Deltas (i32): small values
+    @as(*align(1) i32, @ptrCast(ctx[0x04..0x08])).* = 10;
+    @as(*align(1) i32, @ptrCast(ctx[0x08..0x0C])).* = -5;
+    @as(*align(1) i32, @ptrCast(ctx[0x0C..0x10])).* = 8;
+    @as(*align(1) i32, @ptrCast(ctx[0x10..0x14])).* = -3;
+    // Alpha base/delta
+    @as(*align(1) i32, @ptrCast(ctx[0x14..0x18])).* = 200;
+    @as(*align(1) i32, @ptrCast(ctx[0x18..0x1C])).* = 20;
+    @as(*align(1) i32, @ptrCast(ctx[0x1C..0x20])).* = 180;
+    @as(*align(1) i32, @ptrCast(ctx[0x20..0x24])).* = 15;
+    // Float base/scale
+    @as(*align(1) f32, @ptrCast(ctx[0x24..0x28])).* = 1.0;
+    @as(*align(1) f32, @ptrCast(ctx[0x28..0x2C])).* = 0.5;
+    // Time base/scale
+    @as(*align(1) f32, @ptrCast(ctx[0x2C..0x30])).* = 0.0;
+    @as(*align(1) f32, @ptrCast(ctx[0x30..0x34])).* = 1.0;
+    // Alpha power = 1.0 (linear, fast path)
+    @as(*align(1) f32, @ptrCast(ctx[0x50..0x54])).* = 1.0;
+
+    const time: f32 = 0.5;
+    const scale: f32 = 1.0;
+    var out_color_o: [4]u8 = .{0} ** 4;
+    var out_color_s: [4]u8 = .{0} ** 4;
+    var out_alpha1_o: u32 = 0;
+    var out_alpha1_s: u32 = 0;
+    var out_alpha2_o: u32 = 0;
+    var out_alpha2_s: u32 = 0;
+    var out_float_o: f32 = 0;
+    var out_float_s: f32 = 0;
+
+    // Original: __thiscall(ECX=ctx, stack: time, scale, outColor, outAlpha1, outAlpha2, outFloat), RET 0x18
+    const of = origFn(fn (u32, u32, u32, u32, u32, u32, u32) callconv(cc_tc) void, 0x7B9B10);
+    of(a(&ctx), @bitCast(time), @bitCast(scale), a(&out_color_o), a(&out_alpha1_o), a(&out_alpha2_o), a(&out_float_o));
+    calcColorValues_SSE(a(&ctx), @bitCast(time), @bitCast(scale), a(&out_color_s), a(&out_alpha1_s), a(&out_alpha2_s), a(&out_float_s));
+
+    // The original returns float in ST(0) which we need to pop to avoid FPU stack leak
+    // Pop it after each call in the bench loop too
+    const ok = out_color_o[0] == out_color_s[0] and out_color_o[1] == out_color_s[1] and
+        out_color_o[2] == out_color_s[2] and out_color_o[3] == out_color_s[3] and
+        out_alpha1_o == out_alpha1_s and out_alpha2_o == out_alpha2_s and
+        compareF32(out_float_o, out_float_s);
+    if (!ok) {
+        print("  color bytes: orig=[{d},{d},{d},{d}] sse=[{d},{d},{d},{d}]\n", .{
+            out_color_o[0], out_color_o[1], out_color_o[2], out_color_o[3],
+            out_color_s[0], out_color_s[1], out_color_s[2], out_color_s[3],
+        });
+        print("  alpha1: orig={d} sse={d}  alpha2: orig={d} sse={d}\n", .{
+            out_alpha1_o, out_alpha1_s, out_alpha2_o, out_alpha2_s,
+        });
+        print("  float: orig=0x{x} sse=0x{x}\n", .{
+            @as(u32, @bitCast(out_float_o)), @as(u32, @bitCast(out_float_s)),
+        });
+    }
+
+    // Original returns float in ST(0) — must pop to avoid FPU stack overflow in bench loop
+    var t: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            of(a(&ctx), @bitCast(time), @bitCast(scale), a(&out_color_o), a(&out_alpha1_o), a(&out_alpha2_o), a(&out_float_o));
+            // Pop ST(0) to prevent FPU stack overflow
+            asm volatile ("fstp %%st(0)" ::: "st");
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < t) t = _te;
+    }
+
+    var s: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            calcColorValues_SSE(a(&ctx), @bitCast(time), @bitCast(scale), a(&out_color_s), a(&out_alpha1_s), a(&out_alpha2_s), a(&out_float_s));
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < s) s = _te;
+    }
+    report("calcColorValues", t, s, ok);
 }
 
 fn bench_frustumCullBBox() void {

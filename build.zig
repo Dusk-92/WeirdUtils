@@ -28,7 +28,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
     .{ .name = "bigcursor", .desc = "Enable big cursor module" },
     .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
-    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons" },
+    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .desc = "Enable transformMatrix4x4 hook", .default = false },
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API", .default = false },
     .{ .name = "filecache", .desc = "Enable MPQ archive file cache" },
@@ -112,6 +112,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const particle_sse_obj = b.addObject(.{
+        .name = "particle_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/transform44/particle_sse.zig"),
+            .target = bone_sse_target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+
     const lib = b.addLibrary(.{
         .name = "weirdutils",
         .linkage = .dynamic,
@@ -130,6 +139,7 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(bone_sse_ref_obj);
     lib.root_module.addObject(math_sse_obj);
     lib.root_module.addObject(silicon_sse_obj);
+    lib.root_module.addObject(particle_sse_obj);
     b.installArtifact(lib);
 
     // Benchmark harness — native x86 Linux executable for profiling SSE replacements
@@ -195,10 +205,23 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
             }),
         });
+        const bench_particle_sse = b.addObject(.{
+            .name = "bench_particle_sse",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/transform44/particle_sse.zig"),
+                .target = b.resolveTargetQuery(.{
+                    .cpu_arch = .x86,
+                    .os_tag = .linux,
+                    .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
+                }),
+                .optimize = .ReleaseFast,
+            }),
+        });
         bench.root_module.addObject(bench_math_sse);
         bench.root_module.addObject(bench_silicon_sse);
         bench.root_module.addObject(bench_bone_sse);
         bench.root_module.addObject(bench_bone_baseline);
+        bench.root_module.addObject(bench_particle_sse);
         bench.root_module.linkSystemLibrary("m", .{});
         const install_bench = b.addInstallArtifact(bench, .{});
         const bench_step = b.step("bench", "Build math_sse benchmark harness (x86 Linux)");

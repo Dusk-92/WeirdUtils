@@ -22,6 +22,7 @@ extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
 extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
 extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
+extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 
 /// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
 /// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
@@ -1008,7 +1009,10 @@ fn linkedlistDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaq
     return ret;
 }
 fn colorDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // a=ECX(ctx), b=EDX(unused), c=time, d=scale, e=outColor, f=outAlpha1, g=outAlpha2, h=outFloat
     const s = rdtsc();
+    // SSE replacement benches at 10.7x but no in-game gain — dominated by L1 cache misses
+    // on scattered ColorCtx structs. Fix: inline into full RenderParticleSprites replacement.
     const ret = color_hook.callOriginal(.{ a, b, c, d, e, f, g, h });
     prof.color_cycles +|= rdtsc() - s;
     prof.color_calls +|= 1;
