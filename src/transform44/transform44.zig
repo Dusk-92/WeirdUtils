@@ -25,7 +25,12 @@ extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
 extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn resetParticleCache() void;
+extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var stride_info: [8]u32; // exported from particle_sse.zig
+extern var debug_vertex_count: u32;
+extern var debug_max_sprites: u32;
+extern var debug_fmt_index: u32;
+extern var debug_data_ptr: u32;
 var stride_dumped: bool = false;
 
 /// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
@@ -1461,6 +1466,13 @@ fn dumpStats() void {
     }
 
     // Dump particle VB stride info (once)
+    if (debug_vertex_count != 0) {
+        log.fmt("  partsetup_debug: verts={d} maxSprites={d} fmt={d} dataPtr=0x{x}\n", .{
+            debug_vertex_count, debug_max_sprites, debug_fmt_index, debug_data_ptr,
+        });
+        debug_vertex_count = 0;
+    }
+
     if (stride_info[0] != 0 and !stride_dumped) {
         stride_dumped = true;
         log.fmt("  vb_strides: pos={d} norm={d} color={d} tc={d}\n", .{

@@ -261,6 +261,11 @@ inline fn emitVertex(vb: u32, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv
 var cached_render_state: u32 = 0;
 
 var stride_logged: bool = false;
+var debug_logged: bool = false;
+export var debug_vertex_count: u32 = 0;
+export var debug_max_sprites: u32 = 0;
+export var debug_fmt_index: u32 = 0;
+export var debug_data_ptr: u32 = 0;
 
 /// Reset per-frame caches. Call from OnWorldUpdate or executeSceneRenderPass hook.
 export fn resetParticleCache() void {
@@ -674,4 +679,392 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
     }
 
     return 1;
+}
+
+// =============================================================================
+// Game function pointers for SetupParticleRendering
+// =============================================================================
+
+const SC = std.builtin.CallingConvention;
+const StdCall: SC = .{ .x86_stdcall = .{} };
+
+// 0x58B0B0: SetTransformMatrix — __thiscall(ECX=matrixPtr)
+const gameSetTransformMatrix: *const fn (u32) callconv(TC) void = @ptrFromInt(0x58B0B0);
+// 0x58B050: SetVertexShader — __thiscall(ECX=matrixPtr)
+const gameSetVertexShader: *const fn (u32) callconv(TC) void = @ptrFromInt(0x58B050);
+// 0x7BC6A0: multiplyMatrix4x4 — __fastcall(ECX=out, EDX=matA, stack=matB), RET 0x4, returns out
+const gameMatMul: *const fn (u32, u32, u32) callconv(FC) u32 = @ptrFromInt(0x7BC6A0);
+// 0x409AEF: validateMemoryOperation — __thiscall(ECX=ptr)
+const gameValidateMem: *const fn (u32) callconv(TC) void = @ptrFromInt(0x409AEF);
+// 0x4549F0: vec3SquaredMagnitude — __thiscall(ECX=vec3ptr), returns f64 in ST(0)
+// Can't call directly from Zig due to FPU return. Use inline asm.
+// All calling conventions verified from assembly at each CALL site.
+// 0x589F40: BeginRender — no params visible before call
+const gameBeginRender: *const fn () callconv(StdCall) void = @ptrFromInt(0x589F40);
+// 0x44ACF0: GetTextureBuffer — __fastcall(ECX=texDataPtr, EDX=0, stack=0), returns ptr in EAX
+const gameGetTexture: *const fn (u32, u32, u32) callconv(FC) u32 = @ptrFromInt(0x44ACF0);
+// 0x589E80: SetTexture — __fastcall(ECX=slot, EDX=texturePtr)
+const gameSetTexture: *const fn (u32, u32) callconv(FC) void = @ptrFromInt(0x589E80);
+// 0x589A90: GetDataPointerByIndex — __thiscall(ECX=index), returns ptr
+const gameGetDataPtr: *const fn (u32) callconv(TC) u32 = @ptrFromInt(0x589A90);
+// 0x58A140: CreateVertexBuffer — __fastcall(ECX=0, EDX=dataPtr, stack=count), returns ptr
+const gameCreateVB: *const fn (u32, u32, u32) callconv(FC) u32 = @ptrFromInt(0x58A140);
+// 0x58A080: LockVertexBuffer — __thiscall(ECX=vbPtr), returns base offset
+const gameLockVB: *const fn (u32) callconv(TC) u32 = @ptrFromInt(0x58A080);
+// 0x589AB0: GetMatrixElementPointer — __fastcall(ECX=fmtIndex, EDX=elementIndex), returns ptr
+const gameGetMatElem: *const fn (u32, u32) callconv(FC) u32 = @ptrFromInt(0x589AB0);
+// 0x7B3A10: RenderParticleSystemSorted — __thiscall(ECX=emitter, stack=vbPtrs)
+const gameRenderSorted: *const fn (u32, u32) callconv(TC) void = @ptrFromInt(0x7B3A10);
+// 0x58A0A0: UnlockVertexBuffer — __fastcall(ECX=vbPtr, EDX=0)
+const gameUnlockVB: *const fn (u32, u32) callconv(FC) void = @ptrFromInt(0x58A0A0);
+// 0x58A7C0: DrawPrimitive — __fastcall(ECX=vbPtr, EDX=fmtIndex)
+const gameDrawPrim: *const fn (u32, u32) callconv(FC) void = @ptrFromInt(0x58A7C0);
+// 0x58A010: IsObjectActiveAndValid — __thiscall(ECX=objPtr), returns bool-like
+const gameIsObjValid: *const fn (u32) callconv(TC) u32 = @ptrFromInt(0x58A010);
+// 0x7B3C50: BuildIndexBuffer — __thiscall(ECX=emitter, stack=ibPtr, count)
+// Actually: PUSH edx(count), PUSH ecx(ibPtr), mov ecx,ebx(emitter), CALL
+const gameBuildIB: *const fn (u32, u32, u32) callconv(TC) void = @ptrFromInt(0x7B3C50);
+// 0x58A800: SetStreamSource — __thiscall(ECX=ibPtr)
+const gameSetStream: *const fn (u32) callconv(TC) void = @ptrFromInt(0x58A800);
+// 0x58A830: CallGfxDeviceMethod_Wrapper — __fastcall(ECX=paramsPtr, EDX=param2)
+const gameGfxCall: *const fn (u32, u32) callconv(FC) void = @ptrFromInt(0x58A830);
+// 0x589F50: EndRender — no params
+const gameEndRender: *const fn () callconv(StdCall) void = @ptrFromInt(0x589F50);
+
+// =============================================================================
+// Global addresses for SetupParticleRendering
+// =============================================================================
+const SG = struct {
+    const world_matrix: u32 = 0xCF5B68; // g_worldMatrix (64 bytes, 4x4)
+    const light_dir_x: u32 = 0xCF5878;
+    const light_dir_y: u32 = 0xCF587C;
+    const light_dir_z: u32 = 0xCF5880;
+    const render_init_flags: u32 = 0xCF58EC;
+    const sprite_vertex_template: u32 = 0xCF5AF8; // 4 vertices × 3 floats = 48 bytes
+    const billboard_matrix: u32 = 0xCF5888; // 4x4 matrix (64 bytes, 0xCF5888-0xCF58C8)
+    const sprite_template_validator: u32 = 0xCF5B28; // for validateMemoryOperation
+    const billboard_validator: u32 = 0xCF58E8; // for validateMemoryOperation
+    const normal_validator: u32 = 0xCF586C; // for validateMemoryOperation
+    const default_normal: u32 = 0xCF5860; // 3 floats
+    const max_particle_sprites: u32 = 0xCF5B60; // u32
+    const transformed_vertices: u32 = 0xCF5B30; // output of billboard transform (48 bytes)
+    const index_buffer_6: u32 = 0xCF5BAC; // ptr to index buffer for field_28==6
+    const index_buffer_12: u32 = 0xCF5AF4; // ptr to index buffer for field_28==0xC
+    const billboard_epsilon: u32 = 0x8029D4;
+};
+
+// =============================================================================
+// SetupParticleRendering (0x7B3D20)
+// __thiscall(ECX=emitter, stack=viewMatrix), RET 0x4
+// viewMatrix can be NULL.
+//
+// Faithful recreation from Ghidra decompilation + assembly.
+// All game function calls preserved, matrix math inlined with V4.
+// =============================================================================
+export fn setupParticleRendering_SSE(emitter: u32, view_matrix: u32) callconv(TC) void {
+    // =========================================================================
+    // Section 1: Identity matrices for render state
+    // Optimization: use static identity instead of rebuilding on stack each call.
+    // =========================================================================
+    // Must be mutable — game functions may write to the matrix pointer
+    var identity_a = [16]u32{
+        0x3F800000, 0, 0, 0,
+        0, 0x3F800000, 0, 0,
+        0, 0, 0x3F800000, 0,
+        0, 0, 0, 0x3F800000,
+    };
+    var identity_b = [16]u32{
+        0x3F800000, 0, 0, 0,
+        0, 0x3F800000, 0, 0,
+        0, 0, 0x3F800000, 0,
+        0, 0, 0, 0x3F800000,
+    };
+
+    gameSetTransformMatrix(@intFromPtr(&identity_a));
+    gameSetVertexShader(@intFromPtr(&identity_b));
+
+    // =========================================================================
+    // Section 2: Build translation matrix = identity with last row = (-x, -y, -z, 1)
+    // =========================================================================
+    const neg_x = -rf32(emitter + 0x23C);
+    const neg_y = -rf32(emitter + 0x240);
+    const neg_z = -rf32(emitter + 0x244);
+
+    var translation = [16]u32{
+        0x3F800000, 0, 0, 0,
+        0, 0x3F800000, 0, 0,
+        0, 0, 0x3F800000, 0,
+        @bitCast(neg_x), @bitCast(neg_y), @bitCast(neg_z), 0x3F800000,
+    };
+
+    const flags = ru32(emitter + 0x1AC);
+
+    // =========================================================================
+    // Section 3: Compute g_worldMatrix based on flags
+    // Three paths: flag 0x100 set, flag clear + viewMatrix != NULL, flag clear + NULL
+    // =========================================================================
+    if ((flags & 0x100) != 0) {
+        // Path A: matmul(emitter_matrix × translation), then × identity (= just copy)
+        // emitter_matrix at emitter+0x1FC
+        var temp: [16]u32 = undefined;
+        _ = gameMatMul(@intFromPtr(&temp), emitter + 0x1FC, @intFromPtr(&translation));
+        // Original does matmul(result, temp, identity) — identity is a no-op, just copy
+        copyMat4x4(SG.world_matrix, @intFromPtr(&temp));
+    } else if (view_matrix != 0) {
+        // Path B: matmul(viewMatrix × translation), then × identity (= just copy)
+        var temp: [16]u32 = undefined;
+        _ = gameMatMul(@intFromPtr(&temp), view_matrix, @intFromPtr(&translation));
+        copyMat4x4(SG.world_matrix, @intFromPtr(&temp));
+    } else {
+        // Path C: matmul(translation × identity) = just copy translation
+        copyMat4x4(SG.world_matrix, @intFromPtr(&translation));
+    }
+
+    // =========================================================================
+    // Section 4: Set light direction from identity row 2 = (0, 0, 1)
+    // (Original reads from identity matrix on stack; we know it's always (0,0,1))
+    // =========================================================================
+    // Actually, identity matrix row 2 in the stack layout: the identity at [ebp-0x54]
+    // has row 2 = {0, 0, 1, 0} stored at [ebp-0x34, -0x30, -0x2c, -0x28].
+    // But this identity was passed to SetVertexShader which may have modified it?
+    // No — SetVertexShader just reads it. So light dir = identity[8,9,10] = (0, 0, 1).
+    // But wait: assembly shows mov eax,[ebp-0x34]; mov [0xCF5878],eax etc.
+    // [ebp-0x34] is identityMatrix.m20 = 0.0, [ebp-0x30] = m21 = 0.0, [ebp-0x2c] = m22 = 1.0
+    wu32(SG.light_dir_x, 0); // 0.0
+    wu32(SG.light_dir_y, 0); // 0.0
+    wu32(SG.light_dir_z, 0x3F800000); // 1.0
+
+    // =========================================================================
+    // Section 5: Flag 0x2000 — billboard/3D sprite setup
+    // =========================================================================
+    if ((flags & 0x2000) != 0) {
+        // One-time sprite vertex template initialization
+        const init_flags = ru8(SG.render_init_flags);
+        if ((init_flags & 1) == 0) {
+            wu8(SG.render_init_flags, init_flags | 1);
+            // Write 4 sprite vertices: {x, y, z} × 4
+            // Vertex 0: (-1, 1, 0), Vertex 1: (-1, -1, 0), Vertex 2: (1, 1, 0), Vertex 3: (1, -1, 0)
+            wu32(SG.sprite_vertex_template + 0, 0xBF800000); // -1.0
+            wu32(SG.sprite_vertex_template + 4, 0x3F800000); // 1.0
+            wu32(SG.sprite_vertex_template + 8, 0); // 0.0
+            wu32(SG.sprite_vertex_template + 12, 0xBF800000); // -1.0
+            wu32(SG.sprite_vertex_template + 16, 0xBF800000); // -1.0
+            wu32(SG.sprite_vertex_template + 20, 0); // 0.0
+            wu32(SG.sprite_vertex_template + 24, 0x3F800000); // 1.0
+            wu32(SG.sprite_vertex_template + 28, 0x3F800000); // 1.0
+            wu32(SG.sprite_vertex_template + 32, 0); // 0.0
+            wu32(SG.sprite_vertex_template + 36, 0x3F800000); // 1.0
+            wu32(SG.sprite_vertex_template + 40, 0xBF800000); // -1.0
+            wu32(SG.sprite_vertex_template + 44, 0); // 0.0
+            gameValidateMem(SG.sprite_template_validator);
+        }
+
+        // One-time billboard identity matrix initialization
+        if ((init_flags & 2) == 0) {
+            wu8(SG.render_init_flags, ru8(SG.render_init_flags) | 2);
+            // Write identity 4x4 to billboard_matrix
+            const bm = SG.billboard_matrix;
+            inline for (0..16) |i| {
+                const is_diag = (i % 5 == 0 and i < 16);
+                wu32(bm + @as(u32, @intCast(i)) * 4, if (is_diag) @as(u32, 0x3F800000) else 0);
+            }
+            gameValidateMem(SG.billboard_validator);
+        }
+
+        // Compute billboard matrix: depends on flag 0x100
+        if ((flags & 0x100) == 0) {
+            // matmul(emitter+0x1FC, g_worldMatrix) → billboard_matrix
+            var temp2: [16]u32 = undefined;
+            _ = gameMatMul(@intFromPtr(&temp2), emitter + 0x1FC, SG.world_matrix);
+            copyMat4x4(SG.billboard_matrix, @intFromPtr(&temp2));
+        } else {
+            // Just copy g_worldMatrix → billboard_matrix
+            copyMat4x4(SG.billboard_matrix, SG.world_matrix);
+        }
+
+        // Transform 4 sprite vertices through billboard matrix
+        // 4 vertices × vec3, output to g_transformedVertices
+        {
+            const bm = SG.billboard_matrix;
+            const bm00 = rf32(bm); const bm01 = rf32(bm + 4); const bm02 = rf32(bm + 8);
+            const bm10 = rf32(bm + 16); const bm11 = rf32(bm + 20); const bm12 = rf32(bm + 24);
+            const bm20 = rf32(bm + 32); const bm21 = rf32(bm + 36); const bm22 = rf32(bm + 40);
+
+            var vi: u32 = 0;
+            while (vi < 48) : (vi += 12) {
+                const sx = rf32(SG.sprite_vertex_template + vi);
+                const sy = rf32(SG.sprite_vertex_template + vi + 4);
+                const sz = rf32(SG.sprite_vertex_template + vi + 8);
+                wf32(SG.transformed_vertices + vi, @mulAdd(f32, bm20, sz, @mulAdd(f32, bm10, sy, bm00 * sx)));
+                wf32(SG.transformed_vertices + vi + 4, @mulAdd(f32, bm21, sz, @mulAdd(f32, bm11, sy, bm01 * sx)));
+                wf32(SG.transformed_vertices + vi + 8, @mulAdd(f32, bm22, sz, @mulAdd(f32, bm12, sy, bm02 * sx)));
+            }
+        }
+
+        // Store billboard matrix row 2 as rotation axis in emitter+0x284
+        wf32(emitter + 0x284, rf32(SG.billboard_matrix + 32));
+        wf32(emitter + 0x288, rf32(SG.billboard_matrix + 36));
+        wf32(emitter + 0x28C, rf32(SG.billboard_matrix + 40));
+
+        // Normalize the rotation axis
+        const ax = rf32(emitter + 0x284);
+        const ay = rf32(emitter + 0x288);
+        const az = rf32(emitter + 0x28C);
+        const sq_mag = @mulAdd(f32, az, az, @mulAdd(f32, ay, ay, ax * ax));
+        const epsilon = rf32(SG.billboard_epsilon);
+        if (@sqrt(sq_mag) >= epsilon) {
+            const inv_len = 1.0 / @sqrt(sq_mag);
+            wf32(emitter + 0x284, ax * inv_len);
+            wf32(emitter + 0x288, ay * inv_len);
+            wf32(emitter + 0x28C, az * inv_len);
+        }
+    }
+
+    // =========================================================================
+    // Section 6: Begin render, texture, vertex buffer setup
+    // =========================================================================
+    gameBeginRender();
+
+    const tex_id = ru32(emitter + 0x1A0);
+    const tex_ptr = gameGetTexture(tex_id, 0, 0);
+    if (tex_ptr == 0) {
+        // No texture — skip to end
+        gameEndRender();
+        gameSetVertexShader(@intFromPtr(&identity_a));
+        return;
+    }
+
+    gameSetTexture(0x17, tex_ptr);
+
+    // Compute max particle sprites: 0x4000 / emitter.vertexSize
+    const vert_size = ru32(emitter + 0x9C);
+    var max_sprites: u32 = 0x4000 / vert_size;
+    const emitter_max = ru32(emitter + 0x64);
+    if (emitter_max <= max_sprites) {
+        max_sprites = emitter_max;
+    }
+    wu32(SG.max_particle_sprites, max_sprites);
+
+    // Determine vertex format index
+    const format_flag = ru32(emitter + 0x194);
+    const fmt_index: u32 = if ((format_flag & 1) != 0) 4 else 8;
+
+    const data_ptr = gameGetDataPtr(fmt_index);
+    const vb_ptr = gameCreateVB(0, data_ptr, vert_size * max_sprites);
+    const vb_base = gameLockVB(vb_ptr);
+
+    // Build vertex buffer pointer array (same layout as RenderParticleSprites expects)
+    var vb_ptrs: [9]u32 = undefined;
+
+    // Position pointer
+    const pos_elem = gameGetMatElem(fmt_index, 0);
+    vb_ptrs[0] = pos_elem + vb_base; // pos ptr
+    vb_ptrs[4] = data_ptr; // pos stride
+
+    // Normal pointer
+    if ((format_flag & 1) == 0) {
+        // No per-vertex normals — use shared default
+        const nflags = ru8(SG.render_init_flags);
+        if ((nflags & 4) == 0) {
+            wu8(SG.render_init_flags, nflags | 4);
+            wu32(SG.default_normal, 0);
+            wu32(SG.default_normal + 4, 0);
+            wu32(SG.default_normal + 8, 0);
+            gameValidateMem(SG.normal_validator);
+        }
+        vb_ptrs[1] = SG.default_normal;
+        vb_ptrs[5] = 0; // stride 0 = shared
+    } else {
+        const norm_elem = gameGetMatElem(fmt_index, 3);
+        vb_ptrs[1] = norm_elem + vb_base;
+        vb_ptrs[5] = data_ptr;
+    }
+
+    // Color pointer
+    const color_elem = gameGetMatElem(fmt_index, 4);
+    vb_ptrs[2] = color_elem + vb_base;
+    vb_ptrs[6] = data_ptr;
+
+    // Texcoord pointer
+    const tc_elem = gameGetMatElem(fmt_index, 5);
+    vb_ptrs[3] = tc_elem + vb_base;
+    vb_ptrs[7] = data_ptr;
+
+    // Count
+    vb_ptrs[8] = 0;
+
+    // =========================================================================
+    // Section 7: Render particles
+    // =========================================================================
+    gameRenderSorted(emitter, @intFromPtr(&vb_ptrs));
+
+    // DEBUG: log vertex count produced
+    if (!debug_logged and vb_ptrs[8] > 0) {
+        debug_logged = true;
+        debug_vertex_count = vb_ptrs[8];
+        debug_max_sprites = max_sprites;
+        debug_fmt_index = fmt_index;
+        debug_data_ptr = data_ptr;
+    }
+
+    gameUnlockVB(vb_ptr, 0);
+    gameDrawPrim(vb_ptr, fmt_index);
+
+    // =========================================================================
+    // Section 8: Index buffer setup
+    // =========================================================================
+    const field_28 = ru32(emitter + 0x1C);
+    const renders_count = ru32(emitter + 0xA0);
+    if (field_28 == 6) {
+        var ib = ru32(SG.index_buffer_6);
+        if (gameIsObjValid(ib) == 0) {
+            gameBuildIB(emitter, ib, renders_count);
+            ib = ru32(SG.index_buffer_6);
+        }
+        gameSetStream(ib);
+    } else if (field_28 == 0xC) {
+        var ib = ru32(SG.index_buffer_12);
+        if (gameIsObjValid(ib) == 0) {
+            gameBuildIB(emitter, ib, renders_count);
+            ib = ru32(SG.index_buffer_12);
+        }
+        gameSetStream(ib);
+    }
+
+    // =========================================================================
+    // Section 9: Final setup
+    // =========================================================================
+    const renders = ru32(emitter + 0xA0);
+    const calc_scale: f32 = @floatFromInt(renders * field_28);
+    wf32(emitter + 0x20, calc_scale);
+
+    // CallGfxDeviceMethod_Wrapper — assembly-verified packed layout:
+    // [+0x00] u32 = 3              (primitive type)
+    // [+0x04] u32 = 0              (start index)
+    // [+0x08] u16 = (u16)(field_28 * renders)  (verts per prim)
+    // [+0x0A] u16 = 0
+    // [+0x0C] u16 = (u16)(vertex_count - 1)    (prim count)
+    // fastcall(ECX=&params, EDX=1)
+    const calc_int: u16 = @truncate(renders_count * field_28);
+    const vertex_count: u32 = vb_ptrs[8];
+    const prim_count: u16 = if (vertex_count > 0) @truncate(vertex_count - 1) else 0;
+    var gfx_bytes: [14]u8 align(4) = undefined;
+    @as(*u32, @ptrCast(gfx_bytes[0..4])).* = 3;
+    @as(*u32, @ptrCast(gfx_bytes[4..8])).* = 0;
+    @as(*u16, @ptrCast(gfx_bytes[8..10])).* = calc_int;
+    @as(*u16, @ptrCast(gfx_bytes[10..12])).* = 0;
+    @as(*u16, @ptrCast(gfx_bytes[12..14])).* = prim_count;
+    gameGfxCall(@intFromPtr(&gfx_bytes), 1);
+
+    // End render and restore vertex shader
+    gameEndRender();
+    gameSetVertexShader(@intFromPtr(&identity_a));
+}
+
+inline fn copyMat4x4(dst: u32, src: u32) void {
+    // Copy 64 bytes (16 floats) using V4 loads/stores
+    @as(*align(1) V4, @ptrFromInt(dst)).* = @as(*align(1) const V4, @ptrFromInt(src)).*;
+    @as(*align(1) V4, @ptrFromInt(dst + 16)).* = @as(*align(1) const V4, @ptrFromInt(src + 16)).*;
+    @as(*align(1) V4, @ptrFromInt(dst + 32)).* = @as(*align(1) const V4, @ptrFromInt(src + 32)).*;
+    @as(*align(1) V4, @ptrFromInt(dst + 48)).* = @as(*align(1) const V4, @ptrFromInt(src + 48)).*;
 }
