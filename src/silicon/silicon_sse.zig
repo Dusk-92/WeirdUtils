@@ -516,6 +516,96 @@ export fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
     obj[51] += dx; obj[52] += dy; obj[53] += dz;
 }
 
+// --- 0x686000: FrustumCullBoundingBox ---
+// Transforms bbox through view-proj matrix, perspective divides, projects to 320-column
+// occlusion buffer. Returns 0 (culled) / 2 (visible).
+// Original: 380 bytes, 2 calls to mat*vec3 (0x7BCA80), x87 perspective divide, x87 column scan.
+// SSE: inline V4 mat*vec3, SSE perspective divide, 4-wide column scan.
+// __fastcall(bbox_ECX, flags_EDX, radius_stack), RET 0x4
+export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) u32 {
+    // Early out: global occlusion flag bit 5
+    if (@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20 == 0) return 0;
+
+    // Early out: radius too small
+    const radius: f32 = @bitCast(radius_bits);
+    const epsilon: f32 = @bitCast(@as(*const u32, @ptrFromInt(0x8029D4)).*);
+    if (@abs(radius) < epsilon) return 0;
+
+    // Early out: global value must be in valid range [const1, const2]
+    const global_val: f32 = @as(*align(1) const f32, @ptrFromInt(0xC7CFF4)).*;
+    if (global_val < @as(*align(1) const f32, @ptrFromInt(0x8101AC)).*) return 0;
+    if (global_val > @as(*align(1) const f32, @ptrFromInt(0x804588)).*) return 0;
+
+    // Transform center through view-proj matrix (column-major 4x4 at 0xC7B700)
+    // Inlined 0x7BCA80: result = col0*v.x + col1*v.y + col2*v.z + col3
+    const bp: [*]const f32 = @ptrFromInt(bbox);
+    const vx: V4 = @splat(bp[0]);
+    const vy: V4 = @splat(bp[1]);
+    const vz: V4 = @splat(bp[2]);
+
+    const m1: u32 = 0xC7B700;
+    const center = @mulAdd(V4, vz, loadV4(m1 + 32), @mulAdd(V4, vy, loadV4(m1 + 16), @mulAdd(V4, vx, loadV4(m1), loadV4(m1 + 48))));
+
+    // Transform extent {radius, radius, 0} through matrix at 0xC7D280
+    const rv: V4 = @splat(radius);
+    const m2: u32 = 0xC7D280;
+    // z=0, so skip col2 term
+    const extent = @mulAdd(V4, rv, loadV4(m2 + 16), @mulAdd(V4, rv, loadV4(m2), loadV4(m2 + 48)));
+
+    // Behind-camera check (unless flags & 8)
+    if (flags & 0x8 == 0) {
+        if (center[2] < @as(*align(1) const f32, @ptrFromInt(0x80FED4)).*) return 0;
+    }
+
+    // Perspective divide: inv_w = K / center.z
+    const K: f32 = @as(*align(1) const f32, @ptrFromInt(0x7FF9D8)).*;
+    const inv_w = K / center[2];
+    const cx = center[0] * inv_w; // projected center x
+    const ex = extent[0] * inv_w; // projected extent x
+    const ey = extent[1] * inv_w; // projected extent y
+    const depth = center[1] * inv_w + ex; // depth for horizon test
+
+    // Column projection: convert to 320-column indices
+    const col_scale: f32 = @as(*align(1) const f32, @ptrFromInt(0x810170)).*;
+    const col_offset: f32 = @as(*align(1) const f32, @ptrFromInt(0x86861C)).*;
+
+    // FISTP uses default x87 round-to-nearest; match with @round
+    var left_col: i32 = @intFromFloat(@round((cx - ey) * col_scale - col_offset));
+    left_col += 0xA0; // +160 center offset
+    var right_col: i32 = @intFromFloat(@round((ey + cx) * col_scale - col_offset));
+    right_col += 0xA1; // +161
+
+    // Bounds check — off-screen culling
+    if (left_col >= 0x140) return 0; // fully right of screen (320)
+    if (right_col < 0) return 0; // fully left of screen
+    if (left_col < 0) left_col = 0;
+    if (right_col >= 0x140) right_col = 0x13F; // clamp to 319
+    if (left_col > right_col) return 2; // degenerate → visible
+
+    // Horizon buffer scan: 320 floats at 0xC7B750
+    // If any column's horizon value < depth → culled (return 0)
+    // SSE: test 4 columns at once
+    const horizon_base: u32 = 0xC7B750;
+    var col: u32 = @intCast(left_col);
+    const end: u32 = @intCast(right_col);
+    const depth_v: V4 = @splat(depth);
+
+    // 4-wide scan
+    while (col + 3 <= end) {
+        const h = loadV4(horizon_base + col * 4);
+        const lt_bits: u4 = @bitCast(h < depth_v);
+        if (lt_bits != 0) return 0;
+        col += 4;
+    }
+    // Scalar remainder
+    while (col <= end) {
+        if (@as(*align(1) const f32, @ptrFromInt(horizon_base + col * 4)).* < depth) return 0;
+        col += 1;
+    }
+
+    return 2; // visible — survived all columns
+}
+
 // --- 0x6ABC40: processLinkedListCollision ---
 // Walks intrusive linked list, per-node AABB overlap test, calls addGeometryToBuffer on hit.
 // Original: 329 bytes, 6 x87 FCOMP/FNSTSW comparisons per node.

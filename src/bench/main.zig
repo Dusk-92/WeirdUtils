@@ -50,6 +50,7 @@ extern fn si_normalizeVec3InPlace(u32) callconv(cc_tc) void;
 extern fn si_vec3Dot(u32, u32) callconv(cc_fc) f64;
 extern fn si_translateBoundingVol(u32, u32) callconv(cc_tc) void;
 extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(cc_fc) u32;
+extern fn si_frustumCullBBox(u32, u32, u32) callconv(cc_fc) u32;
 extern fn si_addVec3ToAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_addToColorAccumulator(u32, u32) callconv(cc_tc) void;
 extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
@@ -1768,11 +1769,107 @@ pub fn main() void {
         }
     }
 
+    // si_frustumCullBBox -- fastcall(bbox_ECX, flags_EDX, radius_stack) -> u32
+    bench_frustumCullBBox();
+
     // si_processLinkedListCollision -- fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack) -> u32
     // Builds a fake linked list with 8 nodes to benchmark AABB overlap test.
     bench_processLinkedListCollision();
 
     print("\n", .{});
+}
+
+fn bench_frustumCullBBox() void {
+    // Map runtime global pages for view-proj matrices, occlusion buffer, and flags
+    _ = mapZeroed(0xC7B000, 0x20000); // covers 0xC7B000-0xC7D000+ (matrices, horizon buffer, globals)
+
+    // Set up globals that FrustumCullBoundingBox reads:
+    // 0xC7B2A4: occlusion flag — bit 5 must be set to proceed
+    @as(*u8, @ptrFromInt(0xC7B2A4)).* = 0x20;
+
+    // 0xC7CFF4: global value checked against range [const1, const2]
+    // const1 at 0x8101AC, const2 at 0x804588 — both are in mapped .rdata
+    // Set to a value that passes: read the constants and pick the midpoint
+    const const1: f32 = @as(*align(1) const f32, @ptrFromInt(0x8101AC)).*;
+    const const2: f32 = @as(*align(1) const f32, @ptrFromInt(0x804588)).*;
+    @as(*align(1) f32, @ptrFromInt(0xC7CFF4)).* = (const1 + const2) * 0.5;
+
+    // 0x80FED4: near plane constant for behind-camera check
+    // Already in mapped pages. Set to a value that passes (e.g., -1000)
+    @as(*align(1) f32, @ptrFromInt(0x80FED4)).* = -1000.0;
+
+    // 0x7FF9D8: perspective scale constant (likely screen_width/2 or similar)
+    // In .rdata — already mapped, read whatever's there or set a reasonable value
+    if (@as(*align(1) const u32, @ptrFromInt(0x7FF9D8)).* == 0) {
+        @as(*align(1) f32, @ptrFromInt(0x7FF9D8)).* = 160.0;
+    }
+
+    // 0x810170: column scale factor
+    if (@as(*align(1) const u32, @ptrFromInt(0x810170)).* == 0) {
+        @as(*align(1) f32, @ptrFromInt(0x810170)).* = 1.0;
+    }
+
+    // 0x86861C: column offset — in .rdata, use whatever's there or set 0
+    // 0x86861C is at offset 0x86861C - 0x7FF000 = 0x6961C in rdata — may be beyond our mapped range
+    // Map additional page if needed
+    _ = mapZeroed(0x868000, 0x1000);
+
+    // View-proj matrix at 0xC7B700: identity-like projection for testing
+    {
+        const mat: [*]f32 = @ptrFromInt(0xC7B700);
+        // Simple perspective-like matrix (column-major)
+        mat[0] = 1.0; mat[1] = 0.0; mat[2] = 0.0;  mat[3] = 0.0;
+        mat[4] = 0.0; mat[5] = 1.0; mat[6] = 0.0;  mat[7] = 0.0;
+        mat[8] = 0.0; mat[9] = 0.0; mat[10] = 1.0; mat[11] = 0.0;
+        mat[12] = 0.0; mat[13] = 0.0; mat[14] = 0.0; mat[15] = 1.0;
+    }
+
+    // Second matrix at 0xC7D280: identity for extent transform
+    {
+        const mat: [*]f32 = @ptrFromInt(0xC7D280);
+        mat[0] = 1.0; mat[1] = 0.0; mat[2] = 0.0;  mat[3] = 0.0;
+        mat[4] = 0.0; mat[5] = 1.0; mat[6] = 0.0;  mat[7] = 0.0;
+        mat[8] = 0.0; mat[9] = 0.0; mat[10] = 1.0; mat[11] = 0.0;
+        mat[12] = 0.0; mat[13] = 0.0; mat[14] = 0.0; mat[15] = 1.0;
+    }
+
+    // Horizon buffer at 0xC7B750: 320 floats, fill with large values (everything visible)
+    {
+        const buf: [*]f32 = @ptrFromInt(0xC7B750);
+        for (0..320) |i| buf[i] = 1000.0;
+    }
+
+    // Test data: bbox point at (5, 3, 10), radius 2.0, flags=0
+    var bbox = [3]f32{ 5.0, 3.0, 10.0 };
+    const radius: f32 = 2.0;
+    const radius_bits: u32 = @bitCast(radius);
+    const flags: u32 = 0;
+
+    const of = origFn(fn (u32, u32, u32) callconv(cc_fc) u32, 0x686000);
+    const ret_orig = of(a(&bbox), flags, radius_bits);
+    const ret_sse = si_frustumCullBBox(a(&bbox), flags, radius_bits);
+    const ok = ret_orig == ret_sse;
+
+    var t: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            _ = of(a(&bbox), flags, radius_bits);
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < t) t = _te;
+    }
+
+    var s: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const _t0 = rdtsc();
+        for (0..ITERS) |_| {
+            _ = si_frustumCullBBox(a(&bbox), flags, radius_bits);
+        }
+        const _te = rdtsc() - _t0;
+        if (_te < s) s = _te;
+    }
+    report("frustumCullBBox", t, s, ok);
 }
 
 fn bench_processLinkedListCollision() void {
