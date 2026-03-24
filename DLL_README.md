@@ -193,6 +193,21 @@ end)
 local name, rank, icon, castTime, minRange, maxRange, spellId = GetSpellInfo(133)
 ```
 
+- `UnitCastingInfo("unit")` -- TBC/WotLK cast bar query (works on any visible unit):
+
+```lua
+local name, rank, text, icon, startTime, endTime, isTradeSkill, castID, notInterruptible = UnitCastingInfo("target")
+if name then
+    -- startTime/endTime are in milliseconds (compare with GetTime()*1000)
+end
+```
+
+- `UnitChannelInfo("unit")` -- TBC/WotLK channel bar query:
+
+```lua
+local name, rank, text, icon, startTime, endTime, isTradeSkill, notInterruptible = UnitChannelInfo("target")
+```
+
 See the [DPSLog wiki page](https://codeberg.org/gwenael/WeirdUtils/wiki/DPSLog) for full event reference and addon developer guide.
 
 **DLL:** `dpslog.dll`
@@ -236,6 +251,12 @@ The cache validates that archives are still alive before returning cached result
 No configuration needed. Enabled by default when using `weirdutils.dll`.
 
 **DLL:** `filecache.dll`
+
+---
+
+### Performance
+
+Replaces 20+ internal math functions with SIMD (SSE/AVX) equivalents and swaps the game's 2004-era zlib with a modern decompression library (2.2x faster). Covers skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion. Most noticeable in cities, raids, and during zone transitions. No visual difference, no configuration needed. Included in `weirdutils.dll`.
 
 ---
 

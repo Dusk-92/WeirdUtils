@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .msvc,
+        .abi = .gnu,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     const bone_sse_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .msvc,
+        .abi = .gnu,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
     });
     const bone_sse_obj = b.addObject(.{
@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     const ref_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .msvc,
+        .abi = .gnu,
         .cpu_features_sub = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
     const bone_sse_ref_obj = b.addObject(.{
@@ -152,21 +152,15 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addObject(particle_sse_obj);
     lib.root_module.addObject(particle_ref_obj);
 
-    // libdeflate — vendored C sources, decompress-only.
-    // Built as static library targeting x86-windows-gnu (has libc headers).
-    // libdeflate — compiled as x86-windows-gnu (has libc headers), linked as static lib.
-    // Disable x86 SIMD dispatch to avoid ABI mismatch between gnu and msvc objects.
-    // Generic C fallback is still ~2x faster than WoW's embedded zlib.
+    // libdeflate — compiled as x86-windows-gnu (same ABI as main DLL).
+    // Uses Zig's bundled MinGW libc for string.h/stdlib.h.
+    // malloc/free resolved at link time to our exports in performance.zig.
     const libdeflate = b.addLibrary(.{
         .linkage = .static,
         .name = "deflate",
         .root_module = b.createModule(.{
             .root_source_file = null,
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .x86,
-                .os_tag = .windows,
-                .abi = .gnu,
-            }),
+            .target = target,
             .optimize = .ReleaseFast,
             .link_libc = true,
         }),
@@ -179,7 +173,7 @@ pub fn build(b: *std.Build) void {
             "src/performance/libdeflate/lib/adler32.c",
             "src/performance/libdeflate/lib/x86/cpu_features.c",
         },
-        .flags = &.{ "-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI", "-g0" },
+        .flags = &.{"-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI"},
     });
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
