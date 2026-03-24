@@ -50,14 +50,33 @@ var log: logging.Logger = .{};
 // Static decompressor memory — avoids using game allocator which may not be malloc-compatible
 var static_decompressor_mem: [12288]u8 align(16) = undefined; // 12KB > 11564 bytes needed
 
-// Reusable output buffer for libdeflate timing — static 256KB, no heap allocation needed
+// Static buffers — no heap allocation needed.
+// ld_buf: saves input before original modifies it (256KB)
+// ld_out_buf: libdeflate output (256KB)
 var ld_buf_backing: [256 * 1024]u8 align(16) = undefined;
 var ld_buf: [*]u8 = &ld_buf_backing;
 const ld_buf_size: u32 = 256 * 1024;
 
+var ld_out_buf_backing: [256 * 1024]u8 align(16) = undefined;
+const ld_out_buf_size: u32 = 256 * 1024;
+
+// Thread safety: only run libdeflate on the main thread (ESP in 0x00Exxxxx range)
+var main_thread_id: u32 = 0;
+extern "kernel32" fn GetCurrentThreadId() callconv(.{ .x86_stdcall = .{} }) u32;
+
+fn isMainThread() bool {
+    const tid = GetCurrentThreadId();
+    if (main_thread_id == 0) {
+        main_thread_id = tid; // first call captures main thread
+        return true;
+    }
+    return tid == main_thread_id;
+}
+
 // Timing accumulators
-var orig_total_cycles: u64 = 0;
-var fast_total_cycles: u64 = 0;
+var orig_total_cycles: u64 = 0; // ALL calls
+var orig_matched_cycles: u64 = 0; // only calls where libdeflate also ran
+var fast_total_cycles: u64 = 0; // libdeflate time for matched calls
 var call_count: u64 = 0;
 var mismatch_count: u64 = 0;
 var success_count: u64 = 0;
@@ -98,11 +117,10 @@ pub fn decompressDetour(out_buf: u32, out_size_ptr: u32, in_buf: u32, in_size: u
     const out_capacity = @as(*const u32, @ptrFromInt(out_size_ptr)).*;
     const in_ptr: [*]const u8 = @ptrFromInt(in_buf);
 
-    // Save input data BEFORE calling original — the original may modify the input buffer
-    // (overlap handling in DecompressData_WithOptions copies data around)
-    var saved_input_backing: [8192]u8 = undefined;
-    const save_len = @min(in_size, saved_input_backing.len);
-    @memcpy(saved_input_backing[0..save_len], in_ptr[0..save_len]);
+    // Save input data BEFORE calling original — the original may modify the input buffer.
+    // Use the static ld_buf_backing (256KB) as the save buffer — it's not used until later.
+    const save_len = @min(in_size, ld_buf_size);
+    @memcpy(ld_buf[0..save_len], in_ptr[0..save_len]);
 
     // Run original and time it
     const t0 = rdtsc();
@@ -140,30 +158,32 @@ pub fn decompressDetour(out_buf: u32, out_size_ptr: u32, in_buf: u32, in_size: u
             // is what the original produced — libdeflate should produce the same.
             const ld_out_size = actual_out;
 
-            // Use static buffer — skip calls larger than 256KB
-            if (ld_out_size <= ld_buf_size) {
-                const buf = ld_buf;
-                // Log first call for debugging
-                if (success_count == 0 and mismatch_count == 0) {
-                    log.fmt("  ld_call: buf=0x{x} size={d} in=0x{x} in_size={d} hdr={x:0>2}{x:0>2}\n", .{
-                        @intFromPtr(buf), ld_out_size,
-                        @intFromPtr(in_ptr + 1), in_size - 1,
-                        in_ptr[1], in_ptr[2],
+            // Only proceed if: input fits, output fits, valid zlib header,
+            // AND we're on the main thread (static buffers aren't thread-safe)
+            if (in_size <= save_len and ld_out_size <= ld_out_buf_size and
+                save_len > 2 and ld_buf[1] == 0x78 and isMainThread())
+            {
+                // Log call number and sizes for first few calls
+                if (success_count + mismatch_count < 3) {
+                    log.fmt("  ld #{d}: in_size={d} out_size={d} saved_hdr={x:0>2}{x:0>2}\n", .{
+                        success_count + mismatch_count,
+                        save_len - 1, ld_out_size,
+                        ld_buf[1], ld_buf[2],
                     });
                 }
                 var ld_out: usize = 0;
                 const t1 = rdtsc();
-                // Use saved input — original may have modified the buffer
                 const ld_ret = libdeflate_zlib_decompress(
                     decompressor,
-                    @ptrCast(saved_input_backing[1..save_len]),
+                    ld_buf + 1, // skip type byte in saved input
                     save_len - 1,
-                    @ptrCast(buf),
+                    &ld_out_buf_backing,
                     ld_out_size,
                     &ld_out,
                 );
                 const fast_cycles = rdtsc() - t1;
                 fast_total_cycles +|= fast_cycles;
+                orig_matched_cycles +|= orig_cycles; // track original time for same calls
                 if (ld_ret == 0 and ld_out == actual_out)
                     success_count +|= 1
                 else
@@ -179,11 +199,14 @@ pub fn dumpStats() void {
     if (call_count == 0) return;
     const MS_DIV: u64 = 3_000_000;
     const type_names = [8][]const u8{ "huff", "zlib", "b2", "b3", "bzip", "pkw", "adpcm1", "adpcm2" };
-    log.fmt("inflate: {d} calls, in={d}KB out={d}KB, orig={d}ms fast={d}ms (ok={d} fail={d})\n", .{
+    const matched = success_count + mismatch_count;
+    log.fmt("inflate: {d} calls, in={d}KB out={d}KB, orig_all={d}ms | matched={d}: orig={d}ms fast={d}ms (ok={d} fail={d})\n", .{
         call_count,
         total_in_bytes / 1024,
         total_bytes / 1024,
         orig_total_cycles / MS_DIV,
+        matched,
+        orig_matched_cycles / MS_DIV,
         fast_total_cycles / MS_DIV,
         success_count,
         mismatch_count,
@@ -206,6 +229,7 @@ pub fn dumpStats() void {
     log.print("\n");
     // Reset
     orig_total_cycles = 0;
+    orig_matched_cycles = 0;
     fast_total_cycles = 0;
     call_count = 0;
     success_count = 0;
