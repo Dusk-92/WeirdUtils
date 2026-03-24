@@ -21,18 +21,19 @@ const inflate_hook = @import("inflate_hook.zig");
 pub const module_name: [*:0]const u8 = "performance";
 
 // Provide malloc/free for libdeflate's default allocator (linked without libc).
-// Use game's own SMemAlloc/SMemFree (Storm memory manager) which are always available.
-// SMemAlloc at 0x6464B0: __stdcall(size, filename_str, line, flags) → ptr
-// SMemFree at 0x646430: __stdcall(ptr, filename_str, flags) → void
-const gameMalloc: *const fn (u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) ?*anyopaque = @ptrFromInt(0x6464B0);
-const gameFree: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x646430);
+// Use game's Storm memory manager:
+//   ReallocMemory (0x646320): __stdcall(ptr, size, filename, line, flags) → ptr
+//     When ptr=NULL, acts as malloc via AllocateBufferWithPowerOfTwo.
+//   FreeMemory (0x646430): __stdcall(ptr, filename, line) → always returns 1
+const gameRealloc: *const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) ?*anyopaque = @ptrFromInt(0x646320);
+const gameFree: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) u32 = @ptrFromInt(0x646430);
 
 export fn malloc(size: usize) callconv(.c) ?*anyopaque {
-    return gameMalloc(@intCast(size), 0, 0, 0);
+    return gameRealloc(0, @intCast(size), 0, 0, 0);
 }
 
 export fn free(ptr: ?*anyopaque) callconv(.c) void {
-    if (ptr) |p| gameFree(@intFromPtr(p), 0, 0);
+    if (ptr) |p| _ = gameFree(@intFromPtr(p), 0, 0);
 }
 
 var g_mutex: ?*anyopaque = null;
