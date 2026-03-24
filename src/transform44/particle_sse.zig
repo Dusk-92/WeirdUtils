@@ -40,6 +40,9 @@ inline fn wu32(addr: u32, val: u32) void {
 inline fn wu8(addr: u32, val: u8) void {
     @as(*u8, @ptrFromInt(addr)).* = val;
 }
+inline fn loadV4(ptr: u32) V4 {
+    return @as(*align(1) const V4, @ptrFromInt(ptr)).*;
+}
 
 // =============================================================================
 // Emitter struct offsets (this = ECX = ParticleSystemRenderer*)
@@ -148,25 +151,78 @@ const VB = struct {
     const count: u32 = 32;
 };
 
-/// Emit one vertex: write position, normal (light dir), color, texcoord, advance pointers.
+/// Cached vertex buffer state — avoids re-reading pointer array per vertex.
+/// Load once at start, emit vertices via direct pointer math, write back at end.
+const VBState = struct {
+    pos: u32,
+    normal: u32,
+    color_ptr: u32,
+    texcoord: u32,
+    pos_stride: u32,
+    normal_stride: u32,
+    color_stride: u32,
+    texcoord_stride: u32,
+    count: u32,
+    vb: u32, // base pointer for writeback
+    // Cached light direction (same for all vertices)
+    light: [3]u32,
+
+    fn load(vb: u32) VBState {
+        return .{
+            .pos = ru32(vb + VB.pos),
+            .normal = ru32(vb + VB.normal),
+            .color_ptr = ru32(vb + VB.color),
+            .texcoord = ru32(vb + VB.texcoord),
+            .pos_stride = ru32(vb + VB.pos_stride),
+            .normal_stride = ru32(vb + VB.normal_stride),
+            .color_stride = ru32(vb + VB.color_stride),
+            .texcoord_stride = ru32(vb + VB.texcoord_stride),
+            .count = ru32(vb + VB.count),
+            .vb = vb,
+            .light = .{ ru32(G.light_dir_x), ru32(G.light_dir_y), ru32(G.light_dir_z) },
+        };
+    }
+
+    fn emit(s: *VBState, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv: f32) void {
+        wf32(s.pos, px);
+        wf32(s.pos + 4, py);
+        wf32(s.pos + 8, pz);
+        wu32(s.normal, s.light[0]);
+        wu32(s.normal + 4, s.light[1]);
+        wu32(s.normal + 8, s.light[2]);
+        wu32(s.color_ptr, color);
+        wf32(s.texcoord, tu);
+        wf32(s.texcoord + 4, tv);
+        s.pos += s.pos_stride;
+        s.normal += s.normal_stride;
+        s.color_ptr += s.color_stride;
+        s.texcoord += s.texcoord_stride;
+        s.count += 1;
+    }
+
+    fn writeback(s: *const VBState) void {
+        wu32(s.vb + VB.pos, s.pos);
+        wu32(s.vb + VB.normal, s.normal);
+        wu32(s.vb + VB.color, s.color_ptr);
+        wu32(s.vb + VB.texcoord, s.texcoord);
+        wu32(s.vb + VB.count, s.count);
+    }
+};
+
+/// Emit one vertex using the old pointer-chasing path (for code paths not yet converted to VBState).
 inline fn emitVertex(vb: u32, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv: f32) void {
-    // Position
     const pos_ptr = ru32(vb + VB.pos);
     wf32(pos_ptr, px);
     wf32(pos_ptr + 4, py);
     wf32(pos_ptr + 8, pz);
-    // Normal (light direction — global, same for all particles)
     const norm_ptr = ru32(vb + VB.normal);
     wu32(norm_ptr, ru32(G.light_dir_x));
     wu32(norm_ptr + 4, ru32(G.light_dir_y));
     wu32(norm_ptr + 8, ru32(G.light_dir_z));
-    // Color
     wu32(ru32(vb + VB.color), color);
-    // Texcoords
     const tc_ptr = ru32(vb + VB.texcoord);
     wf32(tc_ptr, tu);
     wf32(tc_ptr + 4, tv);
-    // Advance pointers and increment count
     wu32(vb + VB.count, ru32(vb + VB.count) + 1);
     wu32(vb + VB.pos, ru32(vb + VB.pos) + ru32(vb + VB.pos_stride));
     wu32(vb + VB.normal, ru32(vb + VB.normal) + ru32(vb + VB.normal_stride));
@@ -223,17 +279,52 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
     const color_ctx_offset: u32 = @as(u32, ru8(pd + 0x0C)) * 96;
     const color_ctx = emitter + E.colorCtxBase + color_ctx_offset;
 
-    // Read orientation/scale data from emitter+0x1A8 — passed directly as arg2 to calcColor
-    const orientation_data = ru32(emitter + E.orientation_base);
+    // Inline calcColor: compute color, alpha, and sprite scale from colorCtx
+    // Original at 0x7B9B10, assembly-verified. Inlined to allow OoO overlap with cache misses.
+    const scale_param: f32 = @bitCast(ru32(emitter + E.orientation_base)); // arg2: float scale for alpha
+    const time_val: f32 = rf32(pd + 0x1C);
 
-    var color_value: u32 = 0;
-    var color_data1: u32 = 0;
-    var color_data2: u32 = 0;
-    var sprite_scale: f32 = undefined;
+    // t = (time - ctx.timeBase) * ctx.timeScale * CONST1 + CONST2
+    const t = (time_val - rf32(color_ctx + 0x2C)) * rf32(color_ctx + 0x30) * rf32(0x808AAC) + rf32(0x807A3C);
+    const magic: f32 = rf32(G.rounding_magic);
 
-    // calcColor: __thiscall(ECX=colorCtx, stack: time, orientData, outColor, outAlpha1, outAlpha2, outFloat)
-    calcColor(color_ctx, @bitCast(rf32(pd + 0x1C)), orientation_data,
-        @intFromPtr(&color_value), @intFromPtr(&color_data1), @intFromPtr(&color_data2), @intFromPtr(&sprite_scale));
+    // Color channels: (float)delta * t + (float)base [+ magic], extract byte via >>14
+    // Alpha (byte 3): scaled by scale_param
+    const alpha_f = @mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x04))), t,
+        @as(f32, @floatFromInt(@as(i32, ru8(color_ctx + 3))))) * scale_param + magic;
+    // Red (byte 2): no scale
+    const red_f = @mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x08))), t,
+        @as(f32, @floatFromInt(@as(i32, ru8(color_ctx + 2))))) + magic;
+    // Green (byte 1):
+    const green_f = @mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x0C))), t,
+        @as(f32, @floatFromInt(@as(i32, ru8(color_ctx + 1))))) + magic;
+    // Blue (byte 0):
+    const blue_f = @mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x10))), t,
+        @as(f32, @floatFromInt(@as(i32, ru8(color_ctx + 0))))) + magic;
+
+    var color_value: u32 = @as(u32, @truncate(@as(u32, @bitCast(blue_f)) >> 14)) |
+        (@as(u32, @truncate(@as(u32, @bitCast(green_f)) >> 14)) << 8) |
+        (@as(u32, @truncate(@as(u32, @bitCast(red_f)) >> 14)) << 16) |
+        (@as(u32, @truncate(@as(u32, @bitCast(alpha_f)) >> 14)) << 24);
+
+    // Sprite scale: t * ctx.scaleDelta + ctx.scaleBase
+    var sprite_scale: f32 = @mulAdd(f32, t, rf32(color_ctx + 0x28), rf32(color_ctx + 0x24));
+
+    // Alpha outputs (color_data1, color_data2) — used for texture index
+    var color_data1: u32 = undefined;
+    var color_data2: u32 = undefined;
+    const alpha_power = ru32(color_ctx + 0x50);
+    if (alpha_power == 0x3F800000) {
+        // Fast path: alphaPower == 1.0 (linear)
+        color_data1 = (@as(u32, @bitCast(@mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x18))), t,
+            @as(f32, @floatFromInt(ri32(color_ctx + 0x14)))) + magic)) >> 14) & 0xFF;
+        color_data2 = (@as(u32, @bitCast(@mulAdd(f32, @as(f32, @floatFromInt(ri32(color_ctx + 0x20))), t,
+            @as(f32, @floatFromInt(ri32(color_ctx + 0x1C)))) + magic)) >> 14) & 0xFF;
+    } else {
+        // Slow path: pow scaling — fall back to game function call
+        calcColor(color_ctx, @bitCast(time_val), @bitCast(ru32(emitter + E.orientation_base)),
+            @intFromPtr(&color_value), @intFromPtr(&color_data1), @intFromPtr(&color_data2), @intFromPtr(&sprite_scale));
+    }
 
     // =========================================================================
     // Section 3: Render state setup (asm 0x7B2B46)
@@ -274,11 +365,16 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
 
     // =========================================================================
     // Section 6: Position transform (asm 0x7B2BB4-0x7B2BC3)
-    // Transform particle world position through view matrix
+    // Inline V4 mat*vec3: result = col0*v.x + col1*v.y + col2*v.z + col3
     // =========================================================================
 
-    var world_pos: [3]f32 = undefined;
-    _ = transformVec3(@intFromPtr(&world_pos), pd, G.world_matrix);
+    const pp: [*]const f32 = @ptrFromInt(pd);
+    const pvx: V4 = @splat(pp[0]);
+    const pvy: V4 = @splat(pp[1]);
+    const pvz: V4 = @splat(pp[2]);
+    const m: u32 = G.world_matrix;
+    const wp = @mulAdd(V4, pvz, loadV4(m + 32), @mulAdd(V4, pvy, loadV4(m + 16), @mulAdd(V4, pvx, loadV4(m), loadV4(m + 48))));
+    const world_pos = [3]f32{ wp[0], wp[1], wp[2] };
 
     // =========================================================================
     // Section 7: Branch on flag 0x4 — sprite vs tail rendering
@@ -318,16 +414,21 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
                 // Assembly: eax starts at 0, adds 8 between X and Y reads.
                 //   X: [eax+0x87D714], eax+=8, Y: [eax+0x87D710]=[eax_new+0x87D710]
                 //   texU: [eax+0x87D72C], texV: [eax+0x87D730] (eax already incremented)
-                var loop_off: u32 = 0;
-                while (loop_off < 0x20) : (loop_off += 8) {
-                    const ox = rf32(G.billboard_offsets_x + loop_off); // [eax+0x87D714]
-                    const oy = rf32(G.billboard_offsets_y + loop_off); // [eax+8+0x87D710]
-                    const vx = sprite_scale * ox + world_pos[0];
-                    const vy = sprite_scale * oy + world_pos[1];
-                    // Texcoords use eax+8 offset (eax already incremented in original)
-                    const tu = rf32(G.sprite_tex_u + loop_off + 8) * tex_scale_u + tex_u_base;
-                    const tv = rf32(G.sprite_tex_v + loop_off + 8) * tex_scale_v + tex_v_base;
-                    emitVertex(vb, vx, vy, world_pos[2], color_value, tu, tv);
+                // 4 vertices with cached VB state to avoid pointer re-reads.
+                {
+                    var vs = VBState.load(vb);
+                    var loop_off: u32 = 0;
+                    while (loop_off < 0x20) : (loop_off += 8) {
+                        vs.emit(
+                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_x + loop_off), world_pos[0]),
+                            @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_y + loop_off), world_pos[1]),
+                            world_pos[2],
+                            color_value,
+                            @mulAdd(f32, rf32(G.sprite_tex_u + loop_off + 8), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_v + loop_off + 8), tex_scale_v, tex_v_base),
+                        );
+                    }
+                    vs.writeback();
                 }
             } else {
                 // --- 3D billboard (asm 0x7B2C25-0x7B2D04) ---
@@ -388,17 +489,22 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
                 const scaled_sin = sin_val * sprite_scale;
                 const scaled_cos = cos_val * sprite_scale;
 
-                var loop_off: u32 = 0;
-                while (loop_off < 0x20) : (loop_off += 8) {
-                    const ox = rf32(G.billboard_offsets_x + loop_off);
-                    const oy = rf32(G.billboard_offsets_y + loop_off);
-                    // Rotated billboard: x' = ox*cos - oy*sin, y' = oy*cos + ox*sin
-                    const vx = @mulAdd(f32, ox, scaled_cos, world_pos[0]) - oy * scaled_sin;
-                    const vy = @mulAdd(f32, oy, scaled_cos, @mulAdd(f32, ox, scaled_sin, world_pos[1]));
-                    // Texcoords use eax+8 offset (eax incremented before tex reads in original)
-                    const tu = rf32(G.sprite_tex_u + loop_off + 8) * tex_scale_u + tex_u_base;
-                    const tv = rf32(G.sprite_tex_v + loop_off + 8) * tex_scale_v + tex_v_base;
-                    emitVertex(vb, vx, vy, world_pos[2], color_value, tu, tv);
+                {
+                    var vs = VBState.load(vb);
+                    var loop_off: u32 = 0;
+                    while (loop_off < 0x20) : (loop_off += 8) {
+                        const ox = rf32(G.billboard_offsets_x + loop_off);
+                        const oy = rf32(G.billboard_offsets_y + loop_off);
+                        vs.emit(
+                            @mulAdd(f32, ox, scaled_cos, world_pos[0]) - oy * scaled_sin,
+                            @mulAdd(f32, oy, scaled_cos, @mulAdd(f32, ox, scaled_sin, world_pos[1])),
+                            world_pos[2],
+                            color_value,
+                            @mulAdd(f32, rf32(G.sprite_tex_u + loop_off + 8), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(G.sprite_tex_v + loop_off + 8), tex_scale_v, tex_v_base),
+                        );
+                    }
+                    vs.writeback();
                 }
             } else {
                 // --- 3D billboard with rotation matrix (asm 0x7B2E00-0x7B2F41) ---
