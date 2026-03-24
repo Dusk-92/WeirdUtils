@@ -1062,9 +1062,144 @@ export fn setupParticleRendering_SSE(emitter: u32, view_matrix: u32) callconv(TC
 }
 
 inline fn copyMat4x4(dst: u32, src: u32) void {
-    // Copy 64 bytes (16 floats) using V4 loads/stores
     @as(*align(1) V4, @ptrFromInt(dst)).* = @as(*align(1) const V4, @ptrFromInt(src)).*;
     @as(*align(1) V4, @ptrFromInt(dst + 16)).* = @as(*align(1) const V4, @ptrFromInt(src + 16)).*;
     @as(*align(1) V4, @ptrFromInt(dst + 32)).* = @as(*align(1) const V4, @ptrFromInt(src + 32)).*;
     @as(*align(1) V4, @ptrFromInt(dst + 48)).* = @as(*align(1) const V4, @ptrFromInt(src + 48)).*;
 }
+
+// =============================================================================
+// RenderSpriteQuads (0x5A0F50)
+// __thiscall(ECX=this, stack=spriteData, spriteCount, renderMode), RET 0xC
+//
+// Optimizations over original:
+// 1. Hoisted invariant division out of inner loop (same result every iteration)
+// 2. Inlined DisplayMode_CalculateOffset (trivial: table lookup + divide + subtract)
+// 3. Cached texture validation bitmask check
+// =============================================================================
+
+// Game functions called by RenderSpriteQuads
+const sqEmptyStub: *const fn (u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x590630);
+const sqCalcMetrics: *const fn (u32, u32, u32, u32) callconv(TC) void = @ptrFromInt(0x592B00);
+const sqGetAdapterInfo: *const fn (u32) callconv(TC) void = @ptrFromInt(0x5A1B20);
+
+// DisplayMode tables (from 0x592C10 disassembly)
+const DISPLAY_MODE_DIVISOR_TABLE: u32 = 0x85ACF0;
+const DISPLAY_MODE_OFFSET_TABLE: u32 = 0x85AD08;
+
+/// Inlined DisplayMode_CalculateOffset: table[type] divide + subtract
+inline fn displayModeOffset(sprite_type: u32, count: u32) u32 {
+    const divisor = ru32(DISPLAY_MODE_DIVISOR_TABLE + sprite_type * 4);
+    const divided = if (divisor == 1) count else count / divisor;
+    return divided -% ru32(DISPLAY_MODE_OFFSET_TABLE + sprite_type * 4);
+}
+
+export fn renderSpriteQuads_SSE(this: u32, sprite_data: u32, sprite_count: u32, render_mode: u32) callconv(TC) void {
+    // Early out: this+0xF2C == 0
+    if (ru32(this + 0xF2C) == 0) return;
+
+    // =========================================================================
+    // Section 1: Texture validation (13 slots)
+    // =========================================================================
+    const tex_bitmask = ru32(this + 0x27D8);
+    const tex_array_base = this + 0x27A4;
+    var all_valid: bool = true;
+
+    var slot: u32 = 0;
+    while (slot < 13) : (slot += 1) {
+        if ((tex_bitmask & (@as(u32, 1) << @truncate(slot))) != 0) {
+            const tex_ptr = ru32(tex_array_base + slot * 4);
+            if (tex_ptr == 0 or !all_valid or ru8(tex_ptr + 0x1C) == 0 or ru8(tex_ptr + 0x1D) == 0) {
+                all_valid = false;
+            }
+        }
+    }
+
+    // Render mode logic
+    var should_render: bool = undefined;
+    if (render_mode == 0) {
+        should_render = all_valid; // mode 0: render if NOT all valid → invert
+        // Wait: original does bVar8 = !bVar8 for mode 0, then checks if(bVar8) → early out
+        // So: if all_valid → !all_valid = false → don't early out → render
+        //     if !all_valid → !all_valid = true → early out → don't render
+        // Simplified: render if all_valid
+    } else {
+        if (!all_valid) {
+            sqEmptyStub(0x85C7A8);
+            return;
+        }
+        const extra_ptr = ru32(this + 0x27EC);
+        if (ru8(extra_ptr + 0x1C) == 0) {
+            sqEmptyStub(0x85C7A8);
+            return;
+        }
+        should_render = ru8(extra_ptr + 0x1D) != 0;
+    }
+
+    if (!should_render) {
+        sqEmptyStub(0x85C7A8);
+        return;
+    }
+
+    // =========================================================================
+    // Section 2: Setup calls
+    // =========================================================================
+    sqCalcMetrics(this, sprite_data, sprite_count, render_mode);
+    sqGetAdapterInfo(this);
+
+    if (sprite_count == 0) return;
+
+    // =========================================================================
+    // Section 3: Inner loop — hoisted invariant division
+    // =========================================================================
+
+    // The division this+0x27A4[0]+0x18 / this+0x27A4[0]+0xC is invariant across sprites.
+    // Original recomputes it per sprite. We hoist it.
+    var base_prim_count: u32 = 0;
+    if (ru32(this + 0x24C) == 0) {
+        const first_tex = ru32(this + 0x27A4);
+        if (first_tex != 0) {
+            const numerator = ru32(first_tex + 0x18);
+            const denominator = ru32(first_tex + 0x0C);
+            if (denominator != 0) {
+                base_prim_count = numerator / denominator;
+            }
+        }
+    }
+
+    // D3D device vtable pointer
+    const device_ptr = ru32(this + 0x38A8);
+    const vtable = ru32(device_ptr);
+
+    // Sprite data stride = 16 bytes, pointer starts at spriteData + 10
+    var ptr = sprite_data + 10;
+    var remaining = sprite_count;
+
+    while (remaining > 0) : (remaining -= 1) {
+        const count: u32 = @as(u32, ru16(ptr - 2)); // [esi-2] = sprite vertex count
+        if (count != 0) {
+            const sprite_type = ru32(ptr - 10); // [esi-0xA] = type/format index
+            const offset = displayModeOffset(sprite_type, count);
+            const lookup_val = ru32(0x80A14C + sprite_type * 4);
+
+            if (render_mode == 0) {
+                // DrawPrimitive: vtable[0x144](device, lookup, basePrimCount, offset)
+                const draw_fn: *const fn (u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void =
+                    @ptrFromInt(ru32(vtable + 0x144));
+                draw_fn(device_ptr, lookup_val, base_prim_count, offset);
+            } else {
+                const start_idx: u32 = @as(u32, ru16(ptr));
+                const end_idx: u32 = @as(u32, ru16(ptr + 2));
+                const extra_ptr = ru32(this + 0x27EC);
+                const extra_offset = (ru32(extra_ptr + 0x18) >> 1) + ru32(ptr - 6);
+
+                // DrawIndexedPrimitive: vtable[0x148](device, lookup, basePrimCount, startIdx, count, extraOffset, offset)
+                const draw_fn: *const fn (u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void =
+                    @ptrFromInt(ru32(vtable + 0x148));
+                draw_fn(device_ptr, lookup_val, base_prim_count, start_idx, end_idx - start_idx + 1, extra_offset, offset);
+            }
+        }
+        ptr += 16;
+    }
+}
+

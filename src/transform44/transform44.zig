@@ -26,6 +26,7 @@ extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x8
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn resetParticleCache() void;
 extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var stride_info: [8]u32; // exported from particle_sse.zig
 extern var debug_vertex_count: u32;
 extern var debug_max_sprites: u32;
