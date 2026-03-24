@@ -25,6 +25,8 @@ extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
 extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn resetParticleCache() void;
+extern var stride_info: [8]u32; // exported from particle_sse.zig
+var stride_dumped: bool = false;
 
 /// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
 /// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
@@ -1455,6 +1457,17 @@ fn dumpStats() void {
             hit_pct / 10, hit_pct % 10,
             prof.glyph_hits,
             prof.glyph_misses,
+        });
+    }
+
+    // Dump particle VB stride info (once)
+    if (stride_info[0] != 0 and !stride_dumped) {
+        stride_dumped = true;
+        log.fmt("  vb_strides: pos={d} norm={d} color={d} tc={d}\n", .{
+            stride_info[0], stride_info[1], stride_info[2], stride_info[3],
+        });
+        log.fmt("  vb_bases: pos=0x{x} norm=0x{x} color=0x{x} tc=0x{x}\n", .{
+            stride_info[4], stride_info[5], stride_info[6], stride_info[7],
         });
     }
 

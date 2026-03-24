@@ -168,6 +168,7 @@ const VBState = struct {
     light: [3]u32,
 
     fn load(vb: u32) VBState {
+        logStrides(vb);
         return .{
             .pos = ru32(vb + VB.pos),
             .normal = ru32(vb + VB.normal),
@@ -184,23 +185,50 @@ const VBState = struct {
     }
 
     fn emit(s: *VBState, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv: f32) void {
-        wf32(s.pos, px);
-        wf32(s.pos + 4, py);
-        wf32(s.pos + 8, pz);
-        wu32(s.normal, s.light[0]);
-        wu32(s.normal + 4, s.light[1]);
-        wu32(s.normal + 8, s.light[2]);
-        wu32(s.color_ptr, color);
-        wf32(s.texcoord, tu);
-        wf32(s.texcoord + 4, tv);
-        s.pos += s.pos_stride;
-        s.normal += s.normal_stride;
-        s.color_ptr += s.color_stride;
-        s.texcoord += s.texcoord_stride;
+        // Vertex layout is interleaved 24 bytes: xyz(12) + color(4) + uv(8).
+        // All strides are 24 except normal (0, shared global).
+        // Write contiguously when stride == 24 and layout matches.
+        if (s.pos_stride == 24 and s.color_ptr == s.pos + 12 and s.texcoord == s.pos + 16) {
+            // Fast path: single contiguous 24-byte vertex write
+            const p: [*]u32 = @ptrFromInt(s.pos);
+            p[0] = @bitCast(px); // x
+            p[1] = @bitCast(py); // y
+            p[2] = @bitCast(pz); // z
+            p[3] = color; // color at +12
+            p[4] = @bitCast(tu); // u at +16
+            p[5] = @bitCast(tv); // v at +20
+            s.pos += 24;
+            s.color_ptr += 24;
+            s.texcoord += 24;
+        } else {
+            // Fallback: scattered writes
+            wf32(s.pos, px);
+            wf32(s.pos + 4, py);
+            wf32(s.pos + 8, pz);
+            wu32(s.color_ptr, color);
+            wf32(s.texcoord, tu);
+            wf32(s.texcoord + 4, tv);
+            s.pos += s.pos_stride;
+            s.color_ptr += s.color_stride;
+            s.texcoord += s.texcoord_stride;
+        }
+        // Normal: stride=0 means shared global, write once (handled in writeback)
+        if (s.normal_stride != 0) {
+            wu32(s.normal, s.light[0]);
+            wu32(s.normal + 4, s.light[1]);
+            wu32(s.normal + 8, s.light[2]);
+            s.normal += s.normal_stride;
+        }
         s.count += 1;
     }
 
     fn writeback(s: *const VBState) void {
+        // Write normal once if stride==0 (shared global — same for all vertices)
+        if (s.normal_stride == 0) {
+            wu32(s.normal, s.light[0]);
+            wu32(s.normal + 4, s.light[1]);
+            wu32(s.normal + 8, s.light[2]);
+        }
         wu32(s.vb + VB.pos, s.pos);
         wu32(s.vb + VB.normal, s.normal);
         wu32(s.vb + VB.color, s.color_ptr);
@@ -234,10 +262,32 @@ inline fn emitVertex(vb: u32, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv
 // Reset each frame via resetParticleCache() called from the frame hook.
 var cached_render_state: u32 = 0;
 
+var stride_logged: bool = false;
+
 /// Reset per-frame caches. Call from OnWorldUpdate or executeSceneRenderPass hook.
 export fn resetParticleCache() void {
     cached_render_state = 0;
 }
+
+/// Log VB strides once for analysis. Called from first VBState.load.
+fn logStrides(vb: u32) void {
+    if (stride_logged) return;
+    stride_logged = true;
+    // Write to a known memory location that the profiler can dump, or just use
+    // the debug console. For now, store in a global we can read.
+    stride_info = .{
+        ru32(vb + VB.pos_stride),
+        ru32(vb + VB.normal_stride),
+        ru32(vb + VB.color_stride),
+        ru32(vb + VB.texcoord_stride),
+        ru32(vb + VB.pos),
+        ru32(vb + VB.normal),
+        ru32(vb + VB.color),
+        ru32(vb + VB.texcoord),
+    };
+}
+
+export var stride_info: [8]u32 = .{0} ** 8;
 
 // =============================================================================
 // RenderParticleSprites (0x7B2A50)
