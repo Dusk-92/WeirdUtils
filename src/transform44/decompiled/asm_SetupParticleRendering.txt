@@ -1,0 +1,190 @@
+// SetupParticleRendering @ 0x7B3D20 -- 0x7B4050 (816 bytes)
+// Disassembled from WoW 1.12.1 build 5875
+
+007B3D20  55                push ebp
+007B3D21  8BEC              mov ebp,esp
+007B3D23  81EC54010000      sub esp,0x154
+007B3D29  53                push ebx
+007B3D2A  56                push esi
+007B3D2B  8BD9              mov ebx,ecx
+007B3D2D  57                push edi
+007B3D2E  8D4DAC            lea ecx,[ebp-0x54]
+007B3D31  C7852CFFFFFF0000  mov dword [ebp-0xd4],0x3f800000
+         -803F
+007B3D3B  C78530FFFFFF0000  mov dword [ebp-0xd0],0x0
+         -0000
+007B3D45  C78534FFFFFF0000  mov dword [ebp-0xcc],0x0
+         -0000
+007B3D4F  C78538FFFFFF0000  mov dword [ebp-0xc8],0x0
+         -0000
+007B3D59  C7853CFFFFFF0000  mov dword [ebp-0xc4],0x0
+         -0000
+007B3D63  C78540FFFFFF0000  mov dword [ebp-0xc0],0x3f800000
+         -803F
+007B3D6D  C78544FFFFFF0000  mov dword [ebp-0xbc],0x0
+         -0000
+007B3D77  C78548FFFFFF0000  mov dword [ebp-0xb8],0x0
+         -0000
+007B3D81  C7854CFFFFFF0000  mov dword [ebp-0xb4],0x0
+         -0000
+007B3D8B  C78550FFFFFF0000  mov dword [ebp-0xb0],0x0
+         -0000
+007B3D95  C78554FFFFFF0000  mov dword [ebp-0xac],0x3f800000
+         -803F
+007B3D9F  C78558FFFFFF0000  mov dword [ebp-0xa8],0x0
+         -0000
+007B3DA9  C7855CFFFFFF0000  mov dword [ebp-0xa4],0x0
+         -0000
+007B3DB3  C78560FFFFFF0000  mov dword [ebp-0xa0],0x0
+         -0000
+007B3DBD  C78564FFFFFF0000  mov dword [ebp-0x9c],0x0
+         -0000
+007B3DC7  C78568FFFFFF0000  mov dword [ebp-0x98],0x3f800000
+         -803F
+007B3DD1  C745AC0000803F    mov dword [ebp-0x54],0x3f800000
+007B3DD8  C745B000000000    mov dword [ebp-0x50],0x0
+007B3DDF  C745B400000000    mov dword [ebp-0x4c],0x0
+007B3DE6  C745B800000000    mov dword [ebp-0x48],0x0
+007B3DED  C745BC00000000    mov dword [ebp-0x44],0x0
+007B3DF4  C745C00000803F    mov dword [ebp-0x40],0x3f800000
+007B3DFB  C745C400000000    mov dword [ebp-0x3c],0x0
+007B3E02  C745C800000000    mov dword [ebp-0x38],0x0
+007B3E09  C745CC00000000    mov dword [ebp-0x34],0x0
+007B3E10  C745D000000000    mov dword [ebp-0x30],0x0
+007B3E17  C745D40000803F    mov dword [ebp-0x2c],0x3f800000
+007B3E1E  C745D800000000    mov dword [ebp-0x28],0x0
+007B3E25  C745DC00000000    mov dword [ebp-0x24],0x0
+007B3E2C  C745E000000000    mov dword [ebp-0x20],0x0
+007B3E33  C745E400000000    mov dword [ebp-0x1c],0x0
+007B3E3A  C745E80000803F    mov dword [ebp-0x18],0x3f800000
+007B3E41  E86A72DDFF        call 0x58b0b0
+007B3E46  8D8D2CFFFFFF      lea ecx,[ebp-0xd4]
+007B3E4C  E8FF71DDFF        call 0x58b050
+007B3E51  D9833C020000      fld dword [ebx+0x23c]
+007B3E57  D9E0              fchs
+007B3E59  BE00010000        mov esi,0x100
+007B3E5E  D95DF4            fstp dword [ebp-0xc]
+007B3E61  D98340020000      fld dword [ebx+0x240]
+007B3E67  8B45F4            mov eax,[ebp-0xc]
+007B3E6A  D9E0              fchs
+007B3E6C  89459C            mov [ebp-0x64],eax
+007B3E6F  85B3AC010000      test [ebx+0x1ac],esi
+007B3E75  D95DF8            fstp dword [ebp-0x8]
+007B3E78  D98344020000      fld dword [ebx+0x244]
+007B3E7E  8B4DF8            mov ecx,[ebp-0x8]
+007B3E81  D9E0              fchs
+007B3E83  C7856CFFFFFF0000  mov dword [ebp-0x94],0x3f800000
+         -803F
+007B3E8D  D95DFC            fstp dword [ebp-0x4]
+007B3E90  8B55FC            mov edx,[ebp-0x4]
+007B3E93  C78570FFFFFF0000  mov dword [ebp-0x90],0x0
+         -0000
+007B3E9D  C78574FFFFFF0000  mov dword [ebp-0x8c],0x0
+         -0000
+007B3EA7  C78578FFFFFF0000  mov dword [ebp-0x88],0x0
+         -0000
+007B3EB1  C7857CFFFFFF0000  mov dword [ebp-0x84],0x0
+         -0000
+007B3EBB  C745800000803F    mov dword [ebp-0x80],0x3f800000
+007B3EC2  C7458400000000    mov dword [ebp-0x7c],0x0
+007B3EC9  C7458800000000    mov dword [ebp-0x78],0x0
+007B3ED0  C7458C00000000    mov dword [ebp-0x74],0x0
+007B3ED7  C7459000000000    mov dword [ebp-0x70],0x0
+007B3EDE  C745940000803F    mov dword [ebp-0x6c],0x3f800000
+007B3EE5  C7459800000000    mov dword [ebp-0x68],0x0
+007B3EEC  C745A80000803F    mov dword [ebp-0x58],0x3f800000
+007B3EF3  894DA0            mov [ebp-0x60],ecx
+007B3EF6  8955A4            mov [ebp-0x5c],edx
+007B3EF9  744D              jz 0x7b3f48
+007B3EFB  8D45AC            lea eax,[ebp-0x54]
+007B3EFE  50                push eax
+007B3EFF  8D8D6CFFFFFF      lea ecx,[ebp-0x94]
+007B3F05  51                push ecx
+007B3F06  8D93FC010000      lea edx,[ebx+0x1fc]
+007B3F0C  8D8DECFEFFFF      lea ecx,[ebp-0x114]
+007B3F12  E889870000        call 0x7bc6a0
+007B3F17  8BD0              mov edx,eax
+007B3F19  8D8DACFEFFFF      lea ecx,[ebp-0x154]
+007B3F1F  E87C870000        call 0x7bc6a0
+007B3F24  B9685BCF00        mov ecx,0xcf5b68
+007B3F29  BA08000000        mov edx,0x8
+007B3F2E  8BFF              mov edi,edi
+007B3F30  8B38              mov edi,[eax]
+007B3F32  8939              mov [ecx],edi
+007B3F34  8B7804            mov edi,[eax+0x4]
+007B3F37  897904            mov [ecx+0x4],edi
+007B3F3A  83C108            add ecx,0x8
+007B3F3D  83C008            add eax,0x8
+007B3F40  4A                dec edx
+007B3F41  75ED              jnz 0x7b3f30
+007B3F43  E97F000000        jmp 0x7b3fc7
+007B3F48  8B5508            mov edx,[ebp+0x8]
+007B3F4B  85D2              test edx,edx
+007B3F4D  7446              jz 0x7b3f95
+007B3F4F  8D45AC            lea eax,[ebp-0x54]
+007B3F52  50                push eax
+007B3F53  8D8D6CFFFFFF      lea ecx,[ebp-0x94]
+007B3F59  51                push ecx
+007B3F5A  8D8DACFEFFFF      lea ecx,[ebp-0x154]
+007B3F60  E83B870000        call 0x7bc6a0
+007B3F65  8BD0              mov edx,eax
+007B3F67  8D8DECFEFFFF      lea ecx,[ebp-0x114]
+007B3F6D  E82E870000        call 0x7bc6a0
+007B3F72  B9685BCF00        mov ecx,0xcf5b68
+007B3F77  BA08000000        mov edx,0x8
+007B3F7C  8D642400          lea esp,[esp+0x0]
+007B3F80  8B38              mov edi,[eax]
+007B3F82  8939              mov [ecx],edi
+007B3F84  8B7804            mov edi,[eax+0x4]
+007B3F87  897904            mov [ecx+0x4],edi
+007B3F8A  83C108            add ecx,0x8
+007B3F8D  83C008            add eax,0x8
+007B3F90  4A                dec edx
+007B3F91  75ED              jnz 0x7b3f80
+007B3F93  EB32              jmp 0x7b3fc7
+007B3F95  8D55AC            lea edx,[ebp-0x54]
+007B3F98  52                push edx
+007B3F99  8D956CFFFFFF      lea edx,[ebp-0x94]
+007B3F9F  8D8DACFEFFFF      lea ecx,[ebp-0x154]
+007B3FA5  E8F6860000        call 0x7bc6a0
+007B3FAA  B9685BCF00        mov ecx,0xcf5b68
+007B3FAF  BA08000000        mov edx,0x8
+007B3FB4  8B38              mov edi,[eax]
+007B3FB6  8939              mov [ecx],edi
+007B3FB8  8B7804            mov edi,[eax+0x4]
+007B3FBB  897904            mov [ecx+0x4],edi
+007B3FBE  83C108            add ecx,0x8
+007B3FC1  83C008            add eax,0x8
+007B3FC4  4A                dec edx
+007B3FC5  75ED              jnz 0x7b3fb4
+007B3FC7  8B45CC            mov eax,[ebp-0x34]
+007B3FCA  8B4DD0            mov ecx,[ebp-0x30]
+007B3FCD  8B55D4            mov edx,[ebp-0x2c]
+007B3FD0  A37858CF00        mov [0xcf5878],eax
+007B3FD5  890D7C58CF00      mov [0xcf587c],ecx
+007B3FDB  89158058CF00      mov [0xcf5880],edx
+007B3FE1  8B83AC010000      mov eax,[ebx+0x1ac]
+007B3FE7  F6C420            test ah,0x20
+007B3FEA  0F84B3020000      jz 0x7b42a3
+007B3FF0  A0EC58CF00        mov al,[0xcf58ec]
+007B3FF5  A801              test al,0x1
+007B3FF7  0F8590000000      jnz 0x7b408d
+007B3FFD  8AD0              mov dl,al
+007B3FFF  80CA01            or dl,0x1
+007B4002  6800457B00        push dword 0x7b4500
+007B4007  8815EC58CF00      mov [0xcf58ec],dl
+007B400D  C705F85ACF000000  mov dword [0xcf5af8],0xbf800000
+         -80BF
+007B4017  C705FC5ACF000000  mov dword [0xcf5afc],0x3f800000
+         -803F
+007B4021  C705005BCF000000  mov dword [0xcf5b00],0x0
+         -0000
+007B402B  C705045BCF000000  mov dword [0xcf5b04],0xbf800000
+         -80BF
+007B4035  C705085BCF000000  mov dword [0xcf5b08],0xbf800000
+         -80BF
+007B403F  C7050C5BCF000000  mov dword [0xcf5b0c],0x0
+         -0000
+007B4049  C7                db 0xc7
+007B404A  05105BCF00        add eax,0xcf5b10
+007B404F  00                db 0x00

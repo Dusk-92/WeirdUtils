@@ -1,0 +1,542 @@
+// RenderParticleSprites @ 0x7B2A50 -- 0x7B3100 (1712 bytes)
+// Disassembled from WoW 1.12.1 build 5875
+
+007B2A50  55                push ebp
+007B2A51  8BEC              mov ebp,esp
+007B2A53  81EC88000000      sub esp,0x88
+007B2A59  53                push ebx
+007B2A5A  56                push esi
+007B2A5B  57                push edi
+007B2A5C  8BF9              mov edi,ecx
+007B2A5E  D987B4010000      fld dword [edi+0x1b4]
+007B2A64  33F6              xor esi,esi
+007B2A66  D81DD8F97F00      fcomp dword [0x7ff9d8]
+007B2A6C  DFE0              fnstsw ax
+007B2A6E  F6C405            test ah,0x5
+007B2A71  7B13              jpo 0x7b2a86
+007B2A73  D987C0010000      fld dword [edi+0x1c0]
+007B2A79  D81D74FD7F00      fcomp dword [0x7ffd74]
+007B2A7F  DFE0              fnstsw ax
+007B2A81  F6C444            test ah,0x44
+007B2A84  7B53              jpo 0x7b2ad9
+007B2A86  D987B0010000      fld dword [edi+0x1b0]
+007B2A8C  8B5D08            mov ebx,[ebp+0x8]
+007B2A8F  D84B1C            fmul dword [ebx+0x1c]
+007B2A92  D81574FD7F00      fcom dword [0x7ffd74]
+007B2A98  DFE0              fnstsw ax
+007B2A9A  F6C405            test ah,0x5
+007B2A9D  7A0A              jpe 0x7b2aa9
+007B2A9F  DDD8              fstp st0
+007B2AA1  D90574FD7F00      fld dword [0x7ffd74]
+007B2AA7  EB15              jmp 0x7b2abe
+007B2AA9  D81558FE7F00      fcom dword [0x7ffe58]
+007B2AAF  DFE0              fnstsw ax
+007B2AB1  F6C405            test ah,0x5
+007B2AB4  7B08              jpo 0x7b2abe
+007B2AB6  DDD8              fstp st0
+007B2AB8  D90558FE7F00      fld dword [0x7ffe58]
+007B2ABE  D805CC298000      fadd dword [0x8029cc]
+007B2AC4  8BC3              mov eax,ebx
+007B2AC6  C1E805            shr eax,byte 0x5
+007B2AC9  D95DCC            fstp dword [ebp-0x34]
+007B2ACC  8B75CC            mov esi,[ebp-0x34]
+007B2ACF  C1EE0E            shr esi,byte 0xe
+007B2AD2  03F0              add esi,eax
+007B2AD4  83E67F            and esi,0x7f
+007B2AD7  EB03              jmp 0x7b2adc
+007B2AD9  8B5D08            mov ebx,[ebp+0x8]
+007B2ADC  D987B4010000      fld dword [edi+0x1b4]
+007B2AE2  D81DD8F97F00      fcomp dword [0x7ff9d8]
+007B2AE8  DFE0              fnstsw ax
+007B2AEA  F6C405            test ah,0x5
+007B2AED  7A1F              jpe 0x7b2b0e
+007B2AEF  D904B5F058CF00    fld dword [esi*4+0xcf58f0]
+007B2AF6  D89FB4010000      fcomp dword [edi+0x1b4]
+007B2AFC  DFE0              fnstsw ax
+007B2AFE  F6C441            test ah,0x41
+007B2B01  750B              jnz 0x7b2b0e
+007B2B03  5F                pop edi
+007B2B04  5E                pop esi
+007B2B05  33C0              xor eax,eax
+007B2B07  5B                pop ebx
+007B2B08  8BE5              mov esp,ebp
+007B2B0A  5D                pop ebp
+007B2B0B  C20800            ret word 0x8
+007B2B0E  8D4DF0            lea ecx,[ebp-0x10]
+007B2B11  51                push ecx
+007B2B12  8D55C0            lea edx,[ebp-0x40]
+007B2B15  52                push edx
+007B2B16  8B97A8010000      mov edx,[edi+0x1a8]
+007B2B1C  8D45BC            lea eax,[ebp-0x44]
+007B2B1F  50                push eax
+007B2B20  8B431C            mov eax,[ebx+0x1c]
+007B2B23  8D4DE8            lea ecx,[ebp-0x18]
+007B2B26  51                push ecx
+007B2B27  52                push edx
+007B2B28  50                push eax
+007B2B29  0FB6430C          movzx eax,byte [ebx+0xc]
+007B2B2D  8D0C40            lea ecx,[eax+eax*2]
+007B2B30  C1E105            shl ecx,byte 0x5
+007B2B33  8D8C39BC000000    lea ecx,[ecx+edi+0xbc]
+007B2B3A  C745E800000000    mov dword [ebp-0x18],0x0
+007B2B41  E8CA6F0000        call 0x7b9b10
+007B2B46  E8E576DDFF        call 0x58a230
+007B2B4B  83781C01          cmp dword [eax+0x1c],0x1
+007B2B4F  7520              jnz 0x7b2b71
+007B2B51  668B45EA          mov ax,[ebp-0x16]
+007B2B55  8B4DE8            mov ecx,[ebp-0x18]
+007B2B58  C745EC00000000    mov dword [ebp-0x14],0x0
+007B2B5F  8865EF            mov [ebp-0x11],ah
+007B2B62  884DEE            mov [ebp-0x12],cl
+007B2B65  886DED            mov [ebp-0x13],ch
+007B2B68  8845EC            mov [ebp-0x14],al
+007B2B6B  8B55EC            mov edx,[ebp-0x14]
+007B2B6E  8955E8            mov [ebp-0x18],edx
+007B2B71  D987C0010000      fld dword [edi+0x1c0]
+007B2B77  D81D74FD7F00      fcomp dword [0x7ffd74]
+007B2B7D  DFE0              fnstsw ax
+007B2B7F  F6C444            test ah,0x44
+007B2B82  7B19              jpo 0x7b2b9d
+007B2B84  D904B5F058CF00    fld dword [esi*4+0xcf58f0]
+007B2B8B  D88FC0010000      fmul dword [edi+0x1c0]
+007B2B91  D887B8010000      fadd dword [edi+0x1b8]
+007B2B97  D84DF0            fmul dword [ebp-0x10]
+007B2B9A  D95DF0            fstp dword [ebp-0x10]
+007B2B9D  8B87AC010000      mov eax,[edi+0x1ac]
+007B2BA3  F6C402            test ah,0x2
+007B2BA6  740C              jz 0x7b2bb4
+007B2BA8  D945F0            fld dword [ebp-0x10]
+007B2BAB  D88F64020000      fmul dword [edi+0x264]
+007B2BB1  D95DF0            fstp dword [ebp-0x10]
+007B2BB4  68685BCF00        push dword 0xcf5b68
+007B2BB9  8BD3              mov edx,ebx
+007B2BBB  8D4DD0            lea ecx,[ebp-0x30]
+007B2BBE  E8BD9E0000        call 0x7bca80
+007B2BC3  8B97AC010000      mov edx,[edi+0x1ac]
+007B2BC9  F6C204            test dl,0x4
+007B2BCC  8B750C            mov esi,[ebp+0xc]
+007B2BCF  0F846C040000      jz 0x7b3041
+007B2BD5  8B8F9C010000      mov ecx,[edi+0x19c]
+007B2BDB  8B45BC            mov eax,[ebp-0x44]
+007B2BDE  49                dec ecx
+007B2BDF  23C8              and ecx,eax
+007B2BE1  894DF8            mov [ebp-0x8],ecx
+007B2BE4  8B4F0C            mov ecx,[edi+0xc]
+007B2BE7  C745FC00000000    mov dword [ebp-0x4],0x0
+007B2BEE  DF6DF8            fild qword [ebp-0x8]
+007B2BF1  D3F8              sar eax,cl
+007B2BF3  D84F10            fmul dword [edi+0x10]
+007B2BF6  89450C            mov [ebp+0xc],eax
+007B2BF9  D95DC4            fstp dword [ebp-0x3c]
+007B2BFC  DB450C            fild dword [ebp+0xc]
+007B2BFF  D84F14            fmul dword [edi+0x14]
+007B2C02  D95DC8            fstp dword [ebp-0x38]
+007B2C05  D9878C010000      fld dword [edi+0x18c]
+007B2C0B  D81D74FD7F00      fcomp dword [0x7ffd74]
+007B2C11  DFE0              fnstsw ax
+007B2C13  F6C444            test ah,0x44
+007B2C16  0F8ABE010000      jpe 0x7b2dda
+007B2C1C  F6C620            test dh,0x20
+007B2C1F  0F84E7000000      jz 0x7b2d0c
+007B2C25  B938D78700        mov ecx,0x87d738
+007B2C2A  B8345BCF00        mov eax,0xcf5b34
+007B2C2F  C7450C04000000    mov dword [ebp+0xc],0x4
+007B2C36  D945F0            fld dword [ebp-0x10]
+007B2C39  8B16              mov edx,[esi]
+007B2C3B  D848F8            fmul dword [eax-0x8]
+007B2C3E  83C00C            add eax,0xc
+007B2C41  D945F0            fld dword [ebp-0x10]
+007B2C44  83C108            add ecx,0x8
+007B2C47  D848F0            fmul dword [eax-0x10]
+007B2C4A  D945F0            fld dword [ebp-0x10]
+007B2C4D  D848F4            fmul dword [eax-0xc]
+007B2C50  D95DA8            fstp dword [ebp-0x58]
+007B2C53  D9C9              fxch st1
+007B2C55  D845D0            fadd dword [ebp-0x30]
+007B2C58  D95DDC            fstp dword [ebp-0x24]
+007B2C5B  8B5DDC            mov ebx,[ebp-0x24]
+007B2C5E  D845D4            fadd dword [ebp-0x2c]
+007B2C61  D95DE0            fstp dword [ebp-0x20]
+007B2C64  D945A8            fld dword [ebp-0x58]
+007B2C67  D845D8            fadd dword [ebp-0x28]
+007B2C6A  891A              mov [edx],ebx
+007B2C6C  8B5DE0            mov ebx,[ebp-0x20]
+007B2C6F  895A04            mov [edx+0x4],ebx
+007B2C72  D95DE4            fstp dword [ebp-0x1c]
+007B2C75  8B5DE4            mov ebx,[ebp-0x1c]
+007B2C78  895A08            mov [edx+0x8],ebx
+007B2C7B  8B1D7858CF00      mov ebx,[0xcf5878]
+007B2C81  8B5604            mov edx,[esi+0x4]
+007B2C84  891A              mov [edx],ebx
+007B2C86  8B1D7C58CF00      mov ebx,[0xcf587c]
+007B2C8C  895A04            mov [edx+0x4],ebx
+007B2C8F  8B1D8058CF00      mov ebx,[0xcf5880]
+007B2C95  895A08            mov [edx+0x8],ebx
+007B2C98  8B5608            mov edx,[esi+0x8]
+007B2C9B  8B5DE8            mov ebx,[ebp-0x18]
+007B2C9E  891A              mov [edx],ebx
+007B2CA0  D941F4            fld dword [ecx-0xc]
+007B2CA3  D84F10            fmul dword [edi+0x10]
+007B2CA6  8B560C            mov edx,[esi+0xc]
+007B2CA9  D845C4            fadd dword [ebp-0x3c]
+007B2CAC  D95DF8            fstp dword [ebp-0x8]
+007B2CAF  D94714            fld dword [edi+0x14]
+007B2CB2  8B5DF8            mov ebx,[ebp-0x8]
+007B2CB5  D849F8            fmul dword [ecx-0x8]
+007B2CB8  891A              mov [edx],ebx
+007B2CBA  D845C8            fadd dword [ebp-0x38]
+007B2CBD  D95DFC            fstp dword [ebp-0x4]
+007B2CC0  8B5DFC            mov ebx,[ebp-0x4]
+007B2CC3  895A04            mov [edx+0x4],ebx
+007B2CC6  8B5620            mov edx,[esi+0x20]
+007B2CC9  8B1E              mov ebx,[esi]
+007B2CCB  42                inc edx
+007B2CCC  895620            mov [esi+0x20],edx
+007B2CCF  8B5610            mov edx,[esi+0x10]
+007B2CD2  03DA              add ebx,edx
+007B2CD4  8B5614            mov edx,[esi+0x14]
+007B2CD7  891E              mov [esi],ebx
+007B2CD9  8B5E04            mov ebx,[esi+0x4]
+007B2CDC  03DA              add ebx,edx
+007B2CDE  8B5618            mov edx,[esi+0x18]
+007B2CE1  895E04            mov [esi+0x4],ebx
+007B2CE4  8B5E08            mov ebx,[esi+0x8]
+007B2CE7  03DA              add ebx,edx
+007B2CE9  8B561C            mov edx,[esi+0x1c]
+007B2CEC  895E08            mov [esi+0x8],ebx
+007B2CEF  8B5E0C            mov ebx,[esi+0xc]
+007B2CF2  03DA              add ebx,edx
+007B2CF4  8B550C            mov edx,[ebp+0xc]
+007B2CF7  4A                dec edx
+007B2CF8  895E0C            mov [esi+0xc],ebx
+007B2CFB  89550C            mov [ebp+0xc],edx
+007B2CFE  0F8532FFFFFF      jnz 0x7b2c36
+007B2D04  8B5D08            mov ebx,[ebp+0x8]
+007B2D07  E935030000        jmp 0x7b3041
+007B2D0C  33C0              xor eax,eax
+007B2D0E  8BFF              mov edi,edi
+007B2D10  D945F0            fld dword [ebp-0x10]
+007B2D13  8B0E              mov ecx,[esi]
+007B2D15  D88814D78700      fmul dword [eax+0x87d714]
+007B2D1B  83C008            add eax,0x8
+007B2D1E  D845D0            fadd dword [ebp-0x30]
+007B2D21  D95DDC            fstp dword [ebp-0x24]
+007B2D24  D945F0            fld dword [ebp-0x10]
+007B2D27  8B55DC            mov edx,[ebp-0x24]
+007B2D2A  D88810D78700      fmul dword [eax+0x87d710]
+007B2D30  D845D4            fadd dword [ebp-0x2c]
+007B2D33  D95DE0            fstp dword [ebp-0x20]
+007B2D36  D945D8            fld dword [ebp-0x28]
+007B2D39  8911              mov [ecx],edx
+007B2D3B  8B55E0            mov edx,[ebp-0x20]
+007B2D3E  895104            mov [ecx+0x4],edx
+007B2D41  D95DE4            fstp dword [ebp-0x1c]
+007B2D44  8B55E4            mov edx,[ebp-0x1c]
+007B2D47  895108            mov [ecx+0x8],edx
+007B2D4A  8B157858CF00      mov edx,[0xcf5878]
+007B2D50  8B4E04            mov ecx,[esi+0x4]
+007B2D53  8911              mov [ecx],edx
+007B2D55  8B157C58CF00      mov edx,[0xcf587c]
+007B2D5B  895104            mov [ecx+0x4],edx
+007B2D5E  8B158058CF00      mov edx,[0xcf5880]
+007B2D64  895108            mov [ecx+0x8],edx
+007B2D67  8B4E08            mov ecx,[esi+0x8]
+007B2D6A  8B55E8            mov edx,[ebp-0x18]
+007B2D6D  8911              mov [ecx],edx
+007B2D6F  D9802CD78700      fld dword [eax+0x87d72c]
+007B2D75  D84F10            fmul dword [edi+0x10]
+007B2D78  8B4E0C            mov ecx,[esi+0xc]
+007B2D7B  D845C4            fadd dword [ebp-0x3c]
+007B2D7E  D95DF8            fstp dword [ebp-0x8]
+007B2D81  D98030D78700      fld dword [eax+0x87d730]
+007B2D87  8B55F8            mov edx,[ebp-0x8]
+007B2D8A  D84F14            fmul dword [edi+0x14]
+007B2D8D  8911              mov [ecx],edx
+007B2D8F  D845C8            fadd dword [ebp-0x38]
+007B2D92  D95DFC            fstp dword [ebp-0x4]
+007B2D95  8B55FC            mov edx,[ebp-0x4]
+007B2D98  895104            mov [ecx+0x4],edx
+007B2D9B  8B4E20            mov ecx,[esi+0x20]
+007B2D9E  8B16              mov edx,[esi]
+007B2DA0  41                inc ecx
+007B2DA1  894E20            mov [esi+0x20],ecx
+007B2DA4  8B4E10            mov ecx,[esi+0x10]
+007B2DA7  03D1              add edx,ecx
+007B2DA9  8B4E04            mov ecx,[esi+0x4]
+007B2DAC  8916              mov [esi],edx
+007B2DAE  8B5614            mov edx,[esi+0x14]
+007B2DB1  03CA              add ecx,edx
+007B2DB3  8B5608            mov edx,[esi+0x8]
+007B2DB6  894E04            mov [esi+0x4],ecx
+007B2DB9  8B4E18            mov ecx,[esi+0x18]
+007B2DBC  03D1              add edx,ecx
+007B2DBE  8B4E0C            mov ecx,[esi+0xc]
+007B2DC1  895608            mov [esi+0x8],edx
+007B2DC4  8B561C            mov edx,[esi+0x1c]
+007B2DC7  03CA              add ecx,edx
+007B2DC9  83F820            cmp eax,0x20
+007B2DCC  894E0C            mov [esi+0xc],ecx
+007B2DCF  0F853BFFFFFF      jnz 0x7b2d10
+007B2DD5  E967020000        jmp 0x7b3041
+007B2DDA  84F6              test dh,dh
+007B2DDC  D9878C010000      fld dword [edi+0x18c]
+007B2DE2  D84B1C            fmul dword [ebx+0x1c]
+007B2DE5  D95DEC            fstp dword [ebp-0x14]
+007B2DE8  790D              jns 0x7b2df7
+007B2DEA  F6C320            test bl,0x20
+007B2DED  7408              jz 0x7b2df7
+007B2DEF  D945EC            fld dword [ebp-0x14]
+007B2DF2  D9E0              fchs
+007B2DF4  D95DEC            fstp dword [ebp-0x14]
+007B2DF7  F6C620            test dh,0x20
+007B2DFA  0F8449010000      jz 0x7b2f49
+007B2E00  C7450C38D78700    mov dword [ebp+0xc],0x87d738
+007B2E07  BB305BCF00        mov ebx,0xcf5b30
+007B2E0C  C745CC04000000    mov dword [ebp-0x34],0x4
+007B2E13  8B45EC            mov eax,[ebp-0x14]
+007B2E16  6A01              push dword 0x1
+007B2E18  50                push eax
+007B2E19  8D9784020000      lea edx,[edi+0x284]
+007B2E1F  8D8D78FFFFFF      lea ecx,[ebp-0x88]
+007B2E25  E866B60000        call 0x7be490
+007B2E2A  D98578FFFFFF      fld dword [ebp-0x88]
+007B2E30  D84BFC            fmul dword [ebx-0x4]
+007B2E33  8B0E              mov ecx,[esi]
+007B2E35  D9857CFFFFFF      fld dword [ebp-0x84]
+007B2E3B  D80B              fmul dword [ebx]
+007B2E3D  DEC1              faddp st1
+007B2E3F  D94580            fld dword [ebp-0x80]
+007B2E42  D84B04            fmul dword [ebx+0x4]
+007B2E45  DEC1              faddp st1
+007B2E47  D94588            fld dword [ebp-0x78]
+007B2E4A  D80B              fmul dword [ebx]
+007B2E4C  D9458C            fld dword [ebp-0x74]
+007B2E4F  D84B04            fmul dword [ebx+0x4]
+007B2E52  DEC1              faddp st1
+007B2E54  D94584            fld dword [ebp-0x7c]
+007B2E57  D84BFC            fmul dword [ebx-0x4]
+007B2E5A  DEC1              faddp st1
+007B2E5C  D94594            fld dword [ebp-0x6c]
+007B2E5F  D80B              fmul dword [ebx]
+007B2E61  D94598            fld dword [ebp-0x68]
+007B2E64  D84B04            fmul dword [ebx+0x4]
+007B2E67  DEC1              faddp st1
+007B2E69  D94590            fld dword [ebp-0x70]
+007B2E6C  D84BFC            fmul dword [ebx-0x4]
+007B2E6F  DEC1              faddp st1
+007B2E71  D95DA8            fstp dword [ebp-0x58]
+007B2E74  D9C9              fxch st1
+007B2E76  D84DF0            fmul dword [ebp-0x10]
+007B2E79  D95DB0            fstp dword [ebp-0x50]
+007B2E7C  D84DF0            fmul dword [ebp-0x10]
+007B2E7F  D945A8            fld dword [ebp-0x58]
+007B2E82  D84DF0            fmul dword [ebp-0x10]
+007B2E85  D945B0            fld dword [ebp-0x50]
+007B2E88  D845D0            fadd dword [ebp-0x30]
+007B2E8B  D95DDC            fstp dword [ebp-0x24]
+007B2E8E  8B55DC            mov edx,[ebp-0x24]
+007B2E91  D9C9              fxch st1
+007B2E93  D845D4            fadd dword [ebp-0x2c]
+007B2E96  D95DE0            fstp dword [ebp-0x20]
+007B2E99  8B45E0            mov eax,[ebp-0x20]
+007B2E9C  D845D8            fadd dword [ebp-0x28]
+007B2E9F  8911              mov [ecx],edx
+007B2EA1  894104            mov [ecx+0x4],eax
+007B2EA4  D95DE4            fstp dword [ebp-0x1c]
+007B2EA7  8B55E4            mov edx,[ebp-0x1c]
+007B2EAA  895108            mov [ecx+0x8],edx
+007B2EAD  8B0D7858CF00      mov ecx,[0xcf5878]
+007B2EB3  8B4604            mov eax,[esi+0x4]
+007B2EB6  8908              mov [eax],ecx
+007B2EB8  8B157C58CF00      mov edx,[0xcf587c]
+007B2EBE  895004            mov [eax+0x4],edx
+007B2EC1  8B0D8058CF00      mov ecx,[0xcf5880]
+007B2EC7  894808            mov [eax+0x8],ecx
+007B2ECA  8B45E8            mov eax,[ebp-0x18]
+007B2ECD  8B5608            mov edx,[esi+0x8]
+007B2ED0  8902              mov [edx],eax
+007B2ED2  8B450C            mov eax,[ebp+0xc]
+007B2ED5  D940FC            fld dword [eax-0x4]
+007B2ED8  D84F10            fmul dword [edi+0x10]
+007B2EDB  D845C4            fadd dword [ebp-0x3c]
+007B2EDE  D95DF8            fstp dword [ebp-0x8]
+007B2EE1  D900              fld dword [eax]
+007B2EE3  D84F14            fmul dword [edi+0x14]
+007B2EE6  D845C8            fadd dword [ebp-0x38]
+007B2EE9  8B4E0C            mov ecx,[esi+0xc]
+007B2EEC  D95DFC            fstp dword [ebp-0x4]
+007B2EEF  8B55F8            mov edx,[ebp-0x8]
+007B2EF2  8911              mov [ecx],edx
+007B2EF4  8B55FC            mov edx,[ebp-0x4]
+007B2EF7  895104            mov [ecx+0x4],edx
+007B2EFA  8B5620            mov edx,[esi+0x20]
+007B2EFD  8B0E              mov ecx,[esi]
+007B2EFF  83C008            add eax,0x8
+007B2F02  89450C            mov [ebp+0xc],eax
+007B2F05  8B4610            mov eax,[esi+0x10]
+007B2F08  03C8              add ecx,eax
+007B2F0A  8B4608            mov eax,[esi+0x8]
+007B2F0D  83C30C            add ebx,0xc
+007B2F10  42                inc edx
+007B2F11  895620            mov [esi+0x20],edx
+007B2F14  8B5604            mov edx,[esi+0x4]
+007B2F17  890E              mov [esi],ecx
+007B2F19  8B4E14            mov ecx,[esi+0x14]
+007B2F1C  03D1              add edx,ecx
+007B2F1E  8B4E0C            mov ecx,[esi+0xc]
+007B2F21  895604            mov [esi+0x4],edx
+007B2F24  8B5618            mov edx,[esi+0x18]
+007B2F27  03C2              add eax,edx
+007B2F29  894608            mov [esi+0x8],eax
+007B2F2C  8B461C            mov eax,[esi+0x1c]
+007B2F2F  03C8              add ecx,eax
+007B2F31  8B45CC            mov eax,[ebp-0x34]
+007B2F34  48                dec eax
+007B2F35  894E0C            mov [esi+0xc],ecx
+007B2F38  8945CC            mov [ebp-0x34],eax
+007B2F3B  0F85D2FEFFFF      jnz 0x7b2e13
+007B2F41  8B5D08            mov ebx,[ebp+0x8]
+007B2F44  E9F8000000        jmp 0x7b3041
+007B2F49  8D4D0C            lea ecx,[ebp+0xc]
+007B2F4C  8D5508            lea edx,[ebp+0x8]
+007B2F4F  894DFC            mov [ebp-0x4],ecx
+007B2F52  8955CC            mov [ebp-0x34],edx
+007B2F55  8B45FC            mov eax,[ebp-0x4]
+007B2F58  8B55CC            mov edx,[ebp-0x34]
+007B2F5B  D945EC            fld dword [ebp-0x14]
+007B2F5E  D9FB              fsincos
+007B2F60  D918              fstp dword [eax]
+007B2F62  D91A              fstp dword [edx]
+007B2F64  D94508            fld dword [ebp+0x8]
+007B2F67  D84DF0            fmul dword [ebp-0x10]
+007B2F6A  33C0              xor eax,eax
+007B2F6C  D95D08            fstp dword [ebp+0x8]
+007B2F6F  D9450C            fld dword [ebp+0xc]
+007B2F72  D84DF0            fmul dword [ebp-0x10]
+007B2F75  D95D0C            fstp dword [ebp+0xc]
+007B2F78  D98014D78700      fld dword [eax+0x87d714]
+007B2F7E  8B0E              mov ecx,[esi]
+007B2F80  D98018D78700      fld dword [eax+0x87d718]
+007B2F86  83C008            add eax,0x8
+007B2F89  D9C1              fld st1
+007B2F8B  D84D0C            fmul dword [ebp+0xc]
+007B2F8E  D845D0            fadd dword [ebp-0x30]
+007B2F91  D9C1              fld st1
+007B2F93  D84D08            fmul dword [ebp+0x8]
+007B2F96  DEE9              fsubp st1
+007B2F98  D919              fstp dword [ecx]
+007B2F9A  8B16              mov edx,[esi]
+007B2F9C  D9C9              fxch st1
+007B2F9E  D84D08            fmul dword [ebp+0x8]
+007B2FA1  D9C9              fxch st1
+007B2FA3  D84D0C            fmul dword [ebp+0xc]
+007B2FA6  DEC1              faddp st1
+007B2FA8  D845D4            fadd dword [ebp-0x2c]
+007B2FAB  D95A04            fstp dword [edx+0x4]
+007B2FAE  8B0E              mov ecx,[esi]
+007B2FB0  8B55D8            mov edx,[ebp-0x28]
+007B2FB3  895108            mov [ecx+0x8],edx
+007B2FB6  8B157858CF00      mov edx,[0xcf5878]
+007B2FBC  8B4E04            mov ecx,[esi+0x4]
+007B2FBF  8911              mov [ecx],edx
+007B2FC1  8B157C58CF00      mov edx,[0xcf587c]
+007B2FC7  895104            mov [ecx+0x4],edx
+007B2FCA  8B158058CF00      mov edx,[0xcf5880]
+007B2FD0  895108            mov [ecx+0x8],edx
+007B2FD3  8B4E08            mov ecx,[esi+0x8]
+007B2FD6  8B55E8            mov edx,[ebp-0x18]
+007B2FD9  8911              mov [ecx],edx
+007B2FDB  D9802CD78700      fld dword [eax+0x87d72c]
+007B2FE1  D84F10            fmul dword [edi+0x10]
+007B2FE4  8B4E0C            mov ecx,[esi+0xc]
+007B2FE7  D845C4            fadd dword [ebp-0x3c]
+007B2FEA  D95DF8            fstp dword [ebp-0x8]
+007B2FED  D98030D78700      fld dword [eax+0x87d730]
+007B2FF3  8B55F8            mov edx,[ebp-0x8]
+007B2FF6  D84F14            fmul dword [edi+0x14]
+007B2FF9  8911              mov [ecx],edx
+007B2FFB  D845C8            fadd dword [ebp-0x38]
+007B2FFE  D95DFC            fstp dword [ebp-0x4]
+007B3001  8B55FC            mov edx,[ebp-0x4]
+007B3004  895104            mov [ecx+0x4],edx
+007B3007  8B4E20            mov ecx,[esi+0x20]
+007B300A  8B16              mov edx,[esi]
+007B300C  41                inc ecx
+007B300D  894E20            mov [esi+0x20],ecx
+007B3010  8B4E10            mov ecx,[esi+0x10]
+007B3013  03D1              add edx,ecx
+007B3015  8B4E04            mov ecx,[esi+0x4]
+007B3018  8916              mov [esi],edx
+007B301A  8B5614            mov edx,[esi+0x14]
+007B301D  03CA              add ecx,edx
+007B301F  8B5608            mov edx,[esi+0x8]
+007B3022  894E04            mov [esi+0x4],ecx
+007B3025  8B4E18            mov ecx,[esi+0x18]
+007B3028  03D1              add edx,ecx
+007B302A  8B4E0C            mov ecx,[esi+0xc]
+007B302D  895608            mov [esi+0x8],edx
+007B3030  8B561C            mov edx,[esi+0x1c]
+007B3033  03CA              add ecx,edx
+007B3035  83F820            cmp eax,0x20
+007B3038  894E0C            mov [esi+0xc],ecx
+007B303B  0F8237FFFFFF      jc 0x7b2f78
+007B3041  F687AC01000008    test byte [edi+0x1ac],0x8
+007B3048  0F8477040000      jz 0x7b34c5
+007B304E  8B8F9C010000      mov ecx,[edi+0x19c]
+007B3054  8B45C0            mov eax,[ebp-0x40]
+007B3057  49                dec ecx
+007B3058  23C8              and ecx,eax
+007B305A  894DF8            mov [ebp-0x8],ecx
+007B305D  8B4F0C            mov ecx,[edi+0xc]
+007B3060  C745FC00000000    mov dword [ebp-0x4],0x0
+007B3067  DF6DF8            fild qword [ebp-0x8]
+007B306A  D3F8              sar eax,cl
+007B306C  8B97B4000000      mov edx,[edi+0xb4]
+007B3072  D84F10            fmul dword [edi+0x10]
+007B3075  C745B800000000    mov dword [ebp-0x48],0x0
+007B307C  894508            mov [ebp+0x8],eax
+007B307F  D95D0C            fstp dword [ebp+0xc]
+007B3082  8A87AE010000      mov al,[edi+0x1ae]
+007B3088  A801              test al,0x1
+007B308A  DB4508            fild dword [ebp+0x8]
+007B308D  895508            mov [ebp+0x8],edx
+007B3090  D84F14            fmul dword [edi+0x14]
+007B3093  D95DEC            fstp dword [ebp-0x14]
+007B3096  D94310            fld dword [ebx+0x10]
+007B3099  D9E0              fchs
+007B309B  D95DAC            fstp dword [ebp-0x54]
+007B309E  D94314            fld dword [ebx+0x14]
+007B30A1  D9E0              fchs
+007B30A3  D95DB0            fstp dword [ebp-0x50]
+007B30A6  D94318            fld dword [ebx+0x18]
+007B30A9  D9E0              fchs
+007B30AB  D95DB4            fstp dword [ebp-0x4c]
+007B30AE  7413              jz 0x7b30c3
+007B30B0  D94508            fld dword [ebp+0x8]
+007B30B3  D85B1C            fcomp dword [ebx+0x1c]
+007B30B6  DFE0              fnstsw ax
+007B30B8  F6C441            test ah,0x41
+007B30BB  7506              jnz 0x7b30c3
+007B30BD  8B431C            mov eax,[ebx+0x1c]
+007B30C0  894508            mov [ebp+0x8],eax
+007B30C3  68685BCF00        push dword 0xcf5b68
+007B30C8  8D55AC            lea edx,[ebp-0x54]
+007B30CB  8D4D9C            lea ecx,[ebp-0x64]
+007B30CE  E86D9A0000        call 0x7bcb40
+007B30D3  D94508            fld dword [ebp+0x8]
+007B30D6  D808              fmul dword [eax]
+007B30D8  D94508            fld dword [ebp+0x8]
+007B30DB  D84804            fmul dword [eax+0x4]
+007B30DE  D94508            fld dword [ebp+0x8]
+007B30E1  D84808            fmul dword [eax+0x8]
+007B30E4  D95DB4            fstp dword [ebp-0x4c]
+007B30E7  D9C9              fxch st1
+007B30E9  D95DF4            fstp dword [ebp-0xc]
+007B30EC  D95DF8            fstp dword [ebp-0x8]
+007B30EF  D945B4            fld dword [ebp-0x4c]
+007B30F2  D95DFC            fstp dword [ebp-0x4]
+007B30F5  D945F4            fld dword [ebp-0xc]
+007B30F8  D95DDC            fstp dword [ebp-0x24]
+007B30FB  D945F8            fld dword [ebp-0x8]
+007B30FE  D9                db 0xd9
+007B30FF  55                push ebp

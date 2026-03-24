@@ -1,0 +1,126 @@
+// calculateColorValues @ 0x7B9B10 -- 0x7B9C70 (352 bytes)
+// Disassembled from WoW 1.12.1 build 5875
+
+007B9B10  55                push ebp
+007B9B11  8BEC              mov ebp,esp
+007B9B13  51                push ecx
+007B9B14  D94508            fld dword [ebp+0x8]
+007B9B17  56                push esi
+007B9B18  8BF1              mov esi,ecx
+007B9B1A  D8662C            fsub dword [esi+0x2c]
+007B9B1D  0FB64603          movzx eax,byte [esi+0x3]
+007B9B21  8945FC            mov [ebp-0x4],eax
+007B9B24  D84E30            fmul dword [esi+0x30]
+007B9B27  8B4510            mov eax,[ebp+0x10]
+007B9B2A  D80DAC8A8000      fmul dword [0x808aac]
+007B9B30  D8053C7A8000      fadd dword [0x807a3c]
+007B9B36  D95D08            fstp dword [ebp+0x8]
+007B9B39  DB4604            fild dword [esi+0x4]
+007B9B3C  D84D08            fmul dword [ebp+0x8]
+007B9B3F  DA45FC            fiadd dword [ebp-0x4]
+007B9B42  D84D0C            fmul dword [ebp+0xc]
+007B9B45  D805CC298000      fadd dword [0x8029cc]
+007B9B4B  D95D0C            fstp dword [ebp+0xc]
+007B9B4E  8B4D0C            mov ecx,[ebp+0xc]
+007B9B51  C1E90E            shr ecx,byte 0xe
+007B9B54  884803            mov [eax+0x3],cl
+007B9B57  DB4608            fild dword [esi+0x8]
+007B9B5A  0FB65602          movzx edx,byte [esi+0x2]
+007B9B5E  89550C            mov [ebp+0xc],edx
+007B9B61  D84D08            fmul dword [ebp+0x8]
+007B9B64  DA450C            fiadd dword [ebp+0xc]
+007B9B67  D805CC298000      fadd dword [0x8029cc]
+007B9B6D  D95D0C            fstp dword [ebp+0xc]
+007B9B70  8B4D0C            mov ecx,[ebp+0xc]
+007B9B73  C1E90E            shr ecx,byte 0xe
+007B9B76  884802            mov [eax+0x2],cl
+007B9B79  DB460C            fild dword [esi+0xc]
+007B9B7C  0FB65601          movzx edx,byte [esi+0x1]
+007B9B80  89550C            mov [ebp+0xc],edx
+007B9B83  D84D08            fmul dword [ebp+0x8]
+007B9B86  DA450C            fiadd dword [ebp+0xc]
+007B9B89  D805CC298000      fadd dword [0x8029cc]
+007B9B8F  D95D0C            fstp dword [ebp+0xc]
+007B9B92  8B4D0C            mov ecx,[ebp+0xc]
+007B9B95  C1E90E            shr ecx,byte 0xe
+007B9B98  884801            mov [eax+0x1],cl
+007B9B9B  DB4610            fild dword [esi+0x10]
+007B9B9E  0FB616            movzx edx,byte [esi]
+007B9BA1  89550C            mov [ebp+0xc],edx
+007B9BA4  D84D08            fmul dword [ebp+0x8]
+007B9BA7  8B551C            mov edx,[ebp+0x1c]
+007B9BAA  DA450C            fiadd dword [ebp+0xc]
+007B9BAD  D805CC298000      fadd dword [0x8029cc]
+007B9BB3  D95D0C            fstp dword [ebp+0xc]
+007B9BB6  8B4D0C            mov ecx,[ebp+0xc]
+007B9BB9  D94508            fld dword [ebp+0x8]
+007B9BBC  C1E90E            shr ecx,byte 0xe
+007B9BBF  8808              mov [eax],cl
+007B9BC1  D84E28            fmul dword [esi+0x28]
+007B9BC4  D84624            fadd dword [esi+0x24]
+007B9BC7  D91A              fstp dword [edx]
+007B9BC9  8B4650            mov eax,[esi+0x50]
+007B9BCC  3D0000803F        cmp eax,0x3f800000
+007B9BD1  7535              jnz 0x7b9c08
+007B9BD3  DB4618            fild dword [esi+0x18]
+007B9BD6  8B5514            mov edx,[ebp+0x14]
+007B9BD9  D84D08            fmul dword [ebp+0x8]
+007B9BDC  DA4614            fiadd dword [esi+0x14]
+007B9BDF  D805CC298000      fadd dword [0x8029cc]
+007B9BE5  D95D0C            fstp dword [ebp+0xc]
+007B9BE8  8B450C            mov eax,[ebp+0xc]
+007B9BEB  C1E80E            shr eax,byte 0xe
+007B9BEE  33C9              xor ecx,ecx
+007B9BF0  8AC8              mov cl,al
+007B9BF2  890A              mov [edx],ecx
+007B9BF4  DB4620            fild dword [esi+0x20]
+007B9BF7  D84D08            fmul dword [ebp+0x8]
+007B9BFA  DA461C            fiadd dword [esi+0x1c]
+007B9BFD  D805CC298000      fadd dword [0x8029cc]
+007B9C03  D95D14            fstp dword [ebp+0x14]
+007B9C06  EB44              jmp 0x7b9c4c
+007B9C08  D94508            fld dword [ebp+0x8]
+007B9C0B  D84E50            fmul dword [esi+0x50]
+007B9C0E  DD05B8158000      fld qword [0x8015b8]
+007B9C14  E8F15CF8FF        call 0x73f90a
+007B9C19  DB4618            fild dword [esi+0x18]
+007B9C1C  8B5514            mov edx,[ebp+0x14]
+007B9C1F  D8C9              fmul st1
+007B9C21  DA4614            fiadd dword [esi+0x14]
+007B9C24  D805CC298000      fadd dword [0x8029cc]
+007B9C2A  D95D08            fstp dword [ebp+0x8]
+007B9C2D  8B4508            mov eax,[ebp+0x8]
+007B9C30  C1E80E            shr eax,byte 0xe
+007B9C33  33C9              xor ecx,ecx
+007B9C35  8AC8              mov cl,al
+007B9C37  890A              mov [edx],ecx
+007B9C39  DB4620            fild dword [esi+0x20]
+007B9C3C  D8C9              fmul st1
+007B9C3E  DA461C            fiadd dword [esi+0x1c]
+007B9C41  D805CC298000      fadd dword [0x8029cc]
+007B9C47  D95D14            fstp dword [ebp+0x14]
+007B9C4A  DDD8              fstp st0
+007B9C4C  8B4514            mov eax,[ebp+0x14]
+007B9C4F  8B5518            mov edx,[ebp+0x18]
+007B9C52  C1E80E            shr eax,byte 0xe
+007B9C55  33C9              xor ecx,ecx
+007B9C57  8AC8              mov cl,al
+007B9C59  5E                pop esi
+007B9C5A  890A              mov [edx],ecx
+007B9C5C  8BE5              mov esp,ebp
+007B9C5E  5D                pop ebp
+007B9C5F  C21800            ret word 0x18
+007B9C62  90                nop
+007B9C63  90                nop
+007B9C64  90                nop
+007B9C65  90                nop
+007B9C66  90                nop
+007B9C67  90                nop
+007B9C68  90                nop
+007B9C69  90                nop
+007B9C6A  90                nop
+007B9C6B  90                nop
+007B9C6C  90                nop
+007B9C6D  90                nop
+007B9C6E  90                nop
+007B9C6F  90                nop
