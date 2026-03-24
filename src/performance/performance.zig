@@ -16,8 +16,24 @@
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
+const inflate_hook = @import("inflate_hook.zig");
 
 pub const module_name: [*:0]const u8 = "performance";
+
+// Provide malloc/free for libdeflate's default allocator (linked without libc).
+// Use game's own SMemAlloc/SMemFree (Storm memory manager) which are always available.
+// SMemAlloc at 0x6464B0: __stdcall(size, filename_str, line, flags) → ptr
+// SMemFree at 0x646430: __stdcall(ptr, filename_str, flags) → void
+const gameMalloc: *const fn (u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) ?*anyopaque = @ptrFromInt(0x6464B0);
+const gameFree: *const fn (u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void = @ptrFromInt(0x646430);
+
+export fn malloc(size: usize) callconv(.c) ?*anyopaque {
+    return gameMalloc(@intCast(size), 0, 0, 0);
+}
+
+export fn free(ptr: ?*anyopaque) callconv(.c) void {
+    if (ptr) |p| gameFree(@intFromPtr(p), 0, 0);
+}
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -123,9 +139,17 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
 const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
 var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
 
+var frame_counter: u32 = 0;
+
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     resetParticleCache();
     world_update_hook.callOriginal(.{frame_count});
+    // Dump inflate stats every ~450 frames (~7.5s at 60fps)
+    frame_counter +|= 1;
+    if (frame_counter >= 450) {
+        inflate_hook.dumpStats();
+        frame_counter = 0;
+    }
 }
 
 // =============================================================================
@@ -257,11 +281,16 @@ pub fn installHooks() void {
     // Silicon SSE binary patches
     const patched = installPatches();
 
+    // libdeflate inflate comparison hook
+    if (inflate_hook.install(log)) installed += 1;
+
     log.fmt("performance: {d} hooks, {d} patches installed\n", .{ installed, patched });
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        inflate_hook.dumpStats();
+        inflate_hook.remove();
         transform_hook.detach();
         particle_hook.detach();
         glyph_hook.detach();

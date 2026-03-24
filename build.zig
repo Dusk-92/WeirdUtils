@@ -178,7 +178,8 @@ pub fn build(b: *std.Build) void {
         },
         // Disable AVX-512 codepaths — 512-bit intrinsics require evex512 which
         // isn't available on 32-bit x86. AVX/AVX2/SSE paths remain active.
-        .flags = &.{"-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI"},
+        // -g0: no debug info (avoids .debug_frame section name warning in COFF linker)
+        .flags = &.{ "-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI", "-g0" },
     });
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
