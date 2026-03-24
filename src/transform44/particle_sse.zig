@@ -230,6 +230,15 @@ inline fn emitVertex(vb: u32, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv
     wu32(vb + VB.texcoord, ru32(vb + VB.texcoord) + ru32(vb + VB.texcoord_stride));
 }
 
+// Cached render state — setupRender() returns the same pointer all frame.
+// Reset each frame via resetParticleCache() called from the frame hook.
+var cached_render_state: u32 = 0;
+
+/// Reset per-frame caches. Call from OnWorldUpdate or executeSceneRenderPass hook.
+export fn resetParticleCache() void {
+    cached_render_state = 0;
+}
+
 // =============================================================================
 // RenderParticleSprites (0x7B2A50)
 // __thiscall(ECX=emitter, stack=particleData, vertexBuffers), RET 0x8
@@ -328,9 +337,15 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
 
     // =========================================================================
     // Section 3: Render state setup (asm 0x7B2B46)
+    // Cached: the render state pointer doesn't change within a frame.
     // =========================================================================
 
-    const render_state = setupRender();
+    const render_state = blk: {
+        if (cached_render_state != 0) break :blk cached_render_state;
+        const rs = setupRender();
+        cached_render_state = rs;
+        break :blk rs;
+    };
 
     // =========================================================================
     // Section 4: Color byte swizzle (asm 0x7B2B4B-0x7B2B6E)
@@ -342,7 +357,6 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
         const b1: u8 = @truncate(color_value >> 8);
         const b2: u8 = @truncate(color_value >> 16);
         const b3: u8 = @truncate(color_value >> 24);
-        // Swizzle: [B,G,R,A] → [R,B,A,G] (based on asm byte shuffling)
         color_value = @as(u32, b2) | (@as(u32, b0) << 8) | (@as(u32, b3) << 16) | (@as(u32, b1) << 24);
     }
 
@@ -432,40 +446,23 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
                 }
             } else {
                 // --- 3D billboard (asm 0x7B2C25-0x7B2D04) ---
-                // 4 vertices, using 3D offset table
-                const table_base: u32 = G.billboard_3d;
-                const ref_base: u32 = G.billboard_3d_base;
-                var vert: u32 = 0;
-                while (vert < 4) : (vert += 1) {
-                    const tbl = ref_base + vert * 12; // stride 0xC per vertex in ref table
-                    const ox = sprite_scale * rf32(tbl - 4);
-                    const oy = sprite_scale * rf32(tbl);
-                    const oz = sprite_scale * rf32(tbl + 4);
-                    const vx = ox + world_pos[0];
-                    const vy = oy + world_pos[1];
-                    const vz = oz + world_pos[2];
-
-                    const pos_ptr = ru32(vb + VB.pos);
-                    wf32(pos_ptr, vx);
-                    wf32(pos_ptr + 4, vy);
-                    wf32(pos_ptr + 8, vz);
-                    const norm_ptr = ru32(vb + VB.normal);
-                    wu32(norm_ptr, ru32(G.light_dir_x));
-                    wu32(norm_ptr + 4, ru32(G.light_dir_y));
-                    wu32(norm_ptr + 8, ru32(G.light_dir_z));
-                    wu32(ru32(vb + VB.color), color_value);
-
-                    const tc_ptr = ru32(vb + VB.texcoord);
-                    const tu_off: u32 = table_base + vert * 8 - 4; // asm uses stride 8, offset -4
-                    const tv_off: u32 = table_base + vert * 8;
-                    wf32(tc_ptr, rf32(tu_off) * tex_scale_u + tex_u_base);
-                    wf32(tc_ptr + 4, rf32(tv_off) * tex_scale_v + tex_v_base);
-
-                    wu32(vb + VB.count, ru32(vb + VB.count) + 1);
-                    wu32(vb + VB.pos, ru32(vb + VB.pos) + ru32(vb + VB.pos_stride));
-                    wu32(vb + VB.normal, ru32(vb + VB.normal) + ru32(vb + VB.normal_stride));
-                    wu32(vb + VB.color, ru32(vb + VB.color) + ru32(vb + VB.color_stride));
-                    wu32(vb + VB.texcoord, ru32(vb + VB.texcoord) + ru32(vb + VB.texcoord_stride));
+                {
+                    var vs = VBState.load(vb);
+                    const table_base: u32 = G.billboard_3d;
+                    const ref_base: u32 = G.billboard_3d_base;
+                    var vert: u32 = 0;
+                    while (vert < 4) : (vert += 1) {
+                        const tbl = ref_base + vert * 12;
+                        vs.emit(
+                            @mulAdd(f32, sprite_scale, rf32(tbl - 4), world_pos[0]),
+                            @mulAdd(f32, sprite_scale, rf32(tbl), world_pos[1]),
+                            @mulAdd(f32, sprite_scale, rf32(tbl + 4), world_pos[2]),
+                            color_value,
+                            @mulAdd(f32, rf32(table_base + vert * 8 - 4), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(table_base + vert * 8), tex_scale_v, tex_v_base),
+                        );
+                    }
+                    vs.writeback();
                 }
             }
         } else {
@@ -513,46 +510,27 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
                 _ = createRotMat(@intFromPtr(&rot_mat), emitter + E.rotation_axis,
                     @bitCast(rot_angle), 1);
 
-                const ref_base: u32 = G.billboard_3d_base;
-                const tex_off_base: u32 = G.billboard_3d; // reused for tex offsets
-
-                var vert: u32 = 0;
-                while (vert < 4) : (vert += 1) {
-                    const tbl = ref_base + vert * 12;
-                    const ix = rf32(tbl - 4);
-                    const iy = rf32(tbl);
-                    const iz = rf32(tbl + 4);
-
-                    // mat3x3 * vec3
-                    const rx = (rot_mat[0] * ix + rot_mat[1] * iy + rot_mat[2] * iz) * sprite_scale;
-                    const ry = (rot_mat[3] * ix + rot_mat[4] * iy + rot_mat[5] * iz) * sprite_scale;
-                    const rz = (rot_mat[6] * ix + rot_mat[7] * iy + rot_mat[8] * iz) * sprite_scale;
-
-                    const vx = rx + world_pos[0];
-                    const vy = ry + world_pos[1];
-                    const vz = rz + world_pos[2];
-
-                    const pos_ptr = ru32(vb + VB.pos);
-                    wf32(pos_ptr, vx);
-                    wf32(pos_ptr + 4, vy);
-                    wf32(pos_ptr + 8, vz);
-                    const norm_ptr = ru32(vb + VB.normal);
-                    wu32(norm_ptr, ru32(G.light_dir_x));
-                    wu32(norm_ptr + 4, ru32(G.light_dir_y));
-                    wu32(norm_ptr + 8, ru32(G.light_dir_z));
-                    wu32(ru32(vb + VB.color), color_value);
-
-                    const tc_ptr = ru32(vb + VB.texcoord);
-                    const tu_off: u32 = tex_off_base + vert * 8 - 4;
-                    const tv_off: u32 = tex_off_base + vert * 8;
-                    wf32(tc_ptr, rf32(tu_off) * tex_scale_u + tex_u_base);
-                    wf32(tc_ptr + 4, rf32(tv_off) * tex_scale_v + tex_v_base);
-
-                    wu32(vb + VB.count, ru32(vb + VB.count) + 1);
-                    wu32(vb + VB.pos, ru32(vb + VB.pos) + ru32(vb + VB.pos_stride));
-                    wu32(vb + VB.normal, ru32(vb + VB.normal) + ru32(vb + VB.normal_stride));
-                    wu32(vb + VB.color, ru32(vb + VB.color) + ru32(vb + VB.color_stride));
-                    wu32(vb + VB.texcoord, ru32(vb + VB.texcoord) + ru32(vb + VB.texcoord_stride));
+                {
+                    var vs = VBState.load(vb);
+                    const ref_base: u32 = G.billboard_3d_base;
+                    const tex_off_base: u32 = G.billboard_3d;
+                    var vert: u32 = 0;
+                    while (vert < 4) : (vert += 1) {
+                        const tbl = ref_base + vert * 12;
+                        const ix = rf32(tbl - 4);
+                        const iy = rf32(tbl);
+                        const iz = rf32(tbl + 4);
+                        // mat3x3 * vec3, scaled, + worldPos
+                        vs.emit(
+                            @mulAdd(f32, rot_mat[2], iz, @mulAdd(f32, rot_mat[1], iy, rot_mat[0] * ix)) * sprite_scale + world_pos[0],
+                            @mulAdd(f32, rot_mat[5], iz, @mulAdd(f32, rot_mat[4], iy, rot_mat[3] * ix)) * sprite_scale + world_pos[1],
+                            @mulAdd(f32, rot_mat[8], iz, @mulAdd(f32, rot_mat[7], iy, rot_mat[6] * ix)) * sprite_scale + world_pos[2],
+                            color_value,
+                            @mulAdd(f32, rf32(tex_off_base + vert * 8 - 4), tex_scale_u, tex_u_base),
+                            @mulAdd(f32, rf32(tex_off_base + vert * 8), tex_scale_v, tex_v_base),
+                        );
+                    }
+                    vs.writeback();
                 }
             }
         }
@@ -598,44 +576,46 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
             // Velocity-based trail: 4 vertices forming a quad along velocity direction
             const vel_z = tail_dist * transformed_vel[2] + world_pos[2];
             const inv_len = sprite_scale / @sqrt(cos_sq);
-            const perp_x = tx * inv_len; // perpendicular to velocity
+            const perp_x = tx * inv_len;
             const perp_y = inv_len * ty;
 
             const tex_su = rf32(emitter + E.texScaleU);
             const tex_sv = rf32(emitter + E.texScaleV);
 
-            // Vertex 0: worldPos - perp
-            emitVertex(vb, world_pos[0] - perp_y, perp_x + world_pos[1], world_pos[2], color_value,
-                rf32(G.sprite_tex_u) * tex_su + tail_tex_u,
-                rf32(G.sprite_tex_v) * tex_sv + tail_tex_v);
-            // Vertex 1: worldPos + perp
-            emitVertex(vb, world_pos[0] + perp_y, world_pos[1] - perp_x, world_pos[2], color_value,
-                rf32(G.sprite_tex_u) * tex_su + tail_tex_u,
-                rf32(G.sprite_tex_v) * tex_sv + tail_tex_v);
-            // Vertex 2: worldPos + vel - perp
-            emitVertex(vb, tx + world_pos[0] - perp_y, ty + world_pos[1] + perp_x, vel_z, color_value,
-                rf32(G.tail_tex_u0) * tex_su + tail_tex_u,
-                rf32(G.tail_tex_v0) * tex_sv + tail_tex_v);
-            // Vertex 3: worldPos + vel + perp
-            emitVertex(vb, tx + world_pos[0] + perp_y, ty + world_pos[1] - perp_x, vel_z, color_value,
-                rf32(G.tail_tex_u1) * tex_su + tail_tex_u,
-                rf32(G.tail_tex_v1) * tex_sv + tail_tex_v);
-
+            var vs = VBState.load(vb);
+            vs.emit(world_pos[0] - perp_y, perp_x + world_pos[1], world_pos[2], color_value,
+                @mulAdd(f32, rf32(G.sprite_tex_u), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.sprite_tex_v), tex_sv, tail_tex_v));
+            vs.emit(world_pos[0] + perp_y, world_pos[1] - perp_x, world_pos[2], color_value,
+                @mulAdd(f32, rf32(G.sprite_tex_u), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.sprite_tex_v), tex_sv, tail_tex_v));
+            vs.emit(tx + world_pos[0] - perp_y, ty + world_pos[1] + perp_x, vel_z, color_value,
+                @mulAdd(f32, rf32(G.tail_tex_u0), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.tail_tex_v0), tex_sv, tail_tex_v));
+            vs.emit(tx + world_pos[0] + perp_y, ty + world_pos[1] - perp_x, vel_z, color_value,
+                @mulAdd(f32, rf32(G.tail_tex_u1), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.tail_tex_v1), tex_sv, tail_tex_v));
+            vs.writeback();
             return 1;
         }
 
         // Fallback: velocity too small for trail, render as flat billboard
-        var loop_off: u32 = 0;
-        const tex_su = rf32(emitter + E.texScaleU);
-        const tex_sv = rf32(emitter + E.texScaleV);
-        while (loop_off < 0x20) : (loop_off += 8) {
-            const ox = rf32(G.billboard_offsets_x + loop_off);
-            const oy = rf32(G.billboard_offsets_y + loop_off);
-            const vx = sprite_scale * ox + world_pos[0];
-            const vy = sprite_scale * oy + world_pos[1];
-            const tu = rf32(G.sprite_tex_u + loop_off + 8) * tex_su + tail_tex_u;
-            const tv = rf32(G.sprite_tex_v + loop_off + 8) * tex_sv + tail_tex_v;
-            emitVertex(vb, vx, vy, world_pos[2], color_value, tu, tv);
+        {
+            var vs = VBState.load(vb);
+            const tex_su = rf32(emitter + E.texScaleU);
+            const tex_sv = rf32(emitter + E.texScaleV);
+            var loop_off: u32 = 0;
+            while (loop_off < 0x20) : (loop_off += 8) {
+                vs.emit(
+                    @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_x + loop_off), world_pos[0]),
+                    @mulAdd(f32, sprite_scale, rf32(G.billboard_offsets_y + loop_off), world_pos[1]),
+                    world_pos[2],
+                    color_value,
+                    @mulAdd(f32, rf32(G.sprite_tex_u + loop_off + 8), tex_su, tail_tex_u),
+                    @mulAdd(f32, rf32(G.sprite_tex_v + loop_off + 8), tex_sv, tail_tex_v),
+                );
+            }
+            vs.writeback();
         }
     }
 

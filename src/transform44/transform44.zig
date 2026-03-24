@@ -24,6 +24,7 @@ extern fn multiplyMatrix4x4(u32, u32, u32) u32;
 extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
 extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn resetParticleCache() void;
 
 /// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
 /// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
@@ -365,6 +366,7 @@ const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
 var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
 
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
+    resetParticleCache(); // Clear per-frame caches before rendering
     const now = rdtsc();
     if (last_frame_tsc != 0) {
         const delta = now - last_frame_tsc;
