@@ -58,6 +58,11 @@ extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
 extern fn si_setParticleAlpha(u32, u32, u32) callconv(cc_fc) void; // fastcall(ECX=obj, EDX=unused, stack=alpha)
 extern fn si_ftol() callconv(.naked) void;
 
+// cull_sse.zig exports
+extern fn benchComputeOutcodes(u32, u32, u32, u32) void;
+extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
+
 // =========================================================================
 // Infrastructure
 // =========================================================================
@@ -230,6 +235,14 @@ pub fn main() void {
     print("\nmath_sse benchmark -- {d}M iterations per function\n", .{ITERS / 1_000_000});
     print("{s:>30}  {s:>10} {s:>10}           {s}\n", .{ "function", "original", "sse", "status" });
     print("{s}\n", .{"-" ** 72});
+
+    // Full performCollisionDetection (SSE vs original x87)
+    bench_collisionDetection();
+
+    // UpdateEntityAndChunksPositions (SSE vs original x87)
+    bench_entityUpdate();
+
+    if (false) { // disabled: not working on these right now
 
     // 1: vecMulMat4 -- fastcall(ECX=result, EDX=vec, stack=mat) -> u32
     bench_fc3r("vecMulMat4_ColMajor", originals.vecMulMat4_ColMajor, &vecMulMat4_ColMajor, tv3(), tm4(), 3);
@@ -1770,8 +1783,8 @@ pub fn main() void {
         }
     }
 
-    // calcColorValues_SSE -- thiscall(ctx_ECX, time, scale, outColor, outAlpha1, outAlpha2, outFloat)
-    bench_calcColorValues();
+    // calcColorValues_SSE -- disabled: no standalone SSE export yet
+    // bench_calcColorValues();
 
     // si_frustumCullBBox -- fastcall(bbox_ECX, flags_EDX, radius_stack) -> u32
     bench_frustumCullBBox();
@@ -1779,6 +1792,8 @@ pub fn main() void {
     // si_processLinkedListCollision -- fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack) -> u32
     // Builds a fake linked list with 8 nodes to benchmark AABB overlap test.
     bench_processLinkedListCollision();
+
+    } // end disabled block
 
     print("\n", .{});
 }
@@ -2174,6 +2189,29 @@ fn bench_tc2r(
 // =========================================================================
 
 const V4 = @Vector(4, f32);
+const ShufMask = @Vector(4, i32);
+
+inline fn benchLoadV3(addr: u32) V4 {
+    return .{
+        @as(*align(1) const f32, @ptrFromInt(addr)).*,
+        @as(*align(1) const f32, @ptrFromInt(addr + 4)).*,
+        @as(*align(1) const f32, @ptrFromInt(addr + 8)).*,
+        0,
+    };
+}
+
+inline fn benchCross(av: V4, bv: V4) V4 {
+    const a_yzx: V4 = @shuffle(f32, av, undefined, ShufMask{ 1, 2, 0, 3 });
+    const a_zxy: V4 = @shuffle(f32, av, undefined, ShufMask{ 2, 0, 1, 3 });
+    const b_yzx: V4 = @shuffle(f32, bv, undefined, ShufMask{ 1, 2, 0, 3 });
+    const b_zxy: V4 = @shuffle(f32, bv, undefined, ShufMask{ 2, 0, 1, 3 });
+    return a_yzx * b_zxy - a_zxy * b_yzx;
+}
+
+inline fn benchDot3(av: V4, bv: V4) f32 {
+    const p = av * bv;
+    return p[0] + p[1] + p[2];
+}
 
 inline fn inline_x87_dot(va: *const Vec3, vb: *const Vec3, out: *f32) void {
     asm volatile (
@@ -2274,4 +2312,465 @@ inline fn inline_sse_horner(c: *const [4]f32, f: f32, out: *volatile f32) void {
     r = r * f + c.*[2];
     r = r * f + c.*[3];
     out.* = r;
+}
+
+fn sseRayTri(ray_ptr: u32, vert_pool: u32, idx_base: u32, t_out: *f32) bool {
+    const vi0: u32 = @as(*align(1) const u16, @ptrFromInt(idx_base)).*;
+    const vi1: u32 = @as(*align(1) const u16, @ptrFromInt(idx_base + 2)).*;
+    const vi2: u32 = @as(*align(1) const u16, @ptrFromInt(idx_base + 4)).*;
+
+    const ray_o = benchLoadV3(ray_ptr);
+    const ray_d = benchLoadV3(ray_ptr + 12);
+    const v0 = benchLoadV3(vert_pool + vi0 * 12);
+    const v1 = benchLoadV3(vert_pool + vi1 * 12);
+    const v2 = benchLoadV3(vert_pool + vi2 * 12);
+
+    const edge1 = v1 - v0;
+    const edge2 = v2 - v0;
+    const pvec = benchCross(ray_d, edge2);
+    const det = benchDot3(edge1, pvec);
+    if (det <= 1e-7 and det >= -1e-7) return false;
+
+    const inv_det = 1.0 / det;
+    const tvec = ray_o - v0;
+    const u = benchDot3(tvec, pvec) * inv_det;
+    if (u < -0.002 or u > 1.002) return false;
+
+    const qvec = benchCross(tvec, edge1);
+    const v = benchDot3(ray_d, qvec) * inv_det;
+    if (v < -0.002 or (u + v) > 1.002) return false;
+
+    t_out.* = benchDot3(edge2, qvec) * inv_det;
+    return true;
+}
+
+fn bench_collisionDetection() void {
+    // Build synthetic mesh data matching game's hash entry layout.
+    // 32 vertices forming a grid, 20 triangles, ray aimed through the middle.
+
+    const NVERTS = 120;
+    const NTRIS = 40;
+
+    // Hash entry: total size must accommodate all fields up to 0x2206 + NTRIS*2
+    // Max offset: 0x2206 + 20*2 = 0x222E, round up
+    var hash_buf: [0x2300]u8 align(4) = [_]u8{0} ** 0x2300;
+    const he = @intFromPtr(&hash_buf);
+
+    // Vertex count at +6
+    @as(*align(1) u16, @ptrFromInt(he + 6)).* = NVERTS;
+
+    // Carefully crafted vertices to produce a mix of hits and misses with
+    // non-trivial barycentric coordinates. Ray fires from (0,0,-10) along +Z.
+    // Triangles 0-4: guaranteed hits at various u/v (straddling the ray axis)
+    // Triangles 5-9: near-misses (edge/corner cases for barycentric bounds)
+    // Triangles 10-14: clear misses (outside AABB or backfacing)
+    // Triangles 15-19: more hits with small/large det values (tests divide precision)
+    const verts = [NVERTS][3]f32{
+        // --- Group A: clear hits at various depths, u/v values ---
+        // Tri 0: large centered, hit u~0.33 v~0.33
+        .{ -2.0, -2.0, 1.0 }, .{ 4.0, -2.0, 1.0 }, .{ -2.0, 4.0, 1.0 },
+        // Tri 1: small on-axis, hit u~0.5 v~0.25
+        .{ -0.5, -0.5, 2.0 }, .{ 0.5, -0.5, 2.0 }, .{ 0.0, 0.5, 2.0 },
+        // Tri 2: very close to origin
+        .{ -1.0, -1.0, 0.1 }, .{ 1.0, -1.0, 0.1 }, .{ 0.0, 1.0, 0.1 },
+        // Tri 3: backface hit (wound CW)
+        .{ -2.0, 4.0, 4.0 }, .{ 4.0, -2.0, 4.0 }, .{ -2.0, -2.0, 4.0 },
+        // Tri 4: tiny triangle, tests large inv_det
+        .{ -0.05, -0.05, 1.5 }, .{ 0.05, -0.05, 1.5 }, .{ 0.0, 0.05, 1.5 },
+        // Tri 5: huge triangle, tests small inv_det
+        .{ -50.0, -50.0, 2.5 }, .{ 50.0, -50.0, 2.5 }, .{ 0.0, 50.0, 2.5 },
+        // Tri 6: hit at u~0, v~0 (near vertex 0)
+        .{ -0.001, -0.001, 3.0 }, .{ 5.0, -0.001, 3.0 }, .{ -0.001, 5.0, 3.0 },
+        // Tri 7: hit at u~1, v~0 (near vertex 1)
+        .{ -5.0, -0.001, 3.5 }, .{ 0.001, -0.001, 3.5 }, .{ -5.0, 5.0, 3.5 },
+        // Tri 8: hit at u~0, v~1 (near vertex 2)
+        .{ -5.0, -5.0, 4.0 }, .{ 5.0, -5.0, 4.0 }, .{ 0.001, 0.001, 4.0 },
+        // Tri 9: hit with u+v very close to 1.0 (edge between v1-v2)
+        .{ -0.01, -0.01, 4.5 }, .{ 2.0, -0.01, 4.5 }, .{ -0.01, 2.0, 4.5 },
+
+        // --- Group B: edge cases that should barely miss ---
+        // Tri 10: ray just outside triangle edge
+        .{ 0.5, -0.5, 5.0 }, .{ 2.0, -0.5, 5.0 }, .{ 0.5, 1.0, 5.0 },
+        // Tri 11: ray misses on v side
+        .{ -3.0, 0.5, 5.5 }, .{ -0.5, 0.5, 5.5 }, .{ -3.0, 2.0, 5.5 },
+        // Tri 12: triangle behind ray (negative t)
+        .{ -1.0, -1.0, -15.0 }, .{ 1.0, -1.0, -15.0 }, .{ 0.0, 1.0, -15.0 },
+        // Tri 13: triangle way off to the side
+        .{ 10.0, 10.0, 1.0 }, .{ 12.0, 10.0, 1.0 }, .{ 10.0, 12.0, 1.0 },
+        // Tri 14: triangle off to the other side
+        .{ -12.0, -12.0, 2.0 }, .{ -10.0, -12.0, 2.0 }, .{ -12.0, -10.0, 2.0 },
+
+        // --- Group C: degenerate/parallel ---
+        // Tri 15: zero-area (all same point)
+        .{ 1.0, 1.0, 6.0 }, .{ 1.0, 1.0, 6.0 }, .{ 1.0, 1.0, 6.0 },
+        // Tri 16: collinear vertices
+        .{ -1.0, 0.0, 7.0 }, .{ 0.0, 0.0, 7.0 }, .{ 1.0, 0.0, 7.0 },
+        // Tri 17: nearly parallel to ray (plane nearly parallel to Z axis)
+        .{ -1.0, -100.0, 0.5 }, .{ 1.0, -100.0, 0.5 }, .{ 0.0, 100.0, 0.501 },
+        // Tri 18: parallel to ray (exactly in XY plane at z=0, ray along Z)
+        .{ -1.0, -1.0, 0.0 }, .{ 1.0, -1.0, 0.0 }, .{ 0.0, 1.0, 0.0 },
+
+        // --- Group D: more hits at various depths for closest-t tracking ---
+        // Tri 19: closest possible hit
+        .{ -5.0, -5.0, 0.01 }, .{ 5.0, -5.0, 0.01 }, .{ 0.0, 5.0, 0.01 },
+        // Tri 20-24: hits at regular depth intervals
+        .{ -0.3, -0.3, 0.5 }, .{ 0.3, -0.3, 0.5 }, .{ 0.0, 0.3, 0.5 },
+        .{ -1.0, -1.0, 1.2 }, .{ 1.0, -1.0, 1.2 }, .{ 0.0, 1.0, 1.2 },
+        .{ -0.8, -0.8, 2.0 }, .{ 0.8, -0.8, 2.0 }, .{ 0.0, 0.8, 2.0 },
+        .{ -1.5, -1.5, 3.0 }, .{ 1.5, -1.5, 3.0 }, .{ 0.0, 1.5, 3.0 },
+        .{ -2.0, -2.0, 5.5 }, .{ 2.0, -2.0, 5.5 }, .{ 0.0, 2.0, 5.5 },
+
+        // --- Group E: outside AABB (outcode rejects, never reach ray-tri) ---
+        // Tri 25: all verts above AABB
+        .{ -1.0, 5.0, 1.0 }, .{ 1.0, 5.0, 1.0 }, .{ 0.0, 6.0, 1.0 },
+        // Tri 26: all verts below AABB
+        .{ -1.0, -6.0, 1.0 }, .{ 1.0, -6.0, 1.0 }, .{ 0.0, -5.0, 1.0 },
+        // Tri 27: all verts left of AABB
+        .{ -6.0, -1.0, 1.0 }, .{ -5.0, -1.0, 1.0 }, .{ -6.0, 1.0, 1.0 },
+        // Tri 28: all verts in front of AABB (z < min)
+        .{ -1.0, -1.0, -5.0 }, .{ 1.0, -1.0, -5.0 }, .{ 0.0, 1.0, -5.0 },
+        // Tri 29: all verts behind AABB (z > max)
+        .{ -1.0, -1.0, 5.0 }, .{ 1.0, -1.0, 5.0 }, .{ 0.0, 1.0, 5.0 },
+
+        // --- Group F: asymmetric/skewed hits testing det sign & magnitude ---
+        // Tri 30: very elongated, hit near tip
+        .{ 0.0, -0.01, 1.8 }, .{ 0.02, -0.01, 1.8 }, .{ 0.0, 10.0, 1.8 },
+        // Tri 31: very flat (nearly zero Y extent)
+        .{ -5.0, -0.001, 2.2 }, .{ 5.0, -0.001, 2.2 }, .{ 0.0, 0.001, 2.2 },
+        // Tri 32: large negative det
+        .{ -3.0, 3.0, 2.8 }, .{ 3.0, -3.0, 2.8 }, .{ -3.0, -3.0, 2.8 },
+        // Tri 33: det exactly at threshold boundary
+        .{ -0.0001, -0.0001, 6.5 }, .{ 0.0001, -0.0001, 6.5 }, .{ 0.0, 0.0001, 6.5 },
+
+        // --- Group G: stress closest-t with many competing hits ---
+        // Tri 34-39: hits at very close z-values to test precision
+        .{ -1.0, -1.0, 0.100 }, .{ 1.0, -1.0, 0.100 }, .{ 0.0, 1.0, 0.100 },
+        .{ -1.0, -1.0, 0.101 }, .{ 1.0, -1.0, 0.101 }, .{ 0.0, 1.0, 0.101 },
+        .{ -1.0, -1.0, 0.099 }, .{ 1.0, -1.0, 0.099 }, .{ 0.0, 1.0, 0.099 },
+        .{ -1.0, -1.0, 0.102 }, .{ 1.0, -1.0, 0.102 }, .{ 0.0, 1.0, 0.102 },
+        .{ -1.0, -1.0, 0.098 }, .{ 1.0, -1.0, 0.098 }, .{ 0.0, 1.0, 0.098 },
+        .{ -1.0, -1.0, 0.103 }, .{ 1.0, -1.0, 0.103 }, .{ 0.0, 1.0, 0.103 },
+    };
+
+    // Write vertices to hash entry at +8
+    for (0..NVERTS) |vi| {
+        const off = he + 8 + vi * 12;
+        @as(*align(1) f32, @ptrFromInt(off)).* = verts[vi][0];
+        @as(*align(1) f32, @ptrFromInt(off + 4)).* = verts[vi][1];
+        @as(*align(1) f32, @ptrFromInt(off + 8)).* = verts[vi][2];
+    }
+
+    // Triangle count at +0x18A4
+    @as(*align(1) u16, @ptrFromInt(he + 0x18A4)).* = NTRIS;
+
+    // Each triangle uses 3 consecutive vertices: tri N -> verts N*3, N*3+1, N*3+2
+    {
+        var ti: u32 = 0;
+        while (ti < NTRIS) : (ti += 1) {
+            const base: u16 = @intCast(ti * 3);
+            @as(*align(1) u16, @ptrFromInt(he + 0x18A6 + ti * 6)).* = base;
+            @as(*align(1) u16, @ptrFromInt(he + 0x18A6 + ti * 6 + 2)).* = base + 1;
+            @as(*align(1) u16, @ptrFromInt(he + 0x18A6 + ti * 6 + 4)).* = base + 2;
+            @as(*align(1) u16, @ptrFromInt(he + 0x1FAE + ti * 2)).* = 0;
+            @as(*align(1) u16, @ptrFromInt(he + 0x2206 + ti * 2)).* = @intCast(ti);
+        }
+    }
+
+    // Build "this" struct (needs ~0x54 bytes)
+    var this_buf: [0x60]u8 align(4) = [_]u8{0} ** 0x60;
+    const th = @intFromPtr(&this_buf);
+
+    // Visited array: needs at least NTRIS*2 bytes
+    var visited: [64]u8 = [_]u8{0} ** 64;
+
+    // Result float
+    var result_val: f32 = 0.0;
+
+    // this+0x04 = visited array base
+    @as(*align(1) u32, @ptrFromInt(th + 0x04)).* = @intFromPtr(&visited);
+    // this+0x08, +0x0C = hash params (must match what FindOrCreateHashEntry expects, but
+    // we'll call our function directly bypassing the hash lookup, so these don't matter)
+    // this+0x10 = pointer to result float
+    @as(*align(1) u32, @ptrFromInt(th + 0x10)).* = @intFromPtr(&result_val);
+    // this+0x14 = clamp value
+    @as(*align(1) f32, @ptrFromInt(th + 0x14)).* = 100.0;
+    // this+0x18..0x2C = AABB extents (will be sorted by function)
+    @as(*align(1) f32, @ptrFromInt(th + 0x18)).* = -3.0; // ax0
+    @as(*align(1) f32, @ptrFromInt(th + 0x1C)).* = -3.0; // ay0
+    @as(*align(1) f32, @ptrFromInt(th + 0x20)).* = -3.0; // az0
+    @as(*align(1) f32, @ptrFromInt(th + 0x24)).* = 3.0; // ax1
+    @as(*align(1) f32, @ptrFromInt(th + 0x28)).* = 3.0; // ay1
+    @as(*align(1) f32, @ptrFromInt(th + 0x2C)).* = 3.0; // az1
+    // this+0x30..0x3B = ray origin
+    @as(*align(1) f32, @ptrFromInt(th + 0x30)).* = 0.0;
+    @as(*align(1) f32, @ptrFromInt(th + 0x34)).* = 0.0;
+    @as(*align(1) f32, @ptrFromInt(th + 0x38)).* = -10.0;
+    // this+0x3C..0x47 = ray direction
+    @as(*align(1) f32, @ptrFromInt(th + 0x3C)).* = 0.0;
+    @as(*align(1) f32, @ptrFromInt(th + 0x40)).* = 0.0;
+    @as(*align(1) f32, @ptrFromInt(th + 0x44)).* = 1.0;
+    // this+0x48 = scale factor
+    @as(*align(1) f32, @ptrFromInt(th + 0x48)).* = 1.0;
+    // this+0x4C = closest-t (large initial value)
+    @as(*align(1) f32, @ptrFromInt(th + 0x4C)).* = 999999.0;
+    // this+0x50 = collision mask
+    @as(*align(1) u16, @ptrFromInt(th + 0x50)).* = 0;
+
+    // Map globals needed by both original and SSE functions
+    _ = mapZeroed(0xCA0000, 0x1000); // g_guard at 0xCA03E4
+    _ = mapZeroed(0xCDE000, 0x1000); // g_render_list at 0xCDE648
+    _ = mapZeroed(0xCE2000, 0x1000); // g_visible_count/list at 0xCE26E0/E8
+    _ = mapZeroed(0xCE6000, 0x1000); // g_render_count at 0xCE66FC
+
+    // Patch FindOrCreateHashEntry (0x693D60) to return our hash_buf:
+    //   MOV EAX, <hash_buf_addr>  ; B8 xx xx xx xx
+    //   RET 0x14                  ; C2 14 00
+    const hash_stub = @as([*]u8, @ptrFromInt(0x693D60));
+    hash_stub[0] = 0xB8;
+    @as(*align(1) u32, @ptrFromInt(0x693D61)).* = he;
+    hash_stub[5] = 0xC2;
+    hash_stub[6] = 0x14;
+    hash_stub[7] = 0x00;
+
+    // Set g_guard to non-zero (both functions check this)
+    @as(*align(1) u32, @ptrFromInt(0xCA03E4)).* = 1;
+
+    // Original function at 0x6B88E0 and our SSE version
+    const orig_fn = @as(*const fn (u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32, @ptrFromInt(0x6B88E0));
+
+    // Reset state helper
+    const resetState = struct {
+        fn f(t: u32, v: *[64]u8) void {
+            @as(*align(1) f32, @ptrFromInt(t + 0x4C)).* = 999999.0;
+            @memset(v, 0);
+            @as(*u32, @ptrFromInt(0xCE26E0)).* = 0; // visible count
+            @as(*u32, @ptrFromInt(0xCE66FC)).* = 0; // render count
+        }
+    }.f;
+
+    // Get truth values from original x87 function
+    resetState(th, &visited);
+    _ = @call(.never_tail, orig_fn, .{ th, 0, 0 });
+    const orig_closest = @as(*align(1) f32, @ptrFromInt(th + 0x4C)).*;
+    const orig_result = result_val;
+    const orig_render_count = @as(*u32, @ptrFromInt(0xCE66FC)).*;
+    const orig_visible_count = @as(*u32, @ptrFromInt(0xCE26E0)).*;
+
+    // Run SSE version
+    resetState(th, &visited);
+    _ = @call(.never_tail, performCollisionDetectionSSE, .{ th, 0, 0 });
+    const sse_closest = @as(*align(1) f32, @ptrFromInt(th + 0x4C)).*;
+    const sse_result = result_val;
+    const sse_render_count = @as(*u32, @ptrFromInt(0xCE66FC)).*;
+    const sse_visible_count = @as(*u32, @ptrFromInt(0xCE26E0)).*;
+
+    const t_match = @abs(orig_closest - sse_closest) < 0.01 or (orig_closest > 99999.0 and sse_closest > 99999.0);
+    const r_match = @abs(orig_result - sse_result) < 0.01;
+    const ok = t_match and r_match and orig_render_count == sse_render_count and orig_visible_count == sse_visible_count;
+
+    if (!ok) {
+        print("  MISMATCH detail:\n", .{});
+        print("    closest-t: orig={d:.6} sse={d:.6}\n", .{ orig_closest, sse_closest });
+        print("    result:    orig={d:.6} sse={d:.6}\n", .{ orig_result, sse_result });
+    } else {
+        print("  closest-t={d:.4}  result={d:.4}  hits={d}  visible={d}\n", .{
+            sse_closest, sse_result, sse_render_count, sse_visible_count,
+        });
+    }
+
+    // Benchmark: our SSE performCollisionDetectionSSE
+    var best: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        var t0 = rdtsc();
+        for (0..ITERS) |_| {
+            resetState(th, &visited);
+            _ = @call(.never_tail, performCollisionDetectionSSE, .{ th, 0, 0 });
+        }
+        t0 = rdtsc() - t0;
+        if (t0 < best) best = t0;
+    }
+
+    const per_call = best / ITERS;
+    const per_tri = if (NTRIS > 0) per_call / NTRIS else 0;
+    const status: [*:0]const u8 = if (ok) "OK" else "MISMATCH";
+    print("{s:>30}: {d} cyc/call  {d} cyc/tri  ({d} tris)  {s}\n", .{
+        "performCollisionDet", per_call, per_tri, NTRIS, status,
+    });
+}
+
+fn bench_entityUpdate() void {
+    // Map .bss pages for globals the entity update reads/writes
+    _ = mapZeroed(0xC62000, 0x2000); // delta time at 0xC62510
+    _ = mapZeroed(0xC7B000, 0x2000); // view coeffs at 0xC7BCB0, bounds at 0xC7CB5C-C7CB70
+    _ = mapZeroed(0x866000, 0x4000); // render flags at 0x867960, ptrs at 0x867964/68
+    _ = mapZeroed(0x80A000, 0x1000); // timer threshold at 0x80A1E8
+    _ = mapZeroed(0x86B000, 0x1000); // anim table at 0x86B580
+    _ = mapZeroed(0xC7F000, 0x1000); // anim index at 0xC7F294
+
+    // Set up view coefficients (a,b,c,d) at 0xC7BCB0
+    @as(*align(1) f32, @ptrFromInt(0xC7BCB0)).* = 0.5; // coeff for ent+0x5C
+    @as(*align(1) f32, @ptrFromInt(0xC7BCB4)).* = 0.3; // coeff for ent+0x60
+    @as(*align(1) f32, @ptrFromInt(0xC7BCB8)).* = 0.7; // coeff for ent+0x64
+    @as(*align(1) f32, @ptrFromInt(0xC7BCBC)).* = 1.0; // constant term
+
+    // Delta time
+    @as(*align(1) f32, @ptrFromInt(0xC62510)).* = 0.016; // ~60fps
+    // Timer threshold
+    @as(*align(1) f32, @ptrFromInt(0x80A1E8)).* = 999.0; // high so recycling never triggers
+    // World bounds (set large so bounds check always passes)
+    @as(*align(1) f32, @ptrFromInt(0xC7CB68)).* = 999.0;
+    @as(*align(1) f32, @ptrFromInt(0xC7CB6C)).* = 999.0;
+    @as(*align(1) f32, @ptrFromInt(0xC7CB70)).* = 999.0;
+    // Disable spatial grid registration by making bounds check fail:
+    // Set the lower bounds high so IsPointInsideBounds returns false
+    @as(*align(1) f32, @ptrFromInt(0xC7CB5C)).* = 99999.0;
+    @as(*align(1) f32, @ptrFromInt(0xC7CB60)).* = 99999.0;
+    @as(*align(1) f32, @ptrFromInt(0xC7CB64)).* = 99999.0;
+
+    // Build a synthetic entity struct (~0x900 bytes to cover all accessed fields)
+    var ent_buf: [0x900]u8 align(16) = [_]u8{0} ** 0x900;
+    const ent = @intFromPtr(&ent_buf);
+
+    // Entity position fields for dot product
+    @as(*align(1) f32, @ptrFromInt(ent + 0x5C)).* = 10.0;
+    @as(*align(1) f32, @ptrFromInt(ent + 0x60)).* = 20.0;
+    @as(*align(1) f32, @ptrFromInt(ent + 0x64)).* = 30.0;
+    @as(*align(1) f32, @ptrFromInt(ent + 0x68)).* = 5.0; // depth offset
+    // Timer at ent+0xAC (start at 0)
+    @as(*align(1) f32, @ptrFromInt(ent + 0xAC)).* = 0.0;
+    // No vertex buffers (ent+0x14C = 0), no instances (ent+0xC0 = 0), no chunks
+    // Bounds fields that won't trigger spatial grid
+    @as(*align(1) f32, @ptrFromInt(ent + 0x44)).* = 999.0; // will fail < check
+
+    const orig_fn = @as(*const fn (u32) callconv(.{ .x86_fastcall = .{} }) void, @ptrFromInt(0x6AFAD0));
+
+    // Reset helper
+    const resetEnt = struct {
+        fn f(e: u32) void {
+            @as(*align(1) f32, @ptrFromInt(e + 0xAC)).* = 0.0; // reset timer
+            @as(*align(1) f32, @ptrFromInt(e + 0x78)).* = 0.0; // reset depth
+        }
+    }.f;
+
+    // Correctness: both should compute the same depth
+    resetEnt(ent);
+    @call(.never_tail, orig_fn, .{ent});
+    const orig_depth = @as(*align(1) f32, @ptrFromInt(ent + 0x78)).*;
+
+    resetEnt(ent);
+    @call(.never_tail, updateEntityAndChunksPositions, .{ent});
+    const sse_depth = @as(*align(1) f32, @ptrFromInt(ent + 0x78)).*;
+
+    const ok = @abs(orig_depth - sse_depth) < 0.01;
+    if (!ok) {
+        print("  MISMATCH: orig_depth={d:.4} sse_depth={d:.4}\n", .{ orig_depth, sse_depth });
+    }
+
+    // Benchmark original
+    var orig_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        var t0 = rdtsc();
+        for (0..ITERS) |_| {
+            resetEnt(ent);
+            @call(.never_tail, orig_fn, .{ent});
+        }
+        t0 = rdtsc() - t0;
+        if (t0 < orig_cyc) orig_cyc = t0;
+    }
+
+    // Benchmark SSE
+    var sse_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        var t0 = rdtsc();
+        for (0..ITERS) |_| {
+            resetEnt(ent);
+            @call(.never_tail, updateEntityAndChunksPositions, .{ent});
+        }
+        t0 = rdtsc() - t0;
+        if (t0 < sse_cyc) sse_cyc = t0;
+    }
+
+    report("UpdateEntityChunkPos", orig_cyc, sse_cyc, ok);
+}
+
+fn bench_computeOutcodes() void {
+    // Generate 150 vertices (typical mesh) spread across an AABB
+    const NVERTS = 150;
+    var verts: [NVERTS * 3]f32 = undefined;
+    var seed: u32 = 0xDEADBEEF;
+    for (0..NVERTS * 3) |j| {
+        seed = seed *% 1103515245 +% 12345;
+        // Range roughly -10..+10
+        verts[j] = @as(f32, @floatFromInt(@as(i32, @bitCast(seed >> 16)) >> 16)) * 0.0003;
+    }
+    // AABB bounds: minX,minY,minZ,maxX,maxY,maxZ
+    var bounds = [6]f32{ -2.0, -2.0, -2.0, 2.0, 2.0, 2.0 };
+
+    // Original x87 version: extract the outcode loop from PerformSpatialCulling.
+    // The original does 6 FCOMP+FNSTSW+TEST sequences per vertex.
+    // We'll inline a scalar reference implementation for the original.
+    var out_orig: [NVERTS]u8 = undefined;
+    var out_sse: [NVERTS]u8 = undefined;
+
+    // Scalar reference (matches original x87 logic)
+    for (0..NVERTS) |i| {
+        const vx = verts[i * 3];
+        const vy = verts[i * 3 + 1];
+        const vz = verts[i * 3 + 2];
+        var code: u8 = 0;
+        if (vx < bounds[0]) code |= 0x20;
+        if (vx >= bounds[3]) code |= 0x10;
+        if (vy < bounds[1]) code |= 0x08;
+        if (vy >= bounds[4]) code |= 0x04;
+        if (vz < bounds[2]) code |= 0x02;
+        if (vz >= bounds[5]) code |= 0x01;
+        out_orig[i] = code;
+    }
+
+    // SSE version
+    benchComputeOutcodes(a(&verts), a(&bounds), a(&out_sse), NVERTS);
+
+    // Verify correctness
+    var ok = true;
+    for (0..NVERTS) |i| {
+        if (out_orig[i] != out_sse[i]) {
+            ok = false;
+            break;
+        }
+    }
+
+    // Benchmark: scalar reference
+    const scalar_fn = struct {
+        fn run(v: *[NVERTS * 3]f32, b: *[6]f32, out: *[NVERTS]u8) void {
+            for (0..NVERTS) |i| {
+                const vx = v[i * 3];
+                const vy = v[i * 3 + 1];
+                const vz = v[i * 3 + 2];
+                var code: u8 = 0;
+                if (vx < b[0]) code |= 0x20;
+                if (vx >= b[3]) code |= 0x10;
+                if (vy < b[1]) code |= 0x08;
+                if (vy >= b[4]) code |= 0x04;
+                if (vz < b[2]) code |= 0x02;
+                if (vz >= b[5]) code |= 0x01;
+                out[i] = code;
+            }
+        }
+    }.run;
+
+    var orig_cyc: u64 = std.math.maxInt(u64);
+    var sse_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        var t = rdtsc();
+        for (0..ITERS) |_| scalar_fn(&verts, &bounds, &out_orig);
+        t = rdtsc() - t;
+        if (t < orig_cyc) orig_cyc = t;
+    }
+    for (0..5) |_| {
+        var t = rdtsc();
+        for (0..ITERS) |_| benchComputeOutcodes(a(&verts), a(&bounds), a(&out_sse), NVERTS);
+        t = rdtsc() - t;
+        if (t < sse_cyc) sse_cyc = t;
+    }
+    report("computeOutcodes(150v)", orig_cyc, sse_cyc, ok);
 }

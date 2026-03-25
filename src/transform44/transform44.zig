@@ -25,6 +25,10 @@ extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x8
 extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn renderParticleSprites_REF(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn resetParticleCache() void;
+extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
+extern fn updateEntitiesInBoundsSSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var stride_info: [8]u32; // exported from particle_sse.zig
@@ -71,7 +75,7 @@ var last_frame_tsc: u64 = 0; // frame-to-frame TSC for total frame time
 pub var ab_use_custom: bool = false;
 
 // Gate for non-transform A/B hooks. Set false to isolate transform44 SSE testing.
-const AB_OTHER_HOOKS = false;
+const AB_OTHER_HOOKS = true;
 var diag_cmp_count: u32 = 0;
 export var original_trampoline: u32 = 0; // DEBUG: expose trampoline for REF passthrough test
 
@@ -196,6 +200,12 @@ const ProfState = struct {
     matmul_cycles: u64 = 0,
     textline_calls: u64 = 0, // renderTextLine (0x5ce0c0)
     textline_cycles: u64 = 0,
+    viewfrust_calls: u64 = 0, // SetupViewFrustum (0x6bc1c0) -- parent of PerformSpatialCulling
+    viewfrust_cycles: u64 = 0,
+    cylfrust_calls: u64 = 0, // SetupCylinderFrustum (0x6bc370) -- child of RenderSphere
+    cylfrust_cycles: u64 = 0,
+    rendersph_calls: u64 = 0, // RenderSphere (0x6b92b0) -- parent of SetupCylinderFrustum
+    rendersph_cycles: u64 = 0,
 };
 
 // =============================================================================
@@ -868,6 +878,9 @@ var triplane_hook: hook.Detour(Fn5) = .{}; // BuildTrianglePlanes: thiscall RET 
 var partsetup_hook: hook.Detour(Fn3) = .{}; // SetupParticleRendering: thiscall RET 0x4
 var matmul_hook: hook.Detour(Fn3) = .{}; // multiplyMatrix4x4: fastcall RET 0x4
 var textline_hook: hook.Detour(Fn6) = .{}; // renderTextLine: thiscall RET 0x10
+var viewfrust_hook: hook.Detour(Fn5) = .{}; // SetupViewFrustum: thiscall RET 0xC
+var cylfrust_hook: hook.Detour(Fn5) = .{}; // SetupCylinderFrustum: thiscall RET 0xC
+var rendersph_hook: hook.Detour(Fn8v) = .{}; // RenderSphere: thiscall RET 0x18
 
 // --- Detour functions (timing-only pass-through) ---
 
@@ -940,6 +953,12 @@ fn collisionDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*
 }
 fn entposDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
+    if (AB_OTHER_HOOKS and ab_use_custom) {
+        updateEntityAndChunksPositions(a);
+        prof.entpos_cycles +|= rdtsc() - s;
+        prof.entpos_calls +|= 1;
+        return null;
+    }
     const ret = entpos_hook.callOriginal(.{ a, b });
     prof.entpos_cycles +|= rdtsc() - s;
     prof.entpos_calls +|= 1;
@@ -967,6 +986,7 @@ fn complexgeoDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u
     return ret;
 }
 fn entboundsDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // Original only -- A/B testing entpos first
     const s = rdtsc();
     const ret = entbounds_hook.callOriginal(.{ a, b, c });
     prof.entbounds_cycles +|= rdtsc() - s;
@@ -1027,6 +1047,12 @@ fn setvecDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
 }
 fn cullDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
+    if (AB_OTHER_HOOKS and ab_use_custom) {
+        const ret = performSpatialCulling(a, c, d);
+        prof.cull_cycles +|= rdtsc() - s;
+        prof.cull_calls +|= 1;
+        return @ptrFromInt(ret);
+    }
     const ret = cull_hook.callOriginal(.{ a, b, c, d });
     prof.cull_cycles +|= rdtsc() - s;
     prof.cull_calls +|= 1;
@@ -1034,6 +1060,12 @@ fn cullDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyop
 }
 fn colldetDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
+    if (AB_OTHER_HOOKS and ab_use_custom) {
+        const ret = performCollisionDetectionSSE(a, c, d);
+        prof.colldet_cycles +|= rdtsc() - s;
+        prof.colldet_calls +|= 1;
+        return @ptrFromInt(ret);
+    }
     const ret = colldet_hook.callOriginal(.{ a, b, c, d });
     prof.colldet_cycles +|= rdtsc() - s;
     prof.colldet_calls +|= 1;
@@ -1172,6 +1204,27 @@ fn textlineDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.
     const ret = textline_hook.callOriginal(.{ a, b, c, d, e, f });
     prof.textline_cycles +|= rdtsc() - s;
     prof.textline_calls +|= 1;
+    return ret;
+}
+fn viewfrustDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    const s = rdtsc();
+    const ret = viewfrust_hook.callOriginal(.{ a, b, c, d, e });
+    prof.viewfrust_cycles +|= rdtsc() - s;
+    prof.viewfrust_calls +|= 1;
+    return ret;
+}
+fn cylfrustDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    const s = rdtsc();
+    const ret = cylfrust_hook.callOriginal(.{ a, b, c, d, e });
+    prof.cylfrust_cycles +|= rdtsc() - s;
+    prof.cylfrust_calls +|= 1;
+    return ret;
+}
+fn rendersphDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    const s = rdtsc();
+    const ret = rendersph_hook.callOriginal(.{ a, b, c, d, e, f, g, h });
+    prof.rendersph_cycles +|= rdtsc() - s;
+    prof.rendersph_calls +|= 1;
     return ret;
 }
 
@@ -1414,6 +1467,9 @@ fn dumpStats() void {
         .{ .name = "partsetup",  .cycles = prof.partsetup_cycles, .calls = prof.partsetup_calls },
         .{ .name = "matmul",     .cycles = prof.matmul_cycles,    .calls = prof.matmul_calls },
         .{ .name = "textline",   .cycles = prof.textline_cycles,  .calls = prof.textline_calls },
+        .{ .name = "viewfrust", .cycles = prof.viewfrust_cycles, .calls = prof.viewfrust_calls },
+        .{ .name = "cylfrust",  .cycles = prof.cylfrust_cycles,  .calls = prof.cylfrust_calls },
+        .{ .name = "rendersph", .cycles = prof.rendersph_cycles, .calls = prof.rendersph_calls },
     };
     for (hotspots) |h| {
         if (h.calls > 0) {
@@ -1551,8 +1607,9 @@ pub fn installHooks() void {
     _ = linkedlist_hook.attach(0x710b90, &linkedlistDetour);
     _ = color_hook.attach(0x7b9b10, &colorDetour);
     _ = setvec_hook.attach(0x686640, &setvecDetour);
-    _ = cull_hook.attach(0x6b8c60, &cullDetour);
-    _ = colldet_hook.attach(0x6b88e0, &colldetDetour);
+    // cull + colldet graduated to weirdperformance JMP patches
+    // _ = cull_hook.attach(0x6b8c60, &cullDetour);
+    // _ = colldet_hook.attach(0x6b88e0, &colldetDetour);
     _ = activep_hook.attach(0x7b5a10, &activepDetour);
     _ = cbiter_hook.attach(0x404130, &cbiterDetour);
     _ = findguid_hook.attach(0x464890, &findguidDetour);
@@ -1569,11 +1626,14 @@ pub fn installHooks() void {
     _ = partsetup_hook.attach(0x7b3d20, &partsetupDetour);
     _ = matmul_hook.attach(0x7bc6a0, &matmulDetour);
     _ = textline_hook.attach(0x5ce0c0, &textlineDetour);
+    _ = viewfrust_hook.attach(0x6bc1c0, &viewfrustDetour);
+    _ = cylfrust_hook.attach(0x6bc370, &cylfrustDetour);
+    _ = rendersph_hook.attach(0x6b92b0, &rendersphDetour);
 
     // Timer calibration now handled by performance module.
 
     // blit_hub installed in lateInit() to clobber UnitXP's hook
-    log.print("transform44: 39 profiling hooks installed (blit_hub deferred)\n");
+    log.print("transform44: 42 profiling hooks installed (blit_hub deferred)\n");
     if (bisect_stop_section != 0) {
         log.fmt("  BISECT MODE: REF stops after section {d}, then original trampoline\n", .{bisect_stop_section});
     }
@@ -1646,6 +1706,9 @@ pub fn removeHooks() void {
         partsetup_hook.detach();
         matmul_hook.detach();
         textline_hook.detach();
+        viewfrust_hook.detach();
+        cylfrust_hook.detach();
+        rendersph_hook.detach();
         blit_hub_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);

@@ -29,6 +29,7 @@ pub const module_name: [*:0]const u8 = "clickthrough";
 
 const ADDR_WorldIntersectionTest: usize = 0x480DF0;
 const ADDR_CanTargetEntity: usize = 0x480610;
+const ADDR_CheckObjectTypePermissions: usize = 0x480780;
 
 // =============================================================================
 // HitTestResult layout
@@ -54,20 +55,13 @@ const FLAG_CUSTOM_MASK: u32 = FLAG_LOOT_ONLY | FLAG_GO_ONLY | FLAG_NPC_ONLY;
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 var log: logging.Logger = .{};
+var go_log_count: u32 = 0;
 
-// CanTargetEntity: CanTargetEntity(void *obj, uint permissionFlags) -> undefined*
-// Returns non-NULL to include object, NULL to exclude.
-// __cdecl-ish but called with obj as first stack arg from CheckObjectTypePermissions.
-// Assembly: PUSH permFlags; PUSH objPtr; CALL CanTargetEntity
-// Actually looking at the call site it passes obj in register and flags on stack.
-// Let me verify from the CheckObjectTypePermissions assembly.
-// From decompile: puVar4 = CanTargetEntity(pvVar3, permissionFlags);
-// pvVar3 is the resolved object pointer. permissionFlags is the raycast flags.
-// The function signature from Ghidra: CanTargetEntity(void *param_1, uint param_2)
-// Not thiscall/fastcall - it's a regular call with two stack args.
-
-const CanTargetFn = fn (u32, u32) callconv(.{ .x86_stdcall = .{} }) u32;
-var cte_hook: hook.Detour(CanTargetFn) = .{};
+// CheckObjectTypePermissions (0x480780) -- verified from assembly:
+// __thiscall: ECX=context (saved to EDI, passed to CanTargetEntity)
+// Stack: objectData [EBP+8], permFlags [EBP+C]. RET 0x8.
+const CheckObjTypeFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
+var cotp_hook: hook.Detour(CheckObjTypeFn) = .{};
 
 const WorldIntersectFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var wit_hook: hook.Detour(WorldIntersectFn) = .{};
@@ -78,10 +72,10 @@ var wit_hook: hook.Detour(WorldIntersectFn) = .{};
 // When custom flag bits are set, exclude objects that don't match the pass.
 // =============================================================================
 
-fn canTargetDetour(obj: u32, perm_flags: u32) callconv(.{ .x86_stdcall = .{} }) u32 {
+fn checkObjTypeDetour(ctx: u32, obj_data: u32, perm_flags: u32) callconv(hook.cc.thiscall) u32 {
     // Strip custom bits before passing to original
     const clean_flags = perm_flags & ~FLAG_CUSTOM_MASK;
-    const original = cte_hook.callOriginal(.{ obj, clean_flags });
+    const original = cotp_hook.callOriginal(.{ ctx, obj_data, clean_flags });
 
     // If original says exclude, respect that
     if (original == 0) return 0;
@@ -89,27 +83,37 @@ fn canTargetDetour(obj: u32, perm_flags: u32) callconv(.{ .x86_stdcall = .{} }) 
     // No custom filtering active - pass through
     if ((perm_flags & FLAG_CUSTOM_MASK) == 0) return original;
 
-    // Custom pass filtering
+    // Resolve the object pointer from obj_data via ClntObjMgrObjectPtr.
+    // __fastcall(ECX=typeMask, EDX=debugStr, stack: guid_lo, guid_hi, debugCode)
+    // RET 0xC. See nampower ClntObjMgrObjectPtrT typedef.
+    const obj = hook.call(
+        fn (u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32,
+        0x468460, // ClntObjMgrObjectPtr
+        .{ 1, 0, hook.readMem(u32, obj_data + 0x18), hook.readMem(u32, obj_data + 0x1C), 0 },
+    );
+    if (obj == 0) return original;
+
+    const desc = wow.getDescriptor(obj);
+    if (!wow.isValidPtr(desc)) return original;
+    const type_mask = hook.readMem(u32, desc + 0x08);
+
     if ((perm_flags & FLAG_LOOT_ONLY) != 0) {
-        // Only lootable corpses pass
+        if (type_mask != 0x09) return 0; // units only
         if (!wow.isLootable(obj)) return 0;
         return original;
     }
 
     if ((perm_flags & FLAG_GO_ONLY) != 0) {
-        // Only interactable GOs pass
-        const desc = wow.getDescriptor(obj);
-        if (!wow.isValidPtr(desc)) return 0;
-        const type_mask = hook.readMem(u32, desc + 0x08);
-        if (type_mask != 0x21) return 0; // not a GO
-        // Check interactability
+        if (type_mask != 0x21) return 0; // GOs only
+        const go_type = hook.readMem(u32, desc + offsets.DESC_GO_TYPE);
+        if (go_type == 9 or go_type == 7) return 0; // TEXT, CHAIR
         if (hook.call(fn (u32) callconv(hook.cc.fastcall) u8, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}) == 0)
             return 0;
         return original;
     }
 
     if ((perm_flags & FLAG_NPC_ONLY) != 0) {
-        // Only units with NPC interaction flags pass
+        if (type_mask != 0x09 and type_mask != 0x19) return 0; // units/players only
         if (wow.getNpcFlags(obj) == 0) return 0;
         return original;
     }
@@ -168,8 +172,8 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
-    log = logging.Logger.open(module_name, .console);
-    _ = cte_hook.attach(ADDR_CanTargetEntity, &canTargetDetour);
+    log = logging.Logger.open(module_name, .both);
+    _ = cotp_hook.attach(ADDR_CheckObjectTypePermissions, &checkObjTypeDetour);
     _ = wit_hook.attach(ADDR_WorldIntersectionTest, &worldIntersectDetour);
     log.print("clickthrough: cascade raycast active\n");
 }
@@ -177,7 +181,7 @@ pub fn installHooks() void {
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         wit_hook.detach();
-        cte_hook.detach();
+        cotp_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
     }

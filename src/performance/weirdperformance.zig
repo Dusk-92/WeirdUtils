@@ -64,14 +64,9 @@ fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32)
 
 const TransformFn = fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 var transform_hook: hook.Detour(TransformFn) = .{};
-var teardown_active: bool = false;
 
 fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
-    if (teardown_active) {
-        transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
-    } else {
-        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
-    }
+    transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
 }
 
 // =============================================================================
@@ -153,22 +148,14 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
 }
 
 // =============================================================================
-// Teardown hook (0x491180) — protect bone SSE during logout cleanup
+// SSE JMP patches — binary patches at game function addresses
 // =============================================================================
 
-const TeardownFn = fn () callconv(.{ .x86_stdcall = .{} }) void;
-var teardown_hook: hook.Detour(TeardownFn) = .{};
+// cull_sse.zig
+extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 
-fn teardownDetour() callconv(.{ .x86_stdcall = .{} }) void {
-    teardown_active = true;
-    teardown_hook.callOriginal(.{});
-    teardown_active = false;
-}
-
-// =============================================================================
-// Silicon SSE JMP patches — binary patches at game function addresses
-// =============================================================================
-
+// silicon_sse.zig
 const sse = struct {
     extern fn si_normalizeVec3() callconv(.naked) void;
     extern fn si_mulMat3x4(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
@@ -236,6 +223,8 @@ fn installPatches() u32 {
         .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
         .{ .target = 0x6ABC40, .replacement = @intFromPtr(&sse.si_processLinkedListCollision), .name = "processLinkedListCollision" },
         .{ .target = 0x686000, .replacement = @intFromPtr(&sse.si_frustumCullBBox), .name = "frustumCullBBox" },
+        .{ .target = 0x6B8C60, .replacement = @intFromPtr(&performSpatialCulling), .name = "PerformSpatialCulling" },
+        .{ .target = 0x6B88E0, .replacement = @intFromPtr(&performCollisionDetectionSSE), .name = "performCollisionDetection" },
     };
 
     var count: u32 = 0;
@@ -275,9 +264,6 @@ pub fn installHooks() void {
     // Per-frame cache reset
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) installed += 1;
 
-    // Teardown guard
-    if (teardown_hook.attach(0x491180, &teardownDetour) == .ok) installed += 1;
-
     // Silicon SSE binary patches
     _ = installPatches();
 
@@ -299,7 +285,6 @@ pub fn removeHooks() void {
         particle_hook.detach();
         glyph_hook.detach();
         world_update_hook.detach();
-        teardown_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
     }

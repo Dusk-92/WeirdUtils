@@ -65,6 +65,22 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
+    const cull_sse_obj = b.addObject(.{
+        .name = "cull_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/performance/cull_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const entity_sse_obj = b.addObject(.{
+        .name = "entity_sse",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/performance/entity_sse.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
     const bone_sse_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
@@ -172,6 +188,8 @@ pub fn build(b: *std.Build) void {
     // Called for both the main weirdutils build and each variant.
     const ModuleObjects = struct {
         clip_sse: *std.Build.Step.Compile,
+        cull_sse: *std.Build.Step.Compile,
+        entity_sse: *std.Build.Step.Compile,
         bone_sse: *std.Build.Step.Compile,
         bone_sse_ref: *std.Build.Step.Compile,
         math_sse: *std.Build.Step.Compile,
@@ -184,6 +202,8 @@ pub fn build(b: *std.Build) void {
             @setEvalBranchQuota(10000);
             if (comptime std.mem.eql(u8, module_name, "weirdperformance")) {
                 mod.addObject(self.clip_sse);
+                mod.addObject(self.cull_sse);
+                mod.addObject(self.entity_sse);
                 mod.addObject(self.bone_sse);
                 mod.addObject(self.bone_sse_ref);
                 mod.addObject(self.silicon_sse);
@@ -193,6 +213,8 @@ pub fn build(b: *std.Build) void {
             }
             if (comptime std.mem.eql(u8, module_name, "transform44")) {
                 mod.addObject(self.clip_sse);
+                mod.addObject(self.cull_sse);
+                mod.addObject(self.entity_sse);
                 mod.addObject(self.bone_sse);
                 mod.addObject(self.bone_sse_ref);
                 mod.addObject(self.particle_sse);
@@ -208,6 +230,8 @@ pub fn build(b: *std.Build) void {
     };
     const objs = ModuleObjects{
         .clip_sse = clip_sse_obj,
+        .cull_sse = cull_sse_obj,
+        .entity_sse = entity_sse_obj,
         .bone_sse = bone_sse_obj,
         .bone_sse_ref = bone_sse_ref_obj,
         .math_sse = math_sse_obj,
@@ -299,11 +323,29 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseFast,
             }),
         });
+        const bench_cull_sse = b.addObject(.{
+            .name = "bench_cull_sse",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/performance/cull_sse.zig"),
+                .target = bench_target,
+                .optimize = .ReleaseFast,
+            }),
+        });
         bench.root_module.addObject(bench_math_sse);
         bench.root_module.addObject(bench_silicon_sse);
         bench.root_module.addObject(bench_bone_sse);
         bench.root_module.addObject(bench_bone_baseline);
         bench.root_module.addObject(bench_particle_sse);
+        bench.root_module.addObject(bench_cull_sse);
+        const bench_entity_sse = b.addObject(.{
+            .name = "bench_entity_sse",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/performance/entity_sse.zig"),
+                .target = bench_target,
+                .optimize = .ReleaseFast,
+            }),
+        });
+        bench.root_module.addObject(bench_entity_sse);
         bench.root_module.linkSystemLibrary("m", .{});
         const install_bench = b.addInstallArtifact(bench, .{});
         const bench_step = b.step("bench", "Build math_sse benchmark harness (x86 Linux)");
