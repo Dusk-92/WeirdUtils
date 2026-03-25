@@ -15,7 +15,6 @@ const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
-const timer_fix = @import("timer_fix.zig");
 extern fn clipPolygonToSinglePlane(u32, u32, u32) void;
 extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
 extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
@@ -1571,18 +1570,7 @@ pub fn installHooks() void {
     _ = matmul_hook.attach(0x7bc6a0, &matmulDetour);
     _ = textline_hook.attach(0x5ce0c0, &textlineDetour);
 
-    // TSC timer calibration (ported from VanillaFixes)
-    timer_fix.init();
-    const ti = timer_fix.getInfo();
-    if (ti.calibrated) {
-        if (ti.orig_freq == 1000) {
-            log.fmt("timer_fix: TSC was OFF, enabled with freq {d}\n", .{ti.cal_freq});
-        } else {
-            log.fmt("timer_fix: recalibrated TSC freq {d} -> {d} ({d}.{d}% drift)\n", .{ ti.orig_freq, ti.cal_freq, ti.diff_pct_x10 / 10, ti.diff_pct_x10 % 10 });
-        }
-    } else if (ti.cal_freq > 0) {
-        log.print("timer_fix: already calibrated, skipping\n");
-    }
+    // Timer calibration now handled by performance module.
 
     // blit_hub installed in lateInit() to clobber UnitXP's hook
     log.print("transform44: 39 profiling hooks installed (blit_hub deferred)\n");

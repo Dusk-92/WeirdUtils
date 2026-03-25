@@ -43,7 +43,7 @@ const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
-const file_cache = if (build_opts.filecache) @import("filecache/filecache.zig") else struct {};
+const file_cache = if (build_opts.performance) @import("performance/filecache.zig") else struct {};
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
 const performance = if (build_opts.performance) @import("performance/performance.zig") else struct {};
 
@@ -615,7 +615,7 @@ fn fileFindDetour(
     out_block_entry: u32, // ptr to ptr: block table entry data
     out_disk_path: u32, // ptr to buf: disk path output
 ) callconv(hook.cc.fastcall) u32 {
-    if (!build_opts.filecache or filename_ptr == 0)
+    if (!build_opts.performance or filename_ptr == 0)
         return file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
 
     const tsc_start = file_cache.rdtsc();
@@ -712,7 +712,7 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
-    if (build_opts.filecache) {
+    if (build_opts.performance) {
         _ = file_find_hook.attach(0x6549a0, &fileFindDetour);
         log.print("archive cache hook installed\n");
     }
@@ -851,7 +851,6 @@ const modules = [_]ModuleHooks{
     if (build_opts.transform44) .{ .name = transform44.module_name, .install = transform44.installHooks, .remove = transform44.removeHooks, .is_active = transform44.isActive } else .{},
     if (build_opts.addonperf) .{ .name = addonperf.module_name, .install = addonperf.installHooks, .remove = addonperf.removeHooks, .is_active = addonperf.isActive } else .{},
     if (build_opts.ssemaths) .{ .name = ssemaths.module_name, .install = ssemaths.installHooks, .remove = ssemaths.removeHooks, .is_active = ssemaths.isActive } else .{},
-    if (build_opts.filecache) .{ .name = file_cache.module_name, .install = file_cache.installHooks, .remove = file_cache.removeHooks, .is_active = file_cache.isActive } else .{},
     if (build_opts.worldmarkers) .{ .name = markers.module_name, .install = markers.installHooks, .remove = markers.removeHooks, .is_active = markers.isActive } else .{},
     if (build_opts.interact) .{ .name = interact.module_name, .install = interact.installHooks, .remove = interact.removeHooks, .is_active = interact.isActive } else .{},
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},

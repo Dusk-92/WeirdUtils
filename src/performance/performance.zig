@@ -17,6 +17,8 @@ const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
 const inflate_hook = @import("inflate_hook.zig");
+const timer_fix = @import("timer_fix.zig");
+const filecache = @import("filecache.zig");
 
 pub const module_name: [*:0]const u8 = "performance";
 
@@ -147,10 +149,11 @@ var frame_counter: u32 = 0;
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     resetParticleCache();
     world_update_hook.callOriginal(.{frame_count});
-    // Dump inflate stats every ~450 frames (~7.5s at 60fps)
+    // Dump stats every ~900 frames (~15s at 60fps)
     frame_counter +|= 1;
-    if (frame_counter >= 450) {
+    if (frame_counter >= 900) {
         inflate_hook.dumpStats();
+        filecache.dumpStats(&log);
         frame_counter = 0;
     }
 }
@@ -284,8 +287,21 @@ pub fn installHooks() void {
     // Silicon SSE binary patches
     const patched = installPatches();
 
-    // libdeflate inflate comparison hook
+    // libdeflate inflate replacement
     if (inflate_hook.install(log)) installed += 1;
+
+    // TSC timer calibration + OS timer tweaks
+    timer_fix.init();
+    const ti = timer_fix.getInfo();
+    if (ti.calibrated) {
+        if (ti.orig_freq == 1000) {
+            log.fmt("timer: TSC was OFF, enabled with freq {d}\n", .{ti.cal_freq});
+        } else {
+            log.fmt("timer: recalibrated TSC freq {d} -> {d} ({d}.{d}% drift)\n", .{ ti.orig_freq, ti.cal_freq, ti.diff_pct_x10 / 10, ti.diff_pct_x10 % 10 });
+        }
+    } else {
+        log.print("timer: already calibrated, skipping\n");
+    }
 
     log.fmt("performance: {d} hooks, {d} patches installed\n", .{ installed, patched });
 }
@@ -293,6 +309,7 @@ pub fn installHooks() void {
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         inflate_hook.dumpStats();
+        filecache.dumpStats(&log);
         inflate_hook.remove();
         transform_hook.detach();
         particle_hook.detach();

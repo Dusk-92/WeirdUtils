@@ -243,35 +243,16 @@ Lua API for addon developers:
 
 ---
 
-### MPQ File Cache
-
-Caches the results of MPQ archive file lookups so repeat file opens skip the expensive archive chain walk and hash table probe. The game re-opens the same model and texture files hundreds of times per second during gameplay -- each lookup normally searches through every loaded MPQ archive. The cache remembers which archive contains each file and returns the answer directly.
-
-Cache hits cost roughly 1/30th of a full search. During heavy gameplay (cities, raids, zone transitions), this saves 50-160ms every 15 seconds. In quiet scenes with few new models loading, there is little to save because the game does fewer lookups.
-
-The cache validates that archives are still alive before returning cached results, so if the game closes or reloads an archive, the cache falls through to the original search.
-
-No configuration needed. Enabled by default when using `weirdutils.dll`.
-
-**DLL:** `filecache.dll`
-
----
-
 ### Performance
 
-Replaces 20+ internal math functions with SIMD (SSE/AVX) equivalents and swaps the game's 2004-era zlib with a modern decompression library (2.2x faster). Covers skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion. Most noticeable in cities, raids, and during zone transitions. No visual difference, no configuration needed. Included in `weirdutils.dll`.
+Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression. No visual difference, no configuration needed. Included in `weirdutils.dll`.
 
----
+- **SIMD Math** — replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
+- **Data Decompression** — swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
+- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the expensive archive chain walk. Cache hits cost ~1/30th of a full search, saving 50-160ms every 15 seconds during heavy gameplay
+- **Timer Calibration** — recalibrates the TSC frequency using the OS performance counter for accurate animation timing. Requests higher OS timer resolution (0.5ms) and disables Windows 11 power throttling. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
 
-### Timer Calibration
-
-Improves the game's internal timer precision by recalibrating the TSC (Time Stamp Counter) frequency using the OS performance counter as a reference. The vanilla client's built-in calibration is inaccurate, which can cause animation stutter and timing jitter on some systems.
-
-Also requests higher OS timer resolution (0.5ms instead of the default 15.6ms) and disables Windows 11 power throttling for the game process.
-
-Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes). Primarily benefits native Windows. On Wine/Linux the game typically uses GetTickCount instead of TSC, so this module enables TSC mode with a proper calibration.
-
-No configuration needed. Included in `weirdutils.dll`.
+Most noticeable in cities, raids, and during zone transitions.
 
 ---
 
@@ -300,7 +281,7 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 
 Module names are case-insensitive and match the released dll names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`, `dpslog`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`, `dpslog`, `filecache`, `performance`
 
 There is no re-enable API.
 

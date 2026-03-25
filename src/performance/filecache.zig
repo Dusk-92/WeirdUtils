@@ -3,17 +3,12 @@
 //! 2-way set-associative cache: hash(filename) picks a set of 2 entries.
 //! Filename stored and compared for collision safety. On eviction, the
 //! least recently used way is replaced.
+//!
+//! Lifecycle managed by the performance module (no own hooks or mutex).
 
 const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
-const mod_mutex = @import("../mutex.zig");
-
-pub const module_name: [*:0]const u8 = "filecache";
-
-var g_mutex: ?*anyopaque = null;
-var g_is_hook_owner: bool = false;
-var log_state: logging.Logger = .{};
 
 pub inline fn rdtsc() u64 {
     var lo: u32 = undefined;
@@ -88,7 +83,6 @@ pub fn archiveCacheLookup(h: u32, path: [*:0]const u8) ?ArchiveCacheEntry {
     return null;
 }
 
-/// Insert: hash picks set, store in empty way or evict LRU.
 /// Recompute block_entry pointer from archive's current block table + cached index.
 /// block_entry = archive->block_table_data + index * 0x2C
 pub fn computeBlockEntry(archive: u32, index: u32) u32 {
@@ -117,7 +111,6 @@ pub fn archiveCacheInsert(h: u32, path: [*:0]const u8, outer: u32, inner: u32, b
     const entry = &set.entries[target];
     entry.outer_archive = outer;
     entry.inner_archive = inner;
-    // Convert block_entry pointer to index: (ptr - base) / 0x2C
     if (block != 0 and inner != 0) {
         const base = hook.readMem(u32, inner + 0x290);
         entry.block_index = if (base != 0) (block - base) / 0x2C else 0;
@@ -151,27 +144,12 @@ pub fn getSlotOccupant(h: u32) ?[]const u8 {
     return null;
 }
 
-pub const CacheStats = struct {
-    hits: u64, neg_hits: u64, misses: u64, stale: u64,
-    miss_p1: u64, miss_p2: u64, miss_p2_archive: u64,
-    entries: u32, total: u64,
-};
-
-pub fn getCacheStats() CacheStats {
-    return .{
-        .hits = cache_hits,
-        .neg_hits = cache_negative_hits,
-        .misses = cache_misses,
-        .stale = cache_stale,
-        .miss_p1 = cache_miss_p1,
-        .miss_p2 = cache_miss_p2,
-        .miss_p2_archive = cache_miss_p2_archive,
-        .entries = cache_entries,
-        .total = cache_hits + cache_negative_hits + cache_misses + cache_stale,
-    };
+fn pct(part: u64, total: u64) u64 {
+    if (total == 0) return 0;
+    return part *| 1000 / total;
 }
 
-pub fn resetStats() void {
+fn resetStats() void {
     cache_hits = 0;
     cache_negative_hits = 0;
     cache_misses = 0;
@@ -183,72 +161,26 @@ pub fn resetStats() void {
     miss_cycles = 0;
 }
 
-fn pct(part: u64, total: u64) u64 {
-    if (total == 0) return 0;
-    return part *| 1000 / total;
-}
-
-pub fn dumpStats() void {
-    const fc = getCacheStats();
-    if (fc.total == 0) return;
-    const hit_pct = pct(fc.hits + fc.neg_hits, fc.total);
-    // @3GHz: cycles/3000 = us, cycles/3000000 = ms
-    const total_hit_calls = fc.hits + fc.neg_hits;
+pub fn dumpStats(lg: *logging.Logger) void {
+    const total = cache_hits + cache_negative_hits + cache_misses + cache_stale;
+    if (total == 0) return;
+    const hit_pct = pct(cache_hits + cache_negative_hits, total);
+    const total_hit_calls = cache_hits + cache_negative_hits;
     const avg_hit = if (total_hit_calls > 0) hit_cycles / total_hit_calls else 0;
-    const avg_miss = if (fc.misses > 0) miss_cycles / fc.misses else 0;
-    // Without cache, hits would have cost avg_miss each
+    const avg_miss = if (cache_misses > 0) miss_cycles / cache_misses else 0;
     const saved_us = if (avg_miss > avg_hit) total_hit_calls * (avg_miss - avg_hit) / 3000 else 0;
     if (saved_us >= 2000) {
-        log_state.fmt("  file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries | saved {d}ms (avg hit={d}cy miss={d}cy)\n", .{
+        lg.fmt("file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries | saved {d}ms\n", .{
             hit_pct / 10, hit_pct % 10,
-            fc.hits, fc.neg_hits, fc.misses, fc.entries,
-            saved_us / 1000, avg_hit, avg_miss,
+            cache_hits, cache_negative_hits, cache_misses, cache_entries,
+            saved_us / 1000,
         });
     } else {
-        log_state.fmt("  file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries | saved {d}us (avg hit={d}cy miss={d}cy)\n", .{
+        lg.fmt("file_cache: {d}.{d}% hit ({d}hit/{d}neg/{d}miss) {d} entries | saved {d}us\n", .{
             hit_pct / 10, hit_pct % 10,
-            fc.hits, fc.neg_hits, fc.misses, fc.entries,
-            saved_us, avg_hit, avg_miss,
+            cache_hits, cache_negative_hits, cache_misses, cache_entries,
+            saved_us,
         });
     }
     resetStats();
-}
-
-// Frame counting for periodic stats dump
-const DUMP_FRAMES: u64 = 900; // ~15s at 60fps
-var frame_count: u64 = 0;
-
-const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
-var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
-
-fn worldUpdateDetour(fc: u32) callconv(hook.cc.fastcall) void {
-    world_update_hook.callOriginal(.{fc});
-    frame_count +|= 1;
-    if (frame_count >= DUMP_FRAMES) {
-        dumpStats();
-        frame_count = 0;
-    }
-}
-
-// Module lifecycle
-pub fn isActive() bool { return g_is_hook_owner; }
-
-pub fn installHooks() void {
-    const result = mod_mutex.acquire(module_name);
-    g_mutex = result.handle;
-    g_is_hook_owner = result.is_owner;
-    if (!g_is_hook_owner) return;
-    log_state = logging.Logger.open(module_name, .console);
-    _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
-    log_state.print("filecache: active\n");
-}
-
-pub fn removeHooks() void {
-    if (g_is_hook_owner) {
-        world_update_hook.detach();
-        dumpStats();
-        log_state.close();
-        mod_mutex.release(&g_mutex);
-    }
-    g_is_hook_owner = false;
 }
