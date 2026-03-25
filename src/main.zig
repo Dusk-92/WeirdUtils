@@ -812,6 +812,7 @@ fn uninstall() void {
         file_hook.detach();
         removeFileHooks();
         protection_hook.detach();
+        g_core_owner = false;
     }
     mod_mutex.release(&g_core_mutex);
     logging.deinit();
@@ -867,12 +868,12 @@ fn disableModule(name: [*:0]const u8) callconv(.c) i32 {
     return 0;
 }
 
-/// Disables all modules in reverse order, then detaches core hooks.
+/// Disables all modules in reverse order.
+/// Core hooks are left intact since other DLLs may depend on them.
 /// Returns the number of modules that were disabled.
 fn disableAll() callconv(.c) i32 {
     var count: i32 = 0;
 
-    // Remove modules in reverse order
     comptime var i = modules.len;
     inline while (i > 0) {
         i -= 1;
@@ -882,18 +883,6 @@ fn disableAll() callconv(.c) i32 {
         }
     }
     addons.pruneInactivePrefixes();
-
-    if (g_core_owner) {
-        shutdown_hook.detach();
-        logout_hook.detach();
-        engine_init_hook.detach();
-        addons.uninstall();
-        register_commands_hook.detach();
-        glue_commands_hook.detach();
-        file_hook.detach();
-        removeFileHooks();
-        protection_hook.detach();
-    }
 
     return count;
 }
