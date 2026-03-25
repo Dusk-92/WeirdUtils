@@ -143,17 +143,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    lib.root_module.addObject(clip_sse_obj);
-    lib.root_module.addObject(bone_sse_obj);
-    lib.root_module.addObject(bone_sse_ref_obj);
-    lib.root_module.addObject(math_sse_obj);
-    lib.root_module.addObject(silicon_sse_obj);
-    lib.root_module.addObject(particle_sse_obj);
-    lib.root_module.addObject(particle_ref_obj);
-
-    // libdeflate — compiled as x86-windows-gnu (same ABI as main DLL).
-    // Uses Zig's bundled MinGW libc for string.h/stdlib.h.
-    // malloc/free resolved at link time to our exports in performance.zig.
+    // libdeflate (static C lib for inflate_hook)
     const libdeflate = b.addLibrary(.{
         .linkage = .static,
         .name = "deflate",
@@ -176,7 +166,61 @@ pub fn build(b: *std.Build) void {
     });
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
-    lib.root_module.addObjectFile(libdeflate.getEmittedBin());
+
+    // Link module-specific object files into a DLL.
+    // Single source of truth for which objects each module needs.
+    // Called for both the main weirdutils build and each variant.
+    const ModuleObjects = struct {
+        clip_sse: *std.Build.Step.Compile,
+        bone_sse: *std.Build.Step.Compile,
+        bone_sse_ref: *std.Build.Step.Compile,
+        math_sse: *std.Build.Step.Compile,
+        silicon_sse: *std.Build.Step.Compile,
+        particle_sse: *std.Build.Step.Compile,
+        particle_ref: *std.Build.Step.Compile,
+        libdeflate: *std.Build.Step.Compile,
+
+        fn linkFor(self: @This(), mod: *std.Build.Module, comptime module_name: []const u8) void {
+            @setEvalBranchQuota(10000);
+            if (comptime std.mem.eql(u8, module_name, "weirdperformance")) {
+                mod.addObject(self.clip_sse);
+                mod.addObject(self.bone_sse);
+                mod.addObject(self.bone_sse_ref);
+                mod.addObject(self.silicon_sse);
+                mod.addObject(self.particle_sse);
+                mod.addObject(self.particle_ref);
+                mod.addObjectFile(self.libdeflate.getEmittedBin());
+            }
+            if (comptime std.mem.eql(u8, module_name, "transform44")) {
+                mod.addObject(self.clip_sse);
+                mod.addObject(self.bone_sse);
+                mod.addObject(self.bone_sse_ref);
+                mod.addObject(self.particle_sse);
+                mod.addObject(self.particle_ref);
+            }
+            if (comptime std.mem.eql(u8, module_name, "silicon")) {
+                mod.addObject(self.silicon_sse);
+            }
+            if (comptime std.mem.eql(u8, module_name, "ssemaths")) {
+                mod.addObject(self.math_sse);
+            }
+        }
+    };
+    const objs = ModuleObjects{
+        .clip_sse = clip_sse_obj,
+        .bone_sse = bone_sse_obj,
+        .bone_sse_ref = bone_sse_ref_obj,
+        .math_sse = math_sse_obj,
+        .silicon_sse = silicon_sse_obj,
+        .particle_sse = particle_sse_obj,
+        .particle_ref = particle_ref_obj,
+        .libdeflate = libdeflate,
+    };
+
+    // Main DLL: link all module objects
+    inline for (module_list) |mod| {
+        objs.linkFor(lib.root_module, mod.name);
+    }
 
     b.installArtifact(lib);
 
@@ -274,6 +318,7 @@ pub fn build(b: *std.Build) void {
     const build_all_step = b.step("all-variants", "Build all DLL variants");
 
     inline for (module_list) |variant_mod| {
+        @setEvalBranchQuota(10000);
         const opts = b.addOptions();
         inline for (module_list) |m| {
             opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
@@ -287,6 +332,13 @@ pub fn build(b: *std.Build) void {
             break :blk &final;
         };
         opts.addOption([]const []const u8, "all_module_names", names);
+        const versions: []const []const u8 = comptime blk: {
+            var v: [module_list.len][]const u8 = undefined;
+            for (module_list, 0..) |m2, mi| v[mi] = m2.version;
+            const final = v;
+            break :blk &final;
+        };
+        opts.addOption([]const []const u8, "all_module_versions", versions);
 
         const variant_lib = b.addLibrary(.{
             .name = variant_mod.name,
@@ -301,6 +353,8 @@ pub fn build(b: *std.Build) void {
                 },
             }),
         });
+
+        objs.linkFor(variant_lib.root_module, variant_mod.name);
 
         const install_variant = b.addInstallArtifact(variant_lib, .{
             .dest_dir = .{ .override = .{ .custom = "variants" } },
