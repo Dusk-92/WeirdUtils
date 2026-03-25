@@ -35,6 +35,109 @@ export fn benchComputeOutcodes(verts_ptr: u32, bounds_ptr: u32, out_ptr: u32, co
 }
 
 // =============================================================================
+// FindObjectByGUID (0x464890) cache
+// stdcall(guidLow, guidHigh) -> objectPtr. RET 0x8.
+// Direct-mapped cache: hash the 64-bit GUID, check cached result still valid.
+// =============================================================================
+
+const GUID_CACHE_BITS = 8;
+const GUID_CACHE_SIZE = 1 << GUID_CACHE_BITS;
+const GUID_CACHE_MASK = GUID_CACHE_SIZE - 1;
+
+const GuidCacheEntry = struct {
+    guid_lo: u32 = 0,
+    guid_hi: u32 = 0,
+    result: u32 = 0,
+};
+
+var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
+
+const origFindObjectByGUID = @as(*const fn (u32, u32) callconv(.{ .x86_stdcall = .{} }) u32, @ptrFromInt(0x464890));
+
+export fn findObjectByGUID_Cached(guid_lo: u32, guid_hi: u32) callconv(.{ .x86_stdcall = .{} }) u32 {
+    const hash = (guid_lo ^ (guid_hi *% 0x9E3779B9)) & GUID_CACHE_MASK;
+    const entry = &guid_cache[hash];
+
+    if (entry.guid_lo == guid_lo and entry.guid_hi == guid_hi and entry.result != 0) {
+        // Validate: object at cached address still has this GUID
+        const obj = entry.result;
+        if (readU32(obj + 0x30) == guid_lo and readU32(obj + 0x34) == guid_hi) {
+            return obj;
+        }
+    }
+
+    // Cache miss or stale: call original
+    const result = @call(.never_tail, origFindObjectByGUID, .{ guid_lo, guid_hi });
+
+    // Store in cache (even if result is 0 -- avoids repeated misses for deleted objects)
+    entry.* = .{ .guid_lo = guid_lo, .guid_hi = guid_hi, .result = result };
+
+    return result;
+}
+
+// =============================================================================
+// AddToSpatialGrid (0x6816F0)
+// __fastcall(ECX=objectPtr), RET
+// Computes grid bucket index via dot product + scale + round, then
+// inserts object into the bucket's linked list.
+// =============================================================================
+
+// CalculateLinkedListOffset: thiscall(ECX=node, stack=direction) -> ptr
+const CalculateLinkedListOffset = @as(*const fn (u32, i32) callconv(.{ .x86_thiscall = .{} }) u32, @ptrFromInt(0x6876B0));
+
+// Grid globals
+const g_grid_base: u32 = 0xC7BD40; // grid array base (stride 0x6C per bucket)
+const g_grid_scale: *const f32 = @ptrFromInt(0x810174);
+const g_grid_offset: *const f32 = @ptrFromInt(0x86861C);
+// Dot product coefficients at 0xC7CFB8..C7CFC4 (same as entpos view coeffs but different address)
+const g_spatial_coeffs: u32 = 0xC7CFB8;
+
+export fn addToSpatialGridSSE(obj: u32) callconv(.{ .x86_fastcall = .{} }) void {
+    // Dot product: coeff_a * obj[0x5C] + coeff_b * obj[0x60] + coeff_c * obj[0x64] + coeff_d
+    const depth = readF32(g_spatial_coeffs) * readF32(obj + 0x5C) +
+        readF32(g_spatial_coeffs + 4) * readF32(obj + 0x60) +
+        readF32(g_spatial_coeffs + 8) * readF32(obj + 0x64) +
+        readF32(g_spatial_coeffs + 12) - readF32(obj + 0x68);
+
+    // Grid index: round(depth * scale - offset), clamped to [0, 31]
+    const scaled = depth * g_grid_scale.* - g_grid_offset.*;
+
+    // Round to nearest (matches x87 FISTP with default rounding mode)
+    // @round returns f32, then convert to int
+    const rounded = @round(scaled);
+    var idx: i32 = @intFromFloat(rounded);
+
+    if (idx < 0) {
+        idx = 0;
+    } else if (idx >= 0x20) {
+        return;
+    }
+
+    // Bucket layout: grid_base + idx * 0x6C
+    // Bucket+0x18 = offset to node within object
+    // Bucket+0x1C = list head pointer
+    const bucket = g_grid_base + @as(u32, @bitCast(idx)) * 0x6C;
+    const node_offset = readU32(bucket + 0x18);
+    const node = node_offset + obj;
+
+    // If already in a list, unlink first
+    if (readU32(node) != 0) {
+        const prev = @call(.never_tail, CalculateLinkedListOffset, .{ node, -1 });
+        @as(*align(1) u32, @ptrFromInt(prev)).* = readU32(node);
+        @as(*align(1) u32, @ptrFromInt(readU32(node) + 4)).* = readU32(node + 4);
+        @as(*align(1) u32, @ptrFromInt(node)).* = 0;
+        @as(*align(1) u32, @ptrFromInt(node + 4)).* = 0;
+    }
+
+    // Insert at head of bucket list
+    const head = readU32(bucket + 0x1C);
+    @as(*align(1) u32, @ptrFromInt(node)).* = head;
+    @as(*align(1) u32, @ptrFromInt(node + 4)).* = readU32(head + 4);
+    @as(*align(1) u32, @ptrFromInt(head + 4)).* = obj;
+    @as(*align(1) u32, @ptrFromInt(bucket + 0x1C)).* = node;
+}
+
+// =============================================================================
 // ray_triangle_intersection_indexed_int (0x7C2C40)
 // Same Moller-Trumbore as _indexed_ushort but indices are int* not u16*.
 // fastcall(ECX=ray, EDX=vertPool, stack: indices, tOut, normalOut, epsilon)

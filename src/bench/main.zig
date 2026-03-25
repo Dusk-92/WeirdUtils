@@ -63,6 +63,7 @@ extern fn benchComputeOutcodes(u32, u32, u32, u32) void;
 extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
 extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
+extern fn addToSpatialGridSSE(u32) callconv(.{ .x86_fastcall = .{} }) void;
 
 // =========================================================================
 // Infrastructure
@@ -237,14 +238,14 @@ pub fn main() void {
     print("{s:>30}  {s:>10} {s:>10}           {s}\n", .{ "function", "original", "sse", "status" });
     print("{s}\n", .{"-" ** 72});
 
-    // Full performCollisionDetection (SSE vs original x87)
+    // AddToSpatialGrid -- linked list requires game state, A/B test in-game only
+    // bench_addToSpatialGrid();
+
+    if (false) { // disabled: not testing these right now
     bench_collisionDetection();
-
-    // ray_triangle_intersection_indexed_int (SSE vs original x87)
     bench_rayTriIndexedInt();
-
-    // UpdateEntityAndChunksPositions (SSE vs original x87)
     bench_entityUpdate();
+    }
 
     if (false) { // disabled: not working on these right now
 
@@ -2737,6 +2738,118 @@ fn bench_rayTriIndexedInt() void {
     }
 
     report("rayTriIndexedInt", orig_cyc, sse_cyc, ok);
+}
+
+fn bench_addToSpatialGrid() void {
+    const NOBJS = 20;
+
+    // Map globals needed by AddToSpatialGrid
+    _ = mapZeroed(0x810000, 0x1000); // g_grid_scale at 0x810174
+    _ = mapZeroed(0x868000, 0x1000); // g_grid_offset at 0x86861C
+    _ = mapZeroed(0xC7B000, 0x5000); // grid array at 0xC7BD40 through coeffs at 0xC7CFC4
+    _ = mapZeroed(0x687000, 0x1000); // CalculateLinkedListOffset at 0x6876B0 (in .text, already mapped)
+
+    // Set up spatial coefficients (view-like dot product)
+    @as(*align(1) f32, @ptrFromInt(0xC7CFB8)).* = 0.5; // coeff a
+    @as(*align(1) f32, @ptrFromInt(0xC7CFBC)).* = 0.3; // coeff b
+    @as(*align(1) f32, @ptrFromInt(0xC7CFC0)).* = 0.7; // coeff c
+    @as(*align(1) f32, @ptrFromInt(0xC7CFC4)).* = 1.0; // coeff d
+    @as(*align(1) f32, @ptrFromInt(0x810174)).* = 0.5; // grid scale
+    @as(*align(1) f32, @ptrFromInt(0x86861C)).* = 0.0; // grid offset
+
+    // Set up grid buckets: each bucket at grid_base + idx*0x6C
+    // Bucket+0x18 = node offset within object, Bucket+0x1C = list head
+    // We need dummy list heads for each bucket
+    const grid_base: u32 = 0xC7BD40;
+    for (0..32) |bi| {
+        const bucket = grid_base + @as(u32, @intCast(bi)) * 0x6C;
+        @as(*align(1) u32, @ptrFromInt(bucket + 0x18)).* = 0x200; // node offset within object
+        // List head: point to a dummy node (use a region in the bucket itself)
+        const head_node = bucket + 0x20;
+        @as(*align(1) u32, @ptrFromInt(bucket + 0x1C)).* = head_node;
+        // Sentinel head: next=self, prev=self (empty doubly-linked list)
+        @as(*align(1) u32, @ptrFromInt(head_node)).* = head_node;
+        @as(*align(1) u32, @ptrFromInt(head_node + 4)).* = head_node;
+    }
+
+    // Build fake objects with varied positions (different grid indices)
+    // Each object needs: floats at +0x5C,+0x60,+0x64,+0x68, and node space at +0x200
+    var obj_bufs: [NOBJS][0x210]u8 align(16) = [_][0x210]u8{[_]u8{0} ** 0x210} ** NOBJS;
+    var objs: [NOBJS]u32 = undefined;
+
+    var seed: u32 = 0x98765432;
+    for (0..NOBJS) |oi| {
+        objs[oi] = @intFromPtr(&obj_bufs[oi]);
+        const o = objs[oi];
+        // Position that maps to different grid buckets
+        seed = seed *% 1103515245 +% 12345;
+        const fx: f32 = @as(f32, @floatFromInt(@as(i16, @bitCast(@as(u16, @truncate(seed >> 16)))))) * 0.0001;
+        seed = seed *% 1103515245 +% 12345;
+        const fy: f32 = @as(f32, @floatFromInt(@as(i16, @bitCast(@as(u16, @truncate(seed >> 16)))))) * 0.0001;
+        seed = seed *% 1103515245 +% 12345;
+        const fz: f32 = @as(f32, @floatFromInt(@as(i16, @bitCast(@as(u16, @truncate(seed >> 16)))))) * 0.0001;
+        @as(*align(1) f32, @ptrFromInt(o + 0x5C)).* = fx;
+        @as(*align(1) f32, @ptrFromInt(o + 0x60)).* = fy;
+        @as(*align(1) f32, @ptrFromInt(o + 0x64)).* = fz;
+        @as(*align(1) f32, @ptrFromInt(o + 0x68)).* = 0.5; // depth offset
+    }
+
+    const orig_fn = @as(*const fn (u32) callconv(.{ .x86_fastcall = .{} }) void, @ptrFromInt(0x6816F0));
+
+    // Reset grid state between runs
+    const resetGrid = struct {
+        fn f(os: *[NOBJS]u32) void {
+            // Clear all node pointers in objects
+            for (os) |o| {
+                @as(*align(1) u32, @ptrFromInt(o + 0x200)).* = 0;
+                @as(*align(1) u32, @ptrFromInt(o + 0x204)).* = 0;
+            }
+            // Reset bucket heads
+            for (0..32) |bi| {
+                const bucket = @as(u32, 0xC7BD40) + @as(u32, @intCast(bi)) * 0x6C;
+                @as(*align(1) u32, @ptrFromInt(bucket + 0x1C)).* = bucket + 0x20;
+                @as(*align(1) u32, @ptrFromInt(bucket + 0x20)).* = 0;
+                @as(*align(1) u32, @ptrFromInt(bucket + 0x24)).* = 0;
+            }
+        }
+    }.f;
+
+    _ = orig_fn;
+    resetGrid(&objs);
+    // Debug: check mapped memory and first object
+    print("  obj0=0x{x} grid_base=0x{x} bucket0_head=0x{x}\n", .{
+        objs[0], grid_base, @as(*align(1) u32, @ptrFromInt(grid_base + 0x1C)).*,
+    });
+    for (0..NOBJS) |oi| {
+        @call(.never_tail, addToSpatialGridSSE, .{objs[oi]});
+        print("  obj {d} OK\n", .{oi});
+    }
+    var sse_heads: [32]u32 = undefined;
+    for (0..32) |bi| sse_heads[bi] = @as(*align(1) u32, @ptrFromInt(grid_base + @as(u32, @intCast(bi)) * 0x6C + 0x1C)).*;
+
+    // Verify objects landed in valid buckets (non-zero heads for buckets with objects)
+    var ok = true;
+    var populated: u32 = 0;
+    for (0..32) |bi| {
+        if (sse_heads[bi] != grid_base + @as(u32, @intCast(bi)) * 0x6C + 0x20) populated += 1;
+    }
+    if (populated == 0) { print("  no buckets populated!\n", .{}); ok = false; }
+
+    // Benchmark SSE only -- re-insert same objects (they get re-linked each call)
+    // No resetGrid needed: the function unlinks before re-inserting
+    var best: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        var t0 = rdtsc();
+        for (0..ITERS) |_| {
+            for (0..NOBJS) |oi| @call(.never_tail, addToSpatialGridSSE, .{objs[oi]});
+        }
+        t0 = rdtsc() - t0;
+        if (t0 < best) best = t0;
+    }
+
+    const per_call = best / ITERS / NOBJS;
+    const status: [*:0]const u8 = if (ok) "OK" else "MISMATCH";
+    print("{s:>30}: {d} cyc/call  ({d} objects)  {s}\n", .{ "AddToSpatialGrid", per_call, NOBJS, status });
 }
 
 fn bench_entityUpdate() void {

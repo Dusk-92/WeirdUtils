@@ -30,6 +30,8 @@ extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall 
 extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
 extern fn updateEntitiesInBoundsSSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
+extern fn addToSpatialGridSSE(u32) callconv(.{ .x86_fastcall = .{} }) void;
+extern fn findObjectByGUID_Cached(u32, u32) callconv(.{ .x86_stdcall = .{} }) u32;
 extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var stride_info: [8]u32; // exported from particle_sse.zig
@@ -1092,8 +1094,38 @@ fn cbiterDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.cc
     prof.cbiter_calls +|= 1;
     return ret;
 }
+const GUID_CACHE_BITS = 12;
+const GUID_CACHE_SIZE = 1 << GUID_CACHE_BITS;
+const GUID_CACHE_MASK = GUID_CACHE_SIZE - 1;
+const GuidCacheEntry = struct { guid_lo: u32 = 0, guid_hi: u32 = 0, result: u32 = 0 };
+var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
+var guid_cache_hits: u64 = 0;
+var guid_cache_misses: u64 = 0;
+
 fn findguidDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // stdcall(2): c=guidLow, d=guidHigh
     const s = rdtsc();
+    if (AB_OTHER_HOOKS and ab_use_custom) {
+        const hash = (c ^ (d *% 0x9E3779B9)) & GUID_CACHE_MASK;
+        const entry = &guid_cache[hash];
+
+        if (entry.guid_lo == c and entry.guid_hi == d and entry.result != 0) {
+            const obj = entry.result;
+            if (hook.readMem(u32, obj + 0x30) == c and hook.readMem(u32, obj + 0x34) == d) {
+                guid_cache_hits +|= 1;
+                prof.findguid_cycles +|= rdtsc() - s;
+                prof.findguid_calls +|= 1;
+                return @ptrFromInt(obj);
+            }
+        }
+
+        guid_cache_misses +|= 1;
+        const ret = findguid_hook.callOriginal(.{ a, b, c, d });
+        entry.* = .{ .guid_lo = c, .guid_hi = d, .result = @intFromPtr(ret) };
+        prof.findguid_cycles +|= rdtsc() - s;
+        prof.findguid_calls +|= 1;
+        return ret;
+    }
     const ret = findguid_hook.callOriginal(.{ a, b, c, d });
     prof.findguid_cycles +|= rdtsc() - s;
     prof.findguid_calls +|= 1;
@@ -1533,6 +1565,19 @@ fn dumpStats() void {
         });
     }
 
+    // GUID cache stats (custom mode only)
+    const guid_total = guid_cache_hits +| guid_cache_misses;
+    if (guid_total > 0) {
+        const ghit_pct = pct(guid_cache_hits, guid_total);
+        log.fmt("  guid_cache: {d}.{d}% hit ({d}hit/{d}miss)\n", .{
+            ghit_pct / 10, ghit_pct % 10,
+            guid_cache_hits,
+            guid_cache_misses,
+        });
+        guid_cache_hits = 0;
+        guid_cache_misses = 0;
+    }
+
     // Dump particle VB stride info (once)
     if (debug_vertex_count != 0) {
         log.fmt("  partsetup_debug: verts={d} maxSprites={d} fmt={d} dataPtr=0x{x}\n", .{
@@ -1641,7 +1686,8 @@ pub fn installHooks() void {
     // _ = colldet_hook.attach(0x6b88e0, &colldetDetour);
     _ = activep_hook.attach(0x7b5a10, &activepDetour);
     _ = cbiter_hook.attach(0x404130, &cbiterDetour);
-    _ = findguid_hook.attach(0x464890, &findguidDetour);
+    // findguid graduated to weirdperformance GUID cache
+    // _ = findguid_hook.attach(0x464890, &findguidDetour);
     // _ = raytri2_hook.attach(0x632700, &raytri2Detour);
     _ = drawbatch_hook.attach(0x70cb30, &drawbatchDetour);
     _ = findlua_hook.attach(0x702000, &findluaDetour);

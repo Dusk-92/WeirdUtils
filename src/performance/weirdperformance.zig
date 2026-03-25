@@ -134,6 +134,36 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
 }
 
 // =============================================================================
+// FindObjectByGUID cache (0x464890) — direct-mapped, validate-on-hit
+// =============================================================================
+
+const FindGuidFn = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) ?*anyopaque;
+var findguid_hook: hook.Detour(FindGuidFn) = .{};
+
+const GUID_CACHE_BITS = 12;
+const GUID_CACHE_SIZE = 1 << GUID_CACHE_BITS;
+const GUID_CACHE_MASK = GUID_CACHE_SIZE - 1;
+const GuidCacheEntry = struct { guid_lo: u32 = 0, guid_hi: u32 = 0, result: u32 = 0 };
+var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
+
+fn findguidDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // stdcall(2): c=guidLow, d=guidHigh (a,b unused fastcall reg args)
+    const hash = (c ^ (d *% 0x9E3779B9)) & GUID_CACHE_MASK;
+    const entry = &guid_cache[hash];
+
+    if (entry.guid_lo == c and entry.guid_hi == d and entry.result != 0) {
+        const obj = entry.result;
+        if (hook.readMem(u32, obj + 0x30) == c and hook.readMem(u32, obj + 0x34) == d) {
+            return @ptrFromInt(obj);
+        }
+    }
+
+    const ret = findguid_hook.callOriginal(.{ a, b, c, d });
+    entry.* = .{ .guid_lo = c, .guid_hi = d, .result = @intFromPtr(ret) };
+    return ret;
+}
+
+// =============================================================================
 // OnWorldUpdate hook (0x482EA0) — per-frame cache reset
 // =============================================================================
 
@@ -263,6 +293,9 @@ pub fn installHooks() void {
     // Glyph cache
     if (glyph_hook.attach(0x5CA2D0, &glyphDetour) == .ok) installed += 1;
 
+    // GUID lookup cache
+    if (findguid_hook.attach(0x464890, &findguidDetour) == .ok) installed += 1;
+
     // Per-frame cache reset
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) installed += 1;
 
@@ -286,6 +319,7 @@ pub fn removeHooks() void {
         transform_hook.detach();
         particle_hook.detach();
         glyph_hook.detach();
+        findguid_hook.detach();
         world_update_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
