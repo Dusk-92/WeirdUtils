@@ -130,29 +130,12 @@ fn isInBattleground() bool {
 // Permission check - leader or raid officer required
 // =============================================================================
 
-fn getPlayerGUID() u64 {
-    return wow.getPlayerGUID();
-}
-
-/// Look up a player name from the name cache by GUID.
-/// Calls RetrieveNPCDataFromCache - __thiscall(ECX=cache), 6 stack params, RET 0x18.
-fn getNameFromGUID(guid_lo: u32, guid_hi: u32) ?[*:0]const u8 {
-    if (guid_lo == 0 and guid_hi == 0) return null;
-    var name_buf: [2]u32 = .{ 0, 0 };
-    const result = hook.call(fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32, o.FN_NAME_CACHE_LOOKUP, .{
-        o.NAME_CACHE_OBJ, guid_lo, guid_hi, @intFromPtr(&name_buf), 0, 0, 0,
-    });
-    return if (result != 0) @ptrFromInt(result) else null;
-}
-
 /// Check if the local player has permission to place/clear markers.
 /// Uses direct memory reads - no Lua state required.
 /// Requires: party leader, raid leader, or raid officer (assist).
 fn canSetMarkers() bool {
-    const player_guid = getPlayerGUID();
+    const player_guid = wow.getPlayerGUID();
     if (player_guid == 0) return false;
-    const player_lo: u32 = @truncate(player_guid);
-    const player_hi: u32 = @truncate(player_guid >> 32);
 
     const raid_count = hook.readMem(u32, o.RAID_MEMBER_COUNT);
     if (raid_count > 0) {
@@ -161,9 +144,7 @@ fn canSetMarkers() bool {
         for (0..count) |i| {
             const entry = hook.readMem(u32, o.RAID_ROSTER_ARRAY + i * 4);
             if (entry == 0 or entry < 0x10000) continue;
-            const guid_lo = hook.readMem(u32, entry);
-            const guid_hi = hook.readMem(u32, entry + 4);
-            if (guid_lo == player_lo and guid_hi == player_hi) {
+            if (wow.readGUID(entry) == player_guid) {
                 return hook.readMem(i32, entry + o.ROSTER_ENTRY_RANK) > 0;
             }
         }
@@ -171,10 +152,8 @@ fn canSetMarkers() bool {
     }
 
     // Party: check if player is the leader
-    const leader_lo = hook.readMem(u32, o.LEADER_GUID);
-    const leader_hi = hook.readMem(u32, o.LEADER_GUID + 4);
-    if (leader_lo == 0 and leader_hi == 0) return false;
-    return player_lo == leader_lo and player_hi == leader_hi;
+    const leader_guid = wow.readGUID(o.LEADER_GUID);
+    return leader_guid != 0 and player_guid == leader_guid;
 }
 
 /// Check if a named sender has permission (leader or raid officer).
@@ -193,10 +172,8 @@ fn senderHasPermission(sender: [*:0]const u8) bool {
             if (entry == 0 or entry < 0x10000) continue;
             const rank = hook.readMem(i32, entry + o.ROSTER_ENTRY_RANK);
             if (rank <= 0) continue; // skip non-officers
-            const guid_lo = hook.readMem(u32, entry);
-            const guid_hi = hook.readMem(u32, entry + 4);
-            const name = getNameFromGUID(guid_lo, guid_hi) orelse continue;
-            if (std.mem.eql(u8, std.mem.span(name), sender_span)) {
+            const name_ptr = wow.getNameByGUID(wow.readGUID(entry));
+            if (std.mem.eql(u8, std.mem.span(name_ptr), sender_span)) {
                 return true;
             }
         }
@@ -204,10 +181,9 @@ fn senderHasPermission(sender: [*:0]const u8) bool {
     }
 
     // Party: check if sender is the leader
-    const leader_lo = hook.readMem(u32, o.LEADER_GUID);
-    const leader_hi = hook.readMem(u32, o.LEADER_GUID + 4);
-    if (leader_lo == 0 and leader_hi == 0) return false;
-    const leader_name = getNameFromGUID(leader_lo, leader_hi) orelse return false;
+    const leader_guid = wow.readGUID(o.LEADER_GUID);
+    if (leader_guid == 0) return false;
+    const leader_name = wow.getNameByGUID(leader_guid);
     return std.mem.eql(u8, std.mem.span(leader_name), sender_span);
 }
 

@@ -100,8 +100,3 @@ pub const LEADER_GUID: usize = 0x00bc75f8;
 pub const RAID_ROSTER_ARRAY: usize = 0x00b712a8;
 pub const RAID_MEMBER_COUNT: usize = 0x00b713e0;
 pub const ROSTER_ENTRY_RANK: usize = 0x0C;
-pub const PARTY_MEMBER_GUIDS: usize = 0x00bc6f48;
-
-/// RetrieveNPCDataFromCache - __thiscall(ECX=cache_obj), 6 stack params, RET 0x18.
-pub const FN_NAME_CACHE_LOOKUP: usize = 0x0055f080;
-pub const NAME_CACHE_OBJ: usize = 0x00c0e228;
