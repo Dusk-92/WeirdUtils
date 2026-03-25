@@ -118,7 +118,7 @@ Can be disabled from the normal AddOn menu. Preferences saved per-character.
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
 - "Hide in Cities" toggle suppresses NPC icons in capital cities
 
-Tracks various npc types and useful objects like Oranged and Brainwasher and Mailbox.  
+Tracks various npc types and useful objects like Oranges and Brainwasher and Mailbox.  
 
 **DLL:** `minimapicons.dll`
 
@@ -126,12 +126,15 @@ Tracks various npc types and useful objects like Oranged and Brainwasher and Mai
 
 ### Clickthrough
 
-Makes interactable objects and NPCs clickable through players and units that are blocking them. When you click a player or unit that's standing on top of a vendor, mailbox, or other interactable target, the click passes through to the target behind them.
+Smart cursor targeting that prioritizes useful interactions. Instead of always selecting the nearest object under the cursor, the module finds the most useful target along the ray in priority order: lootable corpses first, then interactable game objects, then interactable NPCs, then normal selection.
 
-- Players blocking interactable NPCs (vendors, trainers, flight masters, bankers, quest givers, etc.) or game objects become transparent to clicks
-- Players blocking lootable corpses become transparent to clicks
-- Units (pets, NPCs) blocking interactable game objects become transparent to clicks
+- Lootable corpses are always reachable, even through players, pets, and non-lootable dead bodies
+- Interactable game objects (mailboxes, portals, soulwells) are reachable through players and non-interactable units
+- Interactable NPCs (vendors, trainers, quest givers) are reachable through players
+- Dead non-lootable corpses can still be selected when nothing more useful is behind them
 - Disabled inside battlegrounds to prevent targeting objectives through enemy players
+
+Can replaces SuperWoW's `Clickthrough()` toggle with always-on smart targeting that doesn't require a manual toggle and preserves the ability to select dead bodies when needed. Disable corpse-clickthrough in SuperAPI if you want this.
 
 No configuration needed, install and forget.
 
@@ -242,12 +245,12 @@ Lua API for addon developers:
 
 ### Performance
 
-Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression. No visual difference, no configuration needed. Included in `weirdutils.dll`.
+Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression.
 
 - **SIMD Math** — replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
 - **Data Decompression** — swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
-- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the archive chain walk. Cache hits cost ~1/30th of a full search, saving 50-160ms every 15 seconds during heavy gameplay
-- **Timer Calibration** — recalibrates the TSC frequency using the OS performance counter for accurate animation timing. Requests higher OS timer resolution (0.5ms) and disables Windows 11 power throttling. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
+- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the archive chain walk. Saving 50-160ms every 15 seconds during heavy gameplay
+- **Timer Calibration** — recalibrates the OS performance counter for accurate animation timing. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
 
 Most noticeable in cities, raids, and during zone transitions.
 
