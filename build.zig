@@ -33,7 +33,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API", .default = false },
     .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
-    .{ .name = "performance", .desc = "Enable production SSE hooks (bone, particle, glyph cache)", .default = true },
+    .{ .name = "weirdperformance", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
 };
 
 pub fn build(b: *std.Build) void {

@@ -144,6 +144,119 @@ pub fn getSlotOccupant(h: u32) ?[]const u8 {
     return null;
 }
 
+// =============================================================================
+// File_FindInArchive hook (0x6549a0)
+// =============================================================================
+
+const FileFindFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
+var file_find_hook: hook.Detour(FileFindFn) = .{};
+
+fn fileFindDetour(
+    archive_or_group: u32,
+    filename_ptr: u32,
+    flags: u32,
+    out_inner_archive: u32,
+    out_outer_archive: u32,
+    out_block_entry: u32,
+    out_disk_path: u32,
+) callconv(hook.cc.fastcall) u32 {
+    if (filename_ptr == 0)
+        return file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
+
+    const tsc_start = rdtsc();
+    const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
+    const h = hashPath(path);
+
+    cache_check: {
+        const cached = archiveCacheLookup(h, path) orelse break :cache_check;
+
+        if (cached.is_negative and archive_or_group == 0) {
+            recordNegativeHit();
+            if (out_outer_archive != 0) @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
+            if (out_inner_archive != 0) @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
+            if (out_block_entry != 0) @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = 0;
+            hook.call(fn (u32) callconv(hook.cc.stdcall) void, 0x64e850, .{2});
+            addHitCycles(rdtsc() - tsc_start);
+            return 0;
+        }
+
+        if (!cached.is_negative) {
+            if (archive_or_group == 0 and out_outer_archive != 0) {
+                const valid_outer = if (cached.outer_archive != 0)
+                    hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 })
+                else
+                    0;
+                if (valid_outer == 0 and cached.outer_archive != 0) break :cache_check;
+                @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid_outer;
+                if (out_inner_archive != 0 and cached.inner_archive != 0) {
+                    const valid_inner = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid_inner;
+                } else if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
+                }
+                if (out_block_entry != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = computeBlockEntry(cached.inner_archive, cached.block_index);
+                }
+                recordCacheHit();
+                addHitCycles(rdtsc() - tsc_start);
+                return 1;
+            }
+
+            if (archive_or_group != 0 and (archive_or_group == cached.outer_archive or archive_or_group == cached.inner_archive)) {
+                if (out_outer_archive != 0 and cached.outer_archive != 0) {
+                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 });
+                    if (valid == 0) break :cache_check;
+                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid;
+                } else if (out_outer_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
+                }
+                if (out_inner_archive != 0 and cached.inner_archive != 0) {
+                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
+                    if (valid == 0) break :cache_check;
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid;
+                } else if (out_inner_archive != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
+                }
+                if (out_block_entry != 0) {
+                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = computeBlockEntry(cached.inner_archive, cached.block_index);
+                }
+                recordCacheHit();
+                addHitCycles(rdtsc() - tsc_start);
+                return 1;
+            }
+        }
+    }
+
+    recordCacheMiss();
+    const ret = file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
+    addMissCycles(rdtsc() - tsc_start);
+
+    if (archive_or_group != 0 and out_inner_archive != 0 and out_block_entry != 0) {
+        if (ret == 1) {
+            const inner = hook.readMem(u32, out_inner_archive);
+            const block = hook.readMem(u32, out_block_entry);
+            archiveCacheInsert(h, path, archive_or_group, inner, block, false);
+        }
+    }
+    if (archive_or_group == 0 and ret == 0) {
+        archiveCacheInsert(h, path, 0, 0, 0, true);
+    }
+
+    return ret;
+}
+
+pub fn install() bool {
+    return file_find_hook.attach(0x6549a0, &fileFindDetour) == .ok;
+}
+
+pub fn remove() void {
+    file_find_hook.detach();
+}
+
+// =============================================================================
+// Stats
+// =============================================================================
+
 fn pct(part: u64, total: u64) u64 {
     if (total == 0) return 0;
     return part *| 1000 / total;

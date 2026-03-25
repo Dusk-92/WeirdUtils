@@ -109,19 +109,16 @@ No configuration needed, install and forget.
 
 ### Utility Minimap Trackings
 
-Adds TBC/WotLK-style minimap tracking icons for NPC types, game objects, and quest givers.
-Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.
-Can be disabled from the normal AddOn menu. Preferences saved per-character.
+Adds TBC/WotLK-style minimap tracking icons for NPC types, game objects, and quest givers.  
+Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
+Can be disabled from the normal AddOn menu. Preferences saved per-character.  
 
 - Click the minimap tracking icon to open the dropdown
 - Check/uncheck NPC categories to toggle their minimap icons
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
 - "Hide in Cities" toggle suppresses NPC icons in capital cities
 
-NPC types: Auctioneer, Banker, Battle Master, Flight Master, Innkeeper, Repair, Stable Master, Class Trainer, Profession Trainer, and five vendor subtypes (Reagent, Poison, Trade Goods, Ammunition, General)
-Game objects: Mailbox, Refreshment Table, Goblin Brainwashing Device
-Quest tracking: nearby NPCs with available quests (yellow !) on the minimap
-Vendor subtypes are identified by localized subname matching (EN, FR, DE, CN, ES, RU)
+Tracks various npc types and useful objects like Oranged and Brainwasher and Mailbox.  
 
 **DLL:** `minimapicons.dll`
 
@@ -249,10 +246,12 @@ Engine-level optimizations that reduce CPU time on math, rendering helpers, file
 
 - **SIMD Math** — replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
 - **Data Decompression** — swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
-- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the expensive archive chain walk. Cache hits cost ~1/30th of a full search, saving 50-160ms every 15 seconds during heavy gameplay
+- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the archive chain walk. Cache hits cost ~1/30th of a full search, saving 50-160ms every 15 seconds during heavy gameplay
 - **Timer Calibration** — recalibrates the TSC frequency using the OS performance counter for accurate animation timing. Requests higher OS timer resolution (0.5ms) and disables Windows 11 power throttling. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
 
 Most noticeable in cities, raids, and during zone transitions.
+
+**DLL:** `weirdperformance.dll`
 
 ---
 
@@ -281,7 +280,7 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 
 Module names are case-insensitive and match the released dll names:
 
-`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`, `dpslog`, `filecache`, `performance`
+`customassets`, `framecrash`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `interact`, `outline`, `pngscreenshots`, `clickthrough`, `dpslog`, `weirdperformance`
 
 There is no re-enable API.
 

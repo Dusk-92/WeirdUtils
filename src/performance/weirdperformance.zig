@@ -20,7 +20,7 @@ const inflate_hook = @import("inflate_hook.zig");
 const timer_fix = @import("timer_fix.zig");
 const filecache = @import("filecache.zig");
 
-pub const module_name: [*:0]const u8 = "performance";
+pub const module_name: [*:0]const u8 = "weirdperformance";
 
 // Provide malloc/free for libdeflate's default allocator (linked without libc).
 // Use game's Storm memory manager:
@@ -287,6 +287,9 @@ pub fn installHooks() void {
     // Silicon SSE binary patches
     const patched = installPatches();
 
+    // MPQ file cache
+    if (filecache.install()) installed += 1;
+
     // libdeflate inflate replacement
     if (inflate_hook.install(log)) installed += 1;
 
@@ -310,6 +313,7 @@ pub fn removeHooks() void {
     if (g_is_hook_owner) {
         inflate_hook.dumpStats();
         filecache.dumpStats(&log);
+        filecache.remove();
         inflate_hook.remove();
         transform_hook.detach();
         particle_hook.detach();

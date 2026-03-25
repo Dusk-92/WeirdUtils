@@ -20,10 +20,9 @@ const build_opts = struct {
     const dpslog = @import("build_options").enable_dpslog;
     const transform44 = @import("build_options").enable_transform44;
     const addonperf = @import("build_options").enable_addonperf;
-    const filecache = @import("build_options").enable_filecache;
     const ssemaths = @import("build_options").enable_ssemaths;
     const silicon = @import("build_options").enable_silicon;
-    const performance = @import("build_options").enable_performance;
+    const weirdperformance = @import("build_options").enable_weirdperformance;
 };
 
 // Conditional module imports
@@ -43,9 +42,8 @@ const dpslog = if (build_opts.dpslog) @import("dpslog/dpslog.zig") else struct {
 const transform44 = if (build_opts.transform44) @import("transform44/transform44.zig") else struct {};
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
-const file_cache = if (build_opts.performance) @import("performance/filecache.zig") else struct {};
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
-const performance = if (build_opts.performance) @import("performance/performance.zig") else struct {};
+const weirdperformance = if (build_opts.weirdperformance) @import("performance/weirdperformance.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -282,13 +280,6 @@ var process_async_hook: hook.Detour(ProcessAsyncFn) = .{};
 
 const LoadModelFn = fn (u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var model_load_hook: hook.Detour(LoadModelFn) = .{};
-
-// File_FindInArchive (0x6549a0) — Storm internal MPQ file lookup
-// __fastcall(ECX=archive_or_group, EDX=filename, stack: flags, out_inner_archive,
-//            out_outer_archive, out_block_entry, out_disk_path) → int
-// Returns: 0=not found, 1=found in MPQ, 2=found on disk, 3=deleted
-const FileFindFn = fn (u32, u32, u32, u32, u32, u32, u32) callconv(hook.cc.fastcall) u32;
-var file_find_hook: hook.Detour(FileFindFn) = .{};
 
 // Windows API imports for async handling
 extern "kernel32" fn EnterCriticalSection(lpCriticalSection: *anyopaque) callconv(WINAPI) void;
@@ -600,109 +591,6 @@ fn checkFileExistenceDetour(filename_ptr: u32, flags: u32, output_buffer_ptr: u3
 // Intercepts the core MPQ file lookup to skip both chain walk and hash lookup
 // on repeat opens. Caches {outer_archive, inner_archive, block_entry} per file.
 //
-// Called from two paths during each open:
-// 1. FindFileInArchive wrapper (param_1=0): walks all archives, uses param_5 for output
-// 2. File_FindInStorage (param_1=specific): single archive, uses param_4 + param_6
-//
-// We cache on path 2 (has all data), serve both paths from cache on subsequent opens.
-
-fn fileFindDetour(
-    archive_or_group: u32, // ECX: 0 = search all, else specific archive/group
-    filename_ptr: u32, // EDX: filename string
-    flags: u32,
-    out_inner_archive: u32, // ptr to ptr: inner archive (File_FindInStorage uses this)
-    out_outer_archive: u32, // ptr to ptr: outer archive (FindFileInArchive wrapper uses this)
-    out_block_entry: u32, // ptr to ptr: block table entry data
-    out_disk_path: u32, // ptr to buf: disk path output
-) callconv(hook.cc.fastcall) u32 {
-    if (!build_opts.performance or filename_ptr == 0)
-        return file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
-
-    const tsc_start = file_cache.rdtsc();
-    const path: [*:0]const u8 = @ptrFromInt(filename_ptr);
-    const h = file_cache.hashPath(path);
-
-    cache_check: {
-        const cached = file_cache.archiveCacheLookup(h, path) orelse break :cache_check;
-
-        if (cached.is_negative and archive_or_group == 0) {
-            file_cache.recordNegativeHit();
-            if (out_outer_archive != 0) @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
-            if (out_inner_archive != 0) @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
-            if (out_block_entry != 0) @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = 0;
-            hook.call(fn (u32) callconv(hook.cc.stdcall) void, 0x64e850, .{2});
-            file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
-            return 0;
-        }
-
-        if (!cached.is_negative) {
-            // Path 1: search-all
-            if (archive_or_group == 0 and out_outer_archive != 0) {
-                const valid_outer = if (cached.outer_archive != 0)
-                    hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 })
-                else
-                    0;
-                if (valid_outer == 0 and cached.outer_archive != 0) break :cache_check;
-                @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid_outer;
-                if (out_inner_archive != 0 and cached.inner_archive != 0) {
-                    const valid_inner = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid_inner;
-                } else if (out_inner_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
-                }
-                if (out_block_entry != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = file_cache.computeBlockEntry(cached.inner_archive, cached.block_index);
-                }
-                file_cache.recordCacheHit();
-                file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
-                return 1;
-            }
-
-            // Path 2: specific archive
-            if (archive_or_group != 0 and (archive_or_group == cached.outer_archive or archive_or_group == cached.inner_archive)) {
-                if (out_outer_archive != 0 and cached.outer_archive != 0) {
-                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.outer_archive, 0 });
-                    if (valid == 0) break :cache_check;
-                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = valid;
-                } else if (out_outer_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_outer_archive)).* = 0;
-                }
-                if (out_inner_archive != 0 and cached.inner_archive != 0) {
-                    const valid = hook.call(fn (u32, u32) callconv(hook.cc.fastcall) u32, 0x650780, .{ cached.inner_archive, 0 });
-                    if (valid == 0) break :cache_check;
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = valid;
-                } else if (out_inner_archive != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_inner_archive)).* = 0;
-                }
-                if (out_block_entry != 0) {
-                    @as(*align(1) u32, @ptrFromInt(out_block_entry)).* = file_cache.computeBlockEntry(cached.inner_archive, cached.block_index);
-                }
-                file_cache.recordCacheHit();
-                file_cache.addHitCycles(file_cache.rdtsc() - tsc_start);
-                return 1;
-            }
-        }
-    }
-
-    // Cache miss — call original and populate cache
-    file_cache.recordCacheMiss();
-    const ret = file_find_hook.callOriginal(.{ archive_or_group, filename_ptr, flags, out_inner_archive, out_outer_archive, out_block_entry, out_disk_path });
-    file_cache.addMissCycles(file_cache.rdtsc() - tsc_start);
-
-    if (archive_or_group != 0 and out_inner_archive != 0 and out_block_entry != 0) {
-        if (ret == 1) {
-            const inner = hook.readMem(u32, out_inner_archive);
-            const block = hook.readMem(u32, out_block_entry);
-            file_cache.archiveCacheInsert(h, path, archive_or_group, inner, block, false);
-        }
-    }
-    if (archive_or_group == 0 and ret == 0) {
-        file_cache.archiveCacheInsert(h, path, 0, 0, 0, true);
-    }
-
-    return ret;
-}
-
 // --- Install/remove in-memory file hooks ---
 
 fn installFileHooks() void {
@@ -712,15 +600,10 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
-    if (build_opts.performance) {
-        _ = file_find_hook.attach(0x6549a0, &fileFindDetour);
-        log.print("archive cache hook installed\n");
-    }
     log.print("in-memory file hooks installed\n");
 }
 
 fn removeFileHooks() void {
-    file_find_hook.detach();
     cfe_hook.detach();
     model_load_hook.detach();
     process_async_hook.detach();
@@ -856,7 +739,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
     if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
     if (build_opts.silicon) .{ .name = silicon.module_name, .install = silicon.installHooks, .remove = silicon.removeHooks, .is_active = silicon.isActive } else .{},
-    if (build_opts.performance) .{ .name = performance.module_name, .install = performance.installHooks, .remove = performance.removeHooks, .is_active = performance.isActive } else .{},
+    if (build_opts.weirdperformance) .{ .name = weirdperformance.module_name, .install = weirdperformance.installHooks, .remove = weirdperformance.removeHooks, .is_active = weirdperformance.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
