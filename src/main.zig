@@ -214,6 +214,7 @@ fn luaGetWeirdUtilsVersion(L_ecx: usize) callconv(hook.cc.fastcall) u32 {
 
 const build_options = @import("build_options");
 const addons = @import("addons.zig");
+const mod_mutex = @import("mutex.zig");
 const findEmbeddedFile = addons.findEmbeddedFile;
 
 // =============================================================================
@@ -753,36 +754,47 @@ fn shutdownDetour() callconv(hook.cc.stdcall) void {
 // Init / Cleanup
 // =============================================================================
 
+var g_core_mutex: ?*anyopaque = null;
+var g_core_owner: bool = false;
+
 fn install() void {
     logging.init();
     log = logging.Logger.open("weirdutils", .console);
-    log.print("Installing hooks\n");
-    _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
-    installFileHooks();
-    _ = file_hook.attach(0x648620, &loadFileDetour);
-    _ = register_commands_hook.attach(0x490250, &registerAllSystemCommandsDetour);
-    _ = glue_commands_hook.attach(0x46ABB0, &glueLoadScriptFunctionsDetour);
 
+    // Core mutex gates shared infrastructure hooks (file serving, Lua registration,
+    // engine init/shutdown). Prevents double-hooking when both weirdutils.dll and
+    // a standalone module DLL are loaded in the same process.
+    const core = mod_mutex.acquire("weirdutils");
+    g_core_mutex = core.handle;
+    g_core_owner = core.is_owner;
+
+    if (g_core_owner) {
+        log.print("Installing core hooks\n");
+        _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
+        installFileHooks();
+        _ = file_hook.attach(0x648620, &loadFileDetour);
+        _ = register_commands_hook.attach(0x490250, &registerAllSystemCommandsDetour);
+        _ = glue_commands_hook.attach(0x46ABB0, &glueLoadScriptFunctionsDetour);
+        _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
+        _ = logout_hook.attach(0x491180, &logoutDetour);
+        _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
+    }
+
+    // Module hooks always run (each module has its own mutex)
     inline for (modules) |m| {
         if (m.install) |inst| inst();
-        // Register isActive for addons.zig runtime lookup
         if (m.name) |name| {
             if (m.is_active) |f| module_active.register(name, f);
         }
     }
 
+    // Addon registration runs for every DLL (LoadAddonTOC is idempotent).
+    // Each DLL only registers its own compiled-in module addons.
     addons.install();
-    _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
-    _ = logout_hook.attach(0x491180, &logoutDetour);
-    _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
 }
 
 fn uninstall() void {
-    shutdown_hook.detach();
-    logout_hook.detach();
-    engine_init_hook.detach();
-
-    // Remove in reverse order
+    // Remove modules in reverse order
     comptime var i = modules.len;
     inline while (i > 0) {
         i -= 1;
@@ -790,11 +802,18 @@ fn uninstall() void {
     }
 
     addons.uninstall();
-    register_commands_hook.detach();
-    glue_commands_hook.detach();
-    file_hook.detach();
-    removeFileHooks();
-    protection_hook.detach();
+
+    if (g_core_owner) {
+        shutdown_hook.detach();
+        logout_hook.detach();
+        engine_init_hook.detach();
+        register_commands_hook.detach();
+        glue_commands_hook.detach();
+        file_hook.detach();
+        removeFileHooks();
+        protection_hook.detach();
+    }
+    mod_mutex.release(&g_core_mutex);
     logging.deinit();
 }
 
@@ -864,16 +883,17 @@ fn disableAll() callconv(.c) i32 {
     }
     addons.pruneInactivePrefixes();
 
-    // Detach core hooks
-    shutdown_hook.detach();
-    logout_hook.detach();
-    engine_init_hook.detach();
-    addons.uninstall();
-    register_commands_hook.detach();
-    glue_commands_hook.detach();
-    file_hook.detach();
-    removeFileHooks();
-    protection_hook.detach();
+    if (g_core_owner) {
+        shutdown_hook.detach();
+        logout_hook.detach();
+        engine_init_hook.detach();
+        addons.uninstall();
+        register_commands_hook.detach();
+        glue_commands_hook.detach();
+        file_hook.detach();
+        removeFileHooks();
+        protection_hook.detach();
+    }
 
     return count;
 }
