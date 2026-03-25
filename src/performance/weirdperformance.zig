@@ -154,6 +154,7 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
 // cull_sse.zig
 extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
 
 // silicon_sse.zig
 const sse = struct {
@@ -225,6 +226,7 @@ fn installPatches() u32 {
         .{ .target = 0x686000, .replacement = @intFromPtr(&sse.si_frustumCullBBox), .name = "frustumCullBBox" },
         .{ .target = 0x6B8C60, .replacement = @intFromPtr(&performSpatialCulling), .name = "PerformSpatialCulling" },
         .{ .target = 0x6B88E0, .replacement = @intFromPtr(&performCollisionDetectionSSE), .name = "performCollisionDetection" },
+        .{ .target = 0x7C2C40, .replacement = @intFromPtr(&rayTriIntersectIndexedInt), .name = "rayTriIndexedInt" },
     };
 
     var count: u32 = 0;

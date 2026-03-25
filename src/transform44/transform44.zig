@@ -29,6 +29,7 @@ extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }
 extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
 extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
 extern fn updateEntitiesInBoundsSSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
 extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var stride_info: [8]u32; // exported from particle_sse.zig
@@ -206,6 +207,10 @@ const ProfState = struct {
     cylfrust_cycles: u64 = 0,
     rendersph_calls: u64 = 0, // RenderSphere (0x6b92b0) -- parent of SetupCylinderFrustum
     rendersph_cycles: u64 = 0,
+    raytri_int_calls: u64 = 0, // ray_triangle_intersection_indexed_int (0x7c2c40)
+    raytri_int_cycles: u64 = 0,
+    staticcull_calls: u64 = 0, // ProcessStaticObjectsCulling (0x683bf0)
+    staticcull_cycles: u64 = 0,
 };
 
 // =============================================================================
@@ -881,6 +886,8 @@ var textline_hook: hook.Detour(Fn6) = .{}; // renderTextLine: thiscall RET 0x10
 var viewfrust_hook: hook.Detour(Fn5) = .{}; // SetupViewFrustum: thiscall RET 0xC
 var cylfrust_hook: hook.Detour(Fn5) = .{}; // SetupCylinderFrustum: thiscall RET 0xC
 var rendersph_hook: hook.Detour(Fn8v) = .{}; // RenderSphere: thiscall RET 0x18
+var raytri_int_hook: hook.Detour(Fn6) = .{}; // ray_tri_indexed_int: fastcall RET 0x10
+var staticcull_hook: hook.Detour(Fn2) = .{}; // ProcessStaticObjectsCulling: fastcall RET
 
 // --- Detour functions (timing-only pass-through) ---
 
@@ -1227,6 +1234,26 @@ fn rendersphDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u3
     prof.rendersph_calls +|= 1;
     return ret;
 }
+fn raytriIntDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    const s = rdtsc();
+    if (AB_OTHER_HOOKS and ab_use_custom) {
+        const ret = rayTriIntersectIndexedInt(a, b, c, d, e, f);
+        prof.raytri_int_cycles +|= rdtsc() - s;
+        prof.raytri_int_calls +|= 1;
+        return @ptrFromInt(@as(u32, ret));
+    }
+    const ret = raytri_int_hook.callOriginal(.{ a, b, c, d, e, f });
+    prof.raytri_int_cycles +|= rdtsc() - s;
+    prof.raytri_int_calls +|= 1;
+    return ret;
+}
+fn staticcullDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    const s = rdtsc();
+    const ret = staticcull_hook.callOriginal(.{ a, b });
+    prof.staticcull_cycles +|= rdtsc() - s;
+    prof.staticcull_calls +|= 1;
+    return ret;
+}
 
 // =============================================================================
 // Hook: blit_hub (0x5a4f60)
@@ -1470,6 +1497,8 @@ fn dumpStats() void {
         .{ .name = "viewfrust", .cycles = prof.viewfrust_cycles, .calls = prof.viewfrust_calls },
         .{ .name = "cylfrust",  .cycles = prof.cylfrust_cycles,  .calls = prof.cylfrust_calls },
         .{ .name = "rendersph", .cycles = prof.rendersph_cycles, .calls = prof.rendersph_calls },
+        .{ .name = "raytri_int", .cycles = prof.raytri_int_cycles, .calls = prof.raytri_int_calls },
+        .{ .name = "staticcull", .cycles = prof.staticcull_cycles, .calls = prof.staticcull_calls },
     };
     for (hotspots) |h| {
         if (h.calls > 0) {
@@ -1629,6 +1658,9 @@ pub fn installHooks() void {
     _ = viewfrust_hook.attach(0x6bc1c0, &viewfrustDetour);
     _ = cylfrust_hook.attach(0x6bc370, &cylfrustDetour);
     _ = rendersph_hook.attach(0x6b92b0, &rendersphDetour);
+    // raytri_int graduated to weirdperformance JMP patch
+    // _ = raytri_int_hook.attach(0x7c2c40, &raytriIntDetour);
+    _ = staticcull_hook.attach(0x683bf0, &staticcullDetour);
 
     // Timer calibration now handled by performance module.
 
@@ -1709,6 +1741,8 @@ pub fn removeHooks() void {
         viewfrust_hook.detach();
         cylfrust_hook.detach();
         rendersph_hook.detach();
+        raytri_int_hook.detach();
+        staticcull_hook.detach();
         blit_hub_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);

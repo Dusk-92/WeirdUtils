@@ -35,6 +35,79 @@ export fn benchComputeOutcodes(verts_ptr: u32, bounds_ptr: u32, out_ptr: u32, co
 }
 
 // =============================================================================
+// ray_triangle_intersection_indexed_int (0x7C2C40)
+// Same Moller-Trumbore as _indexed_ushort but indices are int* not u16*.
+// fastcall(ECX=ray, EDX=vertPool, stack: indices, tOut, normalOut, epsilon)
+// RET 0x10
+// =============================================================================
+
+export fn rayTriIntersectIndexedInt(
+    ray_ptr: u32,
+    vert_pool: u32,
+    indices_ptr: u32,
+    t_out: u32,
+    normal_out: u32,
+    epsilon_bits: u32,
+) callconv(.{ .x86_fastcall = .{} }) u8 {
+    const epsilon: f32 = @bitCast(epsilon_bits);
+    const neg_eps = -epsilon;
+    const one_plus_eps = 1.0 + epsilon;
+
+    // Indices are int (4 bytes each), not u16
+    const idx0: u32 = @bitCast(readI32(indices_ptr));
+    const idx1: u32 = @bitCast(readI32(indices_ptr + 4));
+    const idx2: u32 = @bitCast(readI32(indices_ptr + 8));
+
+    const v0 = loadVec3(vert_pool + idx0 * 12);
+    const v1 = loadVec3(vert_pool + idx1 * 12);
+    const v2 = loadVec3(vert_pool + idx2 * 12);
+    const ray_origin = loadVec3(ray_ptr);
+    const ray_dir = loadVec3(ray_ptr + 12);
+
+    const edge1 = v1 - v0;
+    const edge2 = v2 - v0;
+    const pvec = cross(ray_dir, edge2);
+    const det = dot3(edge1, pvec);
+
+    if (det > -1e-6 and det < 1e-6) return 0;
+
+    const tvec = ray_origin - v0;
+    const u_raw = dot3(tvec, pvec);
+
+    const det_neg_eps = det * neg_eps;
+    const det_one_plus = det * one_plus_eps;
+    if (det > 0) {
+        if (u_raw < det_neg_eps or u_raw > det_one_plus) return 0;
+    } else {
+        if (u_raw > det_neg_eps or u_raw < det_one_plus) return 0;
+    }
+
+    const qvec = cross(tvec, edge1);
+    const v_raw = dot3(ray_dir, qvec);
+
+    if (det > 0) {
+        if (v_raw < det_neg_eps or (u_raw + v_raw) > det_one_plus) return 0;
+    } else {
+        if (v_raw > det_neg_eps or (u_raw + v_raw) < det_one_plus) return 0;
+    }
+
+    // Hit confirmed -- only divide now
+    const inv_det = 1.0 / det;
+    if (t_out != 0) {
+        @as(*align(1) f32, @ptrFromInt(t_out)).* = dot3(edge2, qvec) * inv_det;
+    }
+    if (normal_out != 0) {
+        @as(*align(1) f32, @ptrFromInt(normal_out)).* = u_raw * inv_det;
+        @as(*align(1) f32, @ptrFromInt(normal_out + 4)).* = v_raw * inv_det;
+    }
+    return 1;
+}
+
+fn readI32(addr: u32) i32 {
+    return @as(*align(1) const i32, @ptrFromInt(addr)).*;
+}
+
+// =============================================================================
 // Game hook exports
 // =============================================================================
 
