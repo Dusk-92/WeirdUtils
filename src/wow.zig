@@ -124,7 +124,7 @@ pub fn getNpcFlags(obj: u32) u32 {
 
 pub fn isLootable(obj: u32) bool {
     const desc = getDescriptor(obj);
-    if (!isValidPtr(desc)) return 0 != 0;
+    if (!isValidPtr(desc)) return false;
     return (hook.readMem(u32, desc + o.DESC_UNIT_DYNAMIC_FLAGS) & o.UNIT_DYNFLAG_LOOTABLE) != 0;
 }
 

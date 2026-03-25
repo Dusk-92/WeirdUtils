@@ -42,11 +42,12 @@ pub const DESC_ENTRY: usize = 0x03 * 4;
 /// UNIT_NPC_FLAGS = OBJECT_END(0x06) + 0x8D = 0x93
 pub const DESC_NPC_FLAGS: usize = 0x93 * 4;
 
-/// UNIT_DYNAMIC_FLAGS = OBJECT_END(0x06) + 0x90 = 0x96
-pub const DESC_UNIT_DYNAMIC_FLAGS: usize = 0x96 * 4;
+/// UNIT_DYNAMIC_FLAGS: server UpdateFields index 143 (0x8F), byte offset 0x23C
+pub const DESC_UNIT_DYNAMIC_FLAGS: usize = 0x8F * 4;
 
-/// Bit 0: unit corpse is lootable by the local player.
-pub const UNIT_DYNFLAG_LOOTABLE: u32 = 0x01;
+pub const UNIT_DYNFLAG_LOOTABLE: u32 = 0x0001;
+pub const UNIT_DYNFLAG_TAPPED: u32 = 0x0004;
+pub const UNIT_DYNFLAG_TAPPED_BY_PLAYER: u32 = 0x0008;
 
 /// GAMEOBJECT_TYPE_ID (index 0x15)
 pub const DESC_GO_TYPE: usize = 0x15 * 4;

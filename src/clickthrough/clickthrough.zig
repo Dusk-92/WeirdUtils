@@ -1,12 +1,18 @@
 //! Click-through module.
 //!
-//! Makes interactable objects clickable through players and units by hooking
-//! WorldIntersectionTest (0x480DF0). When the raycast hits a player, we
-//! re-raycast without players to find interactable NPCs or GOs behind them.
-//! When it hits a unit, we re-raycast GO-only to find interactable GOs.
+//! Priority raycast cascade: instead of one raycast that picks the nearest
+//! object, we run up to 3 filtered raycasts in priority order. Each pass
+//! uses custom flag bits in CanTargetEntity to exclude unwanted objects at
+//! the raycast level (terrain/WMO occlusion applies per pass).
+//!
+//!   Pass 1 (loot):  only lootable corpses
+//!   Pass 2 (GO):    only interactable game objects
+//!   Pass 3 (NPC):   only units with NPC interaction flags
+//!   Fallthrough:     normal unfiltered behavior
 //!
 //! Hooks:
-//!   WorldIntersectionTest (0x480DF0) -- sole raycast entry, called from HitTestPoint
+//!   CanTargetEntity (0x480610) - per-object filter, reads custom flag bits
+//!   WorldIntersectionTest (0x480DF0) - runs the cascade
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -18,10 +24,11 @@ const wow = @import("../wow.zig");
 pub const module_name: [*:0]const u8 = "clickthrough";
 
 // =============================================================================
-// WoW addresses (module-specific)
+// Addresses
 // =============================================================================
 
 const ADDR_WorldIntersectionTest: usize = 0x480DF0;
+const ADDR_CanTargetEntity: usize = 0x480610;
 
 // =============================================================================
 // HitTestResult layout
@@ -31,41 +38,14 @@ const HIT_GUID_LO: usize = 0x00;
 const HIT_GUID_HI: usize = 0x04;
 const HIT_RESULT_SIZE: usize = 0x34;
 
-// Object struct offsets
-const OBJ_TYPE_MASK_OFFSET: usize = 0x08; // at *(*(obj+8)+8)
+// =============================================================================
+// Custom raycast flag bits (upper bits unused by game)
+// =============================================================================
 
-// Type masks
-const TYPE_UNIT: u32 = 0x09;
-const TYPE_PLAYER: u32 = 0x19;
-
-// Raycast flags
-const FLAG_GO: u32 = 0x04;
-
-/// Check if the GUID refers to an interactable GO.
-fn isInteractableGO(guid_lo: u32, guid_hi: u32) bool {
-    const obj = wow.getObjectByGUIDSplit(guid_lo, guid_hi);
-    if (obj == 0) return false;
-    if (wow.getObjectTypeRaw(obj) != @intFromEnum(wow.ObjectType.game_object)) return false;
-    return hook.call(fn (u32) callconv(hook.cc.fastcall) u8, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}) != 0;
-}
-
-/// Check if the GUID refers to an interactable unit: NPC with interaction flags,
-/// or a lootable corpse (dead unit with UNIT_DYNFLAG_LOOTABLE).
-fn isInteractableNPC(guid_lo: u32, guid_hi: u32) bool {
-    const obj = wow.getObjectByGUIDSplit(guid_lo, guid_hi);
-    if (obj == 0) return false;
-    if (wow.getObjectTypeRaw(obj) != @intFromEnum(wow.ObjectType.unit)) return false;
-    if (wow.getNpcFlags(obj) != 0) return true;
-    return wow.isLootable(obj);
-}
-
-/// Check if the second raycast result is something we should click through to.
-fn isClickthroughTarget(guid_lo: u32, guid_hi: u32, allow_npcs: bool) bool {
-    if (guid_lo == 0 and guid_hi == 0) return false;
-    if (isInteractableGO(guid_lo, guid_hi)) return true;
-    if (allow_npcs and isInteractableNPC(guid_lo, guid_hi)) return true;
-    return false;
-}
+const FLAG_LOOT_ONLY: u32 = 0x01000000; // pass 1: only lootable corpses
+const FLAG_GO_ONLY: u32 = 0x02000000; // pass 2: only interactable GOs
+const FLAG_NPC_ONLY: u32 = 0x04000000; // pass 3: only interactable NPCs
+const FLAG_CUSTOM_MASK: u32 = FLAG_LOOT_ONLY | FLAG_GO_ONLY | FLAG_NPC_ONLY;
 
 // =============================================================================
 // Hook state
@@ -73,66 +53,105 @@ fn isClickthroughTarget(guid_lo: u32, guid_hi: u32, allow_npcs: bool) bool {
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var log: logging.Logger = .{};
 
-// WorldIntersectionTest: __thiscall(ECX=worldFrame, rayStart*, rayEnd*, flags, hitResult*) -> hitType
-// RET 0x10 (4 stack args)
+// CanTargetEntity: CanTargetEntity(void *obj, uint permissionFlags) -> undefined*
+// Returns non-NULL to include object, NULL to exclude.
+// __cdecl-ish but called with obj as first stack arg from CheckObjectTypePermissions.
+// Assembly: PUSH permFlags; PUSH objPtr; CALL CanTargetEntity
+// Actually looking at the call site it passes obj in register and flags on stack.
+// Let me verify from the CheckObjectTypePermissions assembly.
+// From decompile: puVar4 = CanTargetEntity(pvVar3, permissionFlags);
+// pvVar3 is the resolved object pointer. permissionFlags is the raycast flags.
+// The function signature from Ghidra: CanTargetEntity(void *param_1, uint param_2)
+// Not thiscall/fastcall - it's a regular call with two stack args.
+
+const CanTargetFn = fn (u32, u32) callconv(.{ .x86_stdcall = .{} }) u32;
+var cte_hook: hook.Detour(CanTargetFn) = .{};
+
 const WorldIntersectFn = fn (u32, u32, u32, u32, u32) callconv(hook.cc.thiscall) u32;
 var wit_hook: hook.Detour(WorldIntersectFn) = .{};
 
-var log: logging.Logger = .{};
+// =============================================================================
+// Hook: CanTargetEntity (0x480610)
+// Per-object filter called during raycast enumeration.
+// When custom flag bits are set, exclude objects that don't match the pass.
+// =============================================================================
+
+fn canTargetDetour(obj: u32, perm_flags: u32) callconv(.{ .x86_stdcall = .{} }) u32 {
+    // Strip custom bits before passing to original
+    const clean_flags = perm_flags & ~FLAG_CUSTOM_MASK;
+    const original = cte_hook.callOriginal(.{ obj, clean_flags });
+
+    // If original says exclude, respect that
+    if (original == 0) return 0;
+
+    // No custom filtering active - pass through
+    if ((perm_flags & FLAG_CUSTOM_MASK) == 0) return original;
+
+    // Custom pass filtering
+    if ((perm_flags & FLAG_LOOT_ONLY) != 0) {
+        // Only lootable corpses pass
+        if (!wow.isLootable(obj)) return 0;
+        return original;
+    }
+
+    if ((perm_flags & FLAG_GO_ONLY) != 0) {
+        // Only interactable GOs pass
+        const desc = wow.getDescriptor(obj);
+        if (!wow.isValidPtr(desc)) return 0;
+        const type_mask = hook.readMem(u32, desc + 0x08);
+        if (type_mask != 0x21) return 0; // not a GO
+        // Check interactability
+        if (hook.call(fn (u32) callconv(hook.cc.fastcall) u8, offsets.FN_CALL_SPELL_CAST_HANDLER, .{obj}) == 0)
+            return 0;
+        return original;
+    }
+
+    if ((perm_flags & FLAG_NPC_ONLY) != 0) {
+        // Only units with NPC interaction flags pass
+        if (wow.getNpcFlags(obj) == 0) return 0;
+        return original;
+    }
+
+    return original;
+}
 
 // =============================================================================
 // Hook: WorldIntersectionTest (0x480DF0)
-// Called from HitTestPoint with the ray and flags. We call original, check
-// the result, and if it's a unit/player, re-call with GO-only flags.
+// Priority raycast cascade: loot > GO > NPC > normal
 // =============================================================================
 
 fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u32, hit_result: u32) callconv(hook.cc.thiscall) u32 {
-    // Call original with caller's flags
-    const hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, flags, hit_result });
+    // Don't cascade if we're already in a custom pass (prevent recursion)
+    // or if in a battleground
+    if (!g_is_hook_owner or (flags & FLAG_CUSTOM_MASK) != 0 or wow.isInBattleground()) {
+        return wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, flags, hit_result });
+    }
 
-    // No click-through in battlegrounds
-    if (!g_is_hook_owner or hit_result == 0 or hit_type != 2 or wow.isInBattleground()) return hit_type;
+    // Pass 1: lootable corpses (units + dead + our custom filter)
+    {
+        const loot_flags = (flags | FLAG_LOOT_ONLY) & ~@as(u32, 0x10); // include units, exclude players
+        const hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, loot_flags, hit_result });
+        if (hit_type == 2) return hit_type;
+    }
 
-    // hitType 2 = object hit. Check if it's a unit/player.
-    const buf_lo = hook.readMem(u32, hit_result + HIT_GUID_LO);
-    const buf_hi = hook.readMem(u32, hit_result + HIT_GUID_HI);
+    // Pass 2: interactable game objects
+    {
+        const go_flags = (flags | FLAG_GO_ONLY);
+        const hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, go_flags, hit_result });
+        if (hit_type == 2) return hit_type;
+    }
 
-    if (buf_lo == 0 and buf_hi == 0) return hit_type;
+    // Pass 3: interactable NPCs
+    {
+        const npc_flags = (flags | FLAG_NPC_ONLY) & ~@as(u32, 0x10); // include units, exclude players
+        const hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, npc_flags, hit_result });
+        if (hit_type == 2) return hit_type;
+    }
 
-    const obj = wow.getObjectByGUIDSplit(buf_lo, buf_hi);
-    if (obj == 0) return hit_type;
-
-    const desc_ptr = wow.getDescriptor(obj);
-    if (!wow.isValidPtr(desc_ptr)) return hit_type;
-
-    const type_mask = hook.readMem(u32, desc_ptr + OBJ_TYPE_MASK_OFFSET);
-
-    // Determine re-raycast flags and whether NPCs are valid targets:
-    //   Player hit → remove player flag, allow NPCs + GOs (including lootable corpses)
-    //   Unit hit   → GO-only flags, only allow GOs
-    const recast_flags: u32 = switch (type_mask) {
-        TYPE_PLAYER => flags & ~@as(u32, 0x10), // everything except players
-        TYPE_UNIT => FLAG_GO, // GOs only
-        else => return hit_type,
-    };
-    const allow_npcs = (type_mask == TYPE_PLAYER);
-
-    var recast_result = [_]u8{0} ** HIT_RESULT_SIZE;
-    const recast_hit_type = wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, recast_flags, @intFromPtr(&recast_result) });
-
-    if (recast_hit_type < 2) return hit_type;
-
-    const r_guid_lo = std.mem.readInt(u32, recast_result[HIT_GUID_LO..][0..4], .little);
-    const r_guid_hi = std.mem.readInt(u32, recast_result[HIT_GUID_HI..][0..4], .little);
-
-    if (!isClickthroughTarget(r_guid_lo, r_guid_hi, allow_npcs)) return hit_type;
-
-    // Replace the caller's hitResult with the recast result
-    const dst: [*]u8 = @ptrFromInt(hit_result);
-    @memcpy(dst[0..HIT_RESULT_SIZE], &recast_result);
-
-    return recast_hit_type;
+    // Fallthrough: normal unfiltered raycast
+    return wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, flags, hit_result });
 }
 
 // =============================================================================
@@ -150,14 +169,15 @@ pub fn installHooks() void {
     if (!g_is_hook_owner) return;
 
     log = logging.Logger.open(module_name, .console);
+    _ = cte_hook.attach(ADDR_CanTargetEntity, &canTargetDetour);
     _ = wit_hook.attach(ADDR_WorldIntersectionTest, &worldIntersectDetour);
-
-    log.fmt("WorldIntersectionTest hooked at 0x{x}\n", .{ADDR_WorldIntersectionTest});
+    log.print("clickthrough: cascade raycast active\n");
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
         wit_hook.detach();
+        cte_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
     }
