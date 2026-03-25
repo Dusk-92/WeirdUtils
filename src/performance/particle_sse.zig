@@ -623,7 +623,8 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
         }
 
         // Transform negated velocity through world matrix
-        var neg_vel = [3]f32{ neg_vel_x, neg_vel_y, neg_vel_z };
+        // transformVec4 reads 4 components (x,y,z,w) from input - w must be 0.0
+        var neg_vel = [4]f32{ neg_vel_x, neg_vel_y, neg_vel_z, 0.0 };
         var transformed_vel: [4]f32 = undefined;
         _ = transformVec4(@intFromPtr(&transformed_vel), @intFromPtr(&neg_vel), G.world_matrix);
 
@@ -643,11 +644,11 @@ export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buf
 
             var vs = VBState.load(vb);
             vs.emit(world_pos[0] - perp_y, perp_x + world_pos[1], world_pos[2], color_value,
-                @mulAdd(f32, rf32(G.sprite_tex_u), tex_su, tail_tex_u),
-                @mulAdd(f32, rf32(G.sprite_tex_v), tex_sv, tail_tex_v));
+                @mulAdd(f32, rf32(G.sprite_tex_u + 8), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.sprite_tex_v + 8), tex_sv, tail_tex_v));
             vs.emit(world_pos[0] + perp_y, world_pos[1] - perp_x, world_pos[2], color_value,
-                @mulAdd(f32, rf32(G.sprite_tex_u), tex_su, tail_tex_u),
-                @mulAdd(f32, rf32(G.sprite_tex_v), tex_sv, tail_tex_v));
+                @mulAdd(f32, rf32(G.sprite_tex_u + 16), tex_su, tail_tex_u),
+                @mulAdd(f32, rf32(G.sprite_tex_v + 16), tex_sv, tail_tex_v));
             vs.emit(tx + world_pos[0] - perp_y, ty + world_pos[1] + perp_x, vel_z, color_value,
                 @mulAdd(f32, rf32(G.tail_tex_u0), tex_su, tail_tex_u),
                 @mulAdd(f32, rf32(G.tail_tex_v0), tex_sv, tail_tex_v));

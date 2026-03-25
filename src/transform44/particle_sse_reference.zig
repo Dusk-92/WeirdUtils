@@ -480,7 +480,7 @@ export fn renderParticleSprites_REF(emitter: u32, particle_data: u32, vertex_buf
         }
 
         // Transform negated velocity through world matrix
-        var neg_vel = [3]f32{ neg_vel_x, neg_vel_y, neg_vel_z };
+        var neg_vel = [4]f32{ neg_vel_x, neg_vel_y, neg_vel_z, 0.0 };
         var transformed_vel: [4]f32 = undefined;
         _ = transformVec4(@intFromPtr(&transformed_vel), @intFromPtr(&neg_vel), G.world_matrix);
 
@@ -500,12 +500,12 @@ export fn renderParticleSprites_REF(emitter: u32, particle_data: u32, vertex_buf
 
             // Vertex 0: worldPos - perp
             emitVertex(vb, world_pos[0] - perp_y, perp_x + world_pos[1], world_pos[2], color_value,
-                rf32(G.sprite_tex_u) * tex_su + tail_tex_u,
-                rf32(G.sprite_tex_v) * tex_sv + tail_tex_v);
+                rf32(G.sprite_tex_u + 8) * tex_su + tail_tex_u,
+                rf32(G.sprite_tex_v + 8) * tex_sv + tail_tex_v);
             // Vertex 1: worldPos + perp
             emitVertex(vb, world_pos[0] + perp_y, world_pos[1] - perp_x, world_pos[2], color_value,
-                rf32(G.sprite_tex_u) * tex_su + tail_tex_u,
-                rf32(G.sprite_tex_v) * tex_sv + tail_tex_v);
+                rf32(G.sprite_tex_u + 16) * tex_su + tail_tex_u,
+                rf32(G.sprite_tex_v + 16) * tex_sv + tail_tex_v);
             // Vertex 2: worldPos + vel - perp
             emitVertex(vb, tx + world_pos[0] - perp_y, ty + world_pos[1] + perp_x, vel_z, color_value,
                 rf32(G.tail_tex_u0) * tex_su + tail_tex_u,

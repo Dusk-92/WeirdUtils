@@ -85,6 +85,7 @@ fn particleDetour(a: u32, _: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*a
     return @ptrFromInt(renderParticleSprites_SSE(a, c, d));
 }
 
+
 // =============================================================================
 // GetOrCreateCharacterGlyph cache (0x5CA2D0)
 // =============================================================================
@@ -149,13 +150,6 @@ var frame_counter: u32 = 0;
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     resetParticleCache();
     world_update_hook.callOriginal(.{frame_count});
-    // Dump stats every ~900 frames (~15s at 60fps)
-    frame_counter +|= 1;
-    if (frame_counter >= 900) {
-        inflate_hook.dumpStats();
-        filecache.dumpStats(&log);
-        frame_counter = 0;
-    }
 }
 
 // =============================================================================
@@ -285,34 +279,20 @@ pub fn installHooks() void {
     if (teardown_hook.attach(0x491180, &teardownDetour) == .ok) installed += 1;
 
     // Silicon SSE binary patches
-    const patched = installPatches();
+    _ = installPatches();
 
     // MPQ file cache
     if (filecache.install()) installed += 1;
 
     // libdeflate inflate replacement
-    if (inflate_hook.install(log)) installed += 1;
+    if (inflate_hook.install()) installed += 1;
 
     // TSC timer calibration + OS timer tweaks
     timer_fix.init();
-    const ti = timer_fix.getInfo();
-    if (ti.calibrated) {
-        if (ti.orig_freq == 1000) {
-            log.fmt("timer: TSC was OFF, enabled with freq {d}\n", .{ti.cal_freq});
-        } else {
-            log.fmt("timer: recalibrated TSC freq {d} -> {d} ({d}.{d}% drift)\n", .{ ti.orig_freq, ti.cal_freq, ti.diff_pct_x10 / 10, ti.diff_pct_x10 % 10 });
-        }
-    } else {
-        log.print("timer: already calibrated, skipping\n");
-    }
-
-    log.fmt("performance: {d} hooks, {d} patches installed\n", .{ installed, patched });
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        inflate_hook.dumpStats();
-        filecache.dumpStats(&log);
         filecache.remove();
         inflate_hook.remove();
         transform_hook.detach();

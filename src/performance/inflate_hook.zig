@@ -131,29 +131,12 @@ pub fn dumpStats() void {
     fallback_count = 0;
 }
 
-pub fn install(logger: logging.Logger) bool {
-    log = logger;
-
-    // Sanity test
+pub fn install() bool {
     const test_decomp = libdeflate_alloc_decompressor();
-    if (test_decomp == null) {
-        log.print("inflate_hook: alloc failed\n");
-        return false;
-    }
-    const test_in = [_]u8{ 0x78, 0x9C, 0xCB, 0x48, 0xCD, 0xC9, 0xC9, 0x07, 0x00, 0x06, 0x2C, 0x02, 0x15 };
-    var test_out: [64]u8 = undefined;
-    var test_len: usize = 0;
-    const test_ret = libdeflate_zlib_decompress(test_decomp, &test_in, test_in.len, &test_out, 64, &test_len);
-    log.fmt("inflate_hook: sanity ret={d} len={d} data='{s}'\n", .{ test_ret, test_len, test_out[0..@min(test_len, 32)] });
+    if (test_decomp == null) return false;
     libdeflate_free_decompressor(test_decomp);
-
     lib_available = true;
-
-    if (decompress_hook.attach(0x661A80, &decompressDetour) == .ok) {
-        log.print("inflate_hook: hooked (libdeflate tls-cached, 2.2x speedup)\n");
-        return true;
-    }
-    return false;
+    return decompress_hook.attach(0x661A80, &decompressDetour) == .ok;
 }
 
 pub fn remove() void {
