@@ -228,7 +228,8 @@ const GlyphCacheEntry = struct {
     font_ptr: u32 = 0,
     char_code: u32 = 0,
     param2: u32 = 0,
-    width_bits: u32 = 0, // f32 stored as u32 bits
+    scale_bits: u32 = 0, // font+0x188 scale factor
+    width_bits: u32 = 0,
 };
 
 var glyph_cache: [GLYPH_CACHE_SIZE]GlyphCacheEntry = [_]GlyphCacheEntry{.{}} ** GLYPH_CACHE_SIZE;
@@ -391,7 +392,7 @@ const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
 var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
 
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
-    resetParticleCache(); // Clear per-frame caches before rendering
+    resetParticleCache();
     const now = rdtsc();
     if (last_frame_tsc != 0) {
         const delta = now - last_frame_tsc;
@@ -913,10 +914,11 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
     const s = rdtsc();
 
     // a=ECX=FontObject*, b=EDX=unused, c=charCode, d=param2
-    const hash = ((a ^ c *% 0x9E3779B9) ^ d) & GLYPH_CACHE_MASK;
+    const scale_bits = hook.readMem(u32, a + 0x188);
+    const hash = ((a ^ c *% 0x9E3779B9) ^ d ^ scale_bits) & GLYPH_CACHE_MASK;
     const entry = &glyph_cache[hash];
 
-    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
+    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d and entry.scale_bits == scale_bits) {
         asm volatile ("flds (%[p])"
             :: [p] "r" (&entry.width_bits)
         );
@@ -937,6 +939,7 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
         .font_ptr = a,
         .char_code = c,
         .param2 = d,
+        .scale_bits = scale_bits,
         .width_bits = width_bits,
     };
 
@@ -1101,27 +1104,50 @@ const GuidCacheEntry = struct { guid_lo: u32 = 0, guid_hi: u32 = 0, result: u32 
 var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
 var guid_cache_hits: u64 = 0;
 var guid_cache_misses: u64 = 0;
+var guid_cache_evictions: u64 = 0;
+
+// MoveObjectToDeletedList hook -- evict after original removes from hash table
+var obj_delete_hook: hook.Detour(Fn4) = .{};
+// DestroyObjectManager hook -- flush entire cache on zone change/logout
+var destroy_objmgr_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+
+fn destroyObjMgrDetour() callconv(hook.cc.stdcall) void {
+    guid_cache = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
+    destroy_objmgr_hook.callOriginal(.{});
+}
+
+fn objDeleteDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // Let original run first (it calls FindObjectByGUID internally, which re-caches).
+    // Then evict so the stale entry is removed.
+    const ret = obj_delete_hook.callOriginal(.{ a, b, c, d });
+    const idx = (c ^ d) & GUID_CACHE_MASK;
+    const entry = &guid_cache[idx];
+    if (entry.guid_lo == c and entry.guid_hi == d) {
+        entry.* = .{};
+        guid_cache_evictions +|= 1;
+    }
+    return ret;
+}
 
 fn findguidDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
-    // stdcall(2): c=guidLow, d=guidHigh
     const s = rdtsc();
     if (AB_OTHER_HOOKS and ab_use_custom) {
-        const hash = (c ^ (d *% 0x9E3779B9)) & GUID_CACHE_MASK;
-        const entry = &guid_cache[hash];
+        const idx = (c ^ d) & GUID_CACHE_MASK;
+        const entry = &guid_cache[idx];
 
         if (entry.guid_lo == c and entry.guid_hi == d and entry.result != 0) {
-            const obj = entry.result;
-            if (hook.readMem(u32, obj + 0x30) == c and hook.readMem(u32, obj + 0x34) == d) {
-                guid_cache_hits +|= 1;
-                prof.findguid_cycles +|= rdtsc() - s;
-                prof.findguid_calls +|= 1;
-                return @ptrFromInt(obj);
-            }
+            guid_cache_hits +|= 1;
+            prof.findguid_cycles +|= rdtsc() - s;
+            prof.findguid_calls +|= 1;
+            return @ptrFromInt(entry.result);
         }
 
         guid_cache_misses +|= 1;
         const ret = findguid_hook.callOriginal(.{ a, b, c, d });
-        entry.* = .{ .guid_lo = c, .guid_hi = d, .result = @intFromPtr(ret) };
+        const result = @intFromPtr(ret);
+        if (result != 0) {
+            entry.* = .{ .guid_lo = c, .guid_hi = d, .result = result };
+        }
         prof.findguid_cycles +|= rdtsc() - s;
         prof.findguid_calls +|= 1;
         return ret;
@@ -1569,13 +1595,15 @@ fn dumpStats() void {
     const guid_total = guid_cache_hits +| guid_cache_misses;
     if (guid_total > 0) {
         const ghit_pct = pct(guid_cache_hits, guid_total);
-        log.fmt("  guid_cache: {d}.{d}% hit ({d}hit/{d}miss)\n", .{
+        log.fmt("  guid_cache: {d}.{d}% hit ({d}hit/{d}miss/{d}evict)\n", .{
             ghit_pct / 10, ghit_pct % 10,
             guid_cache_hits,
             guid_cache_misses,
+            guid_cache_evictions,
         });
         guid_cache_hits = 0;
         guid_cache_misses = 0;
+        guid_cache_evictions = 0;
     }
 
     // Dump particle VB stride info (once)
@@ -1686,8 +1714,9 @@ pub fn installHooks() void {
     // _ = colldet_hook.attach(0x6b88e0, &colldetDetour);
     _ = activep_hook.attach(0x7b5a10, &activepDetour);
     _ = cbiter_hook.attach(0x404130, &cbiterDetour);
-    // findguid graduated to weirdperformance GUID cache
-    // _ = findguid_hook.attach(0x464890, &findguidDetour);
+    _ = findguid_hook.attach(0x464890, &findguidDetour);
+    _ = obj_delete_hook.attach(0x464920, &objDeleteDetour);
+    _ = destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour);
     // _ = raytri2_hook.attach(0x632700, &raytri2Detour);
     _ = drawbatch_hook.attach(0x70cb30, &drawbatchDetour);
     _ = findlua_hook.attach(0x702000, &findluaDetour);
@@ -1771,6 +1800,8 @@ pub fn removeHooks() void {
         activep_hook.detach();
         cbiter_hook.detach();
         findguid_hook.detach();
+        obj_delete_hook.detach();
+        destroy_objmgr_hook.detach();
         raytri2_hook.detach();
         drawbatch_hook.detach();
         findlua_hook.detach();

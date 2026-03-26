@@ -34,6 +34,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
     .{ .name = "weirdperformance", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
+    .{ .name = "guidcache", .desc = "Enable GUID lookup cache (standalone test)", .default = false },
 };
 
 pub fn build(b: *std.Build) void {

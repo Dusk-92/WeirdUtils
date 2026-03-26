@@ -93,6 +93,7 @@ const GlyphCacheEntry = struct {
     font_ptr: u32 = 0,
     char_code: u32 = 0,
     param2: u32 = 0,
+    scale_bits: u32 = 0, // font+0x188 scale factor (changes on resize)
     width_bits: u32 = 0,
 };
 
@@ -104,10 +105,11 @@ var glyph_hook: hook.Detour(GlyphFn) = .{};
 fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
 
-    const hash = ((a ^ c *% 0x9E3779B9) ^ d) & GLYPH_CACHE_MASK;
+    const scale_bits = hook.readMem(u32, a + 0x188);
+    const hash = ((a ^ c *% 0x9E3779B9) ^ d ^ scale_bits) & GLYPH_CACHE_MASK;
     const entry = &glyph_cache[hash];
 
-    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d) {
+    if (entry.font_ptr == a and entry.char_code == c and entry.param2 == d and entry.scale_bits == scale_bits) {
         asm volatile ("flds (%[p])"
             :
             : [p] "r" (&entry.width_bits),
@@ -127,6 +129,7 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
         .font_ptr = a,
         .char_code = c,
         .param2 = d,
+        .scale_bits = scale_bits,
         .width_bits = width_bits,
     };
 
@@ -146,21 +149,53 @@ const GUID_CACHE_MASK = GUID_CACHE_SIZE - 1;
 const GuidCacheEntry = struct { guid_lo: u32 = 0, guid_hi: u32 = 0, result: u32 = 0 };
 var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
 
+// MoveObjectToDeletedList: stdcall(guidLow, guidHigh), RET 0x8
+// Same fastcall(4) Detour mapping as FindObjectByGUID
+const ObjDeleteFn = fn (u32, u32, u32, u32) callconv(hook.cc.fastcall) ?*anyopaque;
+var obj_delete_hook: hook.Detour(ObjDeleteFn) = .{};
+
+fn objDeleteDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
+    // Let original run first (it calls FindObjectByGUID internally, which re-caches).
+    // Then evict, so the stale entry is removed after the original is done.
+    const ret = obj_delete_hook.callOriginal(.{ a, b, c, d });
+    const idx = (c ^ d) & GUID_CACHE_MASK;
+    const entry = &guid_cache[idx];
+    if (entry.guid_lo == c and entry.guid_hi == d) {
+        entry.* = .{};
+    }
+    return ret;
+}
+
 fn findguidDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     // stdcall(2): c=guidLow, d=guidHigh (a,b unused fastcall reg args)
-    const hash = (c ^ (d *% 0x9E3779B9)) & GUID_CACHE_MASK;
-    const entry = &guid_cache[hash];
+    const idx = (c ^ d) & GUID_CACHE_MASK;
+    const entry = &guid_cache[idx];
 
+    // No pointer validation needed -- cache is flushed every frame
     if (entry.guid_lo == c and entry.guid_hi == d and entry.result != 0) {
-        const obj = entry.result;
-        if (hook.readMem(u32, obj + 0x30) == c and hook.readMem(u32, obj + 0x34) == d) {
-            return @ptrFromInt(obj);
-        }
+        return @ptrFromInt(entry.result);
     }
 
     const ret = findguid_hook.callOriginal(.{ a, b, c, d });
-    entry.* = .{ .guid_lo = c, .guid_hi = d, .result = @intFromPtr(ret) };
+    const result = @intFromPtr(ret);
+    if (result != 0) {
+        entry.* = .{ .guid_lo = c, .guid_hi = d, .result = result };
+    } else {
+        // Object not found -- clear cache entry to prevent stale hits
+        entry.* = .{};
+    }
     return ret;
+}
+
+// =============================================================================
+// DestroyObjectManager hook (0x467700) — flush GUID cache before teardown
+// =============================================================================
+
+var destroy_objmgr_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
+
+fn destroyObjMgrDetour() callconv(hook.cc.stdcall) void {
+    guid_cache = [_]GuidCacheEntry{.{}} ** GUID_CACHE_SIZE;
+    destroy_objmgr_hook.callOriginal(.{});
 }
 
 // =============================================================================
@@ -176,6 +211,7 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     resetParticleCache();
     world_update_hook.callOriginal(.{frame_count});
 }
+
 
 // =============================================================================
 // SSE JMP patches — binary patches at game function addresses
@@ -291,10 +327,14 @@ pub fn installHooks() void {
     if (particle_hook.attach(0x7B2A50, &particleDetour) == .ok) installed += 1;
 
     // Glyph cache
-    if (glyph_hook.attach(0x5CA2D0, &glyphDetour) == .ok) installed += 1;
+    // Glyph cache removed -- game has internal glyph cache, our hook only sees misses (~30/frame)
 
-    // GUID lookup cache
-    if (findguid_hook.attach(0x464890, &findguidDetour) == .ok) installed += 1;
+    // GUID lookup cache -- A/B testing via transform44
+    // if (findguid_hook.attach(0x464890, &findguidDetour) == .ok) installed += 1;
+    // if (obj_delete_hook.attach(0x464920, &objDeleteDetour) == .ok) installed += 1;
+
+    // Flush GUID cache before object manager teardown
+    if (destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour) == .ok) installed += 1;
 
     // Per-frame cache reset
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) installed += 1;
@@ -318,8 +358,10 @@ pub fn removeHooks() void {
         inflate_hook.remove();
         transform_hook.detach();
         particle_hook.detach();
-        glyph_hook.detach();
+        // glyph_hook removed
         findguid_hook.detach();
+        obj_delete_hook.detach();
+        destroy_objmgr_hook.detach();
         world_update_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
