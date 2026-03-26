@@ -174,34 +174,22 @@ export fn rayTriIntersectIndexedInt(
 
     if (det > -1e-6 and det < 1e-6) return 0;
 
+    const inv_det = 1.0 / det;
     const tvec = ray_origin - v0;
-    const u_raw = dot3(tvec, pvec);
 
-    const det_neg_eps = det * neg_eps;
-    const det_one_plus = det * one_plus_eps;
-    if (det > 0) {
-        if (u_raw < det_neg_eps or u_raw > det_one_plus) return 0;
-    } else {
-        if (u_raw > det_neg_eps or u_raw < det_one_plus) return 0;
-    }
+    const u = dot3(tvec, pvec) * inv_det;
+    if (u < neg_eps or u > one_plus_eps) return 0;
 
     const qvec = cross(tvec, edge1);
-    const v_raw = dot3(ray_dir, qvec);
+    const v = dot3(ray_dir, qvec) * inv_det;
+    if (v < neg_eps or (u + v) > one_plus_eps) return 0;
 
-    if (det > 0) {
-        if (v_raw < det_neg_eps or (u_raw + v_raw) > det_one_plus) return 0;
-    } else {
-        if (v_raw > det_neg_eps or (u_raw + v_raw) < det_one_plus) return 0;
-    }
-
-    // Hit confirmed -- only divide now
-    const inv_det = 1.0 / det;
     if (t_out != 0) {
         @as(*align(1) f32, @ptrFromInt(t_out)).* = dot3(edge2, qvec) * inv_det;
     }
     if (normal_out != 0) {
-        @as(*align(1) f32, @ptrFromInt(normal_out)).* = u_raw * inv_det;
-        @as(*align(1) f32, @ptrFromInt(normal_out + 4)).* = v_raw * inv_det;
+        @as(*align(1) f32, @ptrFromInt(normal_out)).* = u;
+        @as(*align(1) f32, @ptrFromInt(normal_out + 4)).* = v;
     }
     return 1;
 }
@@ -482,39 +470,20 @@ export fn performCollisionDetectionSSE(this: u32, key_data: u32, key_size: u32) 
         const pvec = cross(ray_dir, edge2);
         const det = dot3(edge1, pvec);
 
-        if (det <= 1e-7 and det >= -1e-7) continue;
+        // Original thresholds: reject if det is in (-1e-6, 1e-6) dead zone
+        if (det > -1e-6 and det < 1e-6) continue;
 
+        const inv_det = 1.0 / det;
         const tvec = ray_origin - v0;
 
-        // u_raw = dot(tvec, pvec) -- NOT multiplied by inv_det yet
-        const u_raw = dot3(tvec, pvec);
-
-        // Compare u_raw against det-scaled epsilon bounds.
-        // If det > 0: u = u_raw/det, so u < -eps iff u_raw < -eps*det, u > 1+eps iff u_raw > (1+eps)*det
-        // If det < 0: division flips sign, so u < -eps iff u_raw > -eps*det (which is positive)
-        // Trick: multiply both sides by sign(det) to normalize.
-        // Or equivalently: if det>0 check u_raw in [det*neg_eps, det*one_plus_eps]
-        //                  if det<0 check u_raw in [det*one_plus_eps, det*neg_eps]
-        const det_neg_eps = det * neg_eps;
-        const det_one_plus = det * one_plus_eps;
-        if (det > 0) {
-            if (u_raw < det_neg_eps or u_raw > det_one_plus) continue;
-        } else {
-            if (u_raw > det_neg_eps or u_raw < det_one_plus) continue;
-        }
+        const u = dot3(tvec, pvec) * inv_det;
+        if (u < neg_eps or u > one_plus_eps) continue;
 
         const qvec = cross(tvec, edge1);
-        const v_raw = dot3(ray_dir, qvec);
+        const v = dot3(ray_dir, qvec) * inv_det;
+        if (v < neg_eps or (u + v) > one_plus_eps) continue;
 
-        // Same sign-aware bounds check for v
-        if (det > 0) {
-            if (v_raw < det_neg_eps or (u_raw + v_raw) > det_one_plus) continue;
-        } else {
-            if (v_raw > det_neg_eps or (u_raw + v_raw) < det_one_plus) continue;
-        }
-
-        // Only divide for confirmed hits
-        const t = dot3(edge2, qvec) / det;
+        const t = dot3(edge2, qvec) * inv_det;
 
         if (t >= 0.0 and t < readF32(this + 0x4C)) {
             // Update closest hit

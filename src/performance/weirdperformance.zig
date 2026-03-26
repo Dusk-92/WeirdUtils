@@ -333,8 +333,8 @@ pub fn installHooks() void {
     // if (findguid_hook.attach(0x464890, &findguidDetour) == .ok) installed += 1;
     // if (obj_delete_hook.attach(0x464920, &objDeleteDetour) == .ok) installed += 1;
 
-    // Flush GUID cache before object manager teardown
-    if (destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour) == .ok) installed += 1;
+    // GUID cache disabled for now
+    // if (destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour) == .ok) installed += 1;
 
     // Per-frame cache reset
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) installed += 1;

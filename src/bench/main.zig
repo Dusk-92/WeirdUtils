@@ -241,9 +241,10 @@ pub fn main() void {
     // AddToSpatialGrid -- linked list requires game state, A/B test in-game only
     // bench_addToSpatialGrid();
 
-    if (false) { // disabled: not testing these right now
     bench_collisionDetection();
     bench_rayTriIndexedInt();
+
+    if (false) { // disabled
     bench_entityUpdate();
     }
 

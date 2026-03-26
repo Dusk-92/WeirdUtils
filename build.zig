@@ -16,38 +16,43 @@ const ModuleDesc = struct {
 /// Single source of truth for all modules. Adding a module here is enough
 /// to wire up the build option, build_options passthrough, and DLL variant.
 const module_list = [_]ModuleDesc{
-    .{ .name = "pngscreenshots", .desc = "Enable screenshot module", .src_dir = "screenshot" },
-    .{ .name = "interact", .desc = "Enable interact module", .addon_name = "Interact" },
-    .{ .name = "outline", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
-    .{ .name = "worldmarkers", .desc = "Enable world markers module", .addon_name = "WorldMarkers", .addon_hidden = true },
-    .{ .name = "framecrash", .desc = "Enable framecrash fix", .default = false },
-    .{ .name = "logsessions", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
-    .{ .name = "minimapicons", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
-    .{ .name = "transmogfix", .desc = "Enable transmog update coalescing" },
-    .{ .name = "customassets", .desc = "Enable loose file loading & permissive patch glob" },
-    .{ .name = "healtextfix", .desc = "Enable SuperWoW heal text fix" },
-    .{ .name = "bigcursor", .desc = "Enable big cursor module" },
-    .{ .name = "clickthrough", .desc = "Enable GO click-through (enlarge GO model bounds)" },
-    .{ .name = "dpslog", .desc = "Enable structured combat log events for addons", .default = false },
-    .{ .name = "transform44", .desc = "Enable transform44 profiling/A/B testing (dev only)", .default = false },
-    .{ .name = "addonperf", .desc = "Enable addon memory/CPU profiling API", .default = false },
-    .{ .name = "ssemaths", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
-    .{ .name = "silicon", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
-    .{ .name = "weirdperformance", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
-    .{ .name = "guidcache", .desc = "Enable GUID lookup cache (standalone test)", .default = false },
+    .{ .name = "pngscreenshots", .version = "1.0", .desc = "Enable screenshot module", .src_dir = "screenshot" },
+    .{ .name = "interact", .version = "1.0", .desc = "Enable interact module", .addon_name = "Interact" },
+    .{ .name = "outline", .version = "1.0", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
+    .{ .name = "worldmarkers", .version = "1.0", .desc = "Enable world markers module", .addon_name = "WorldMarkers", .addon_hidden = true },
+    .{ .name = "framecrash", .version = "1.0", .desc = "Enable framecrash fix", .default = false },
+    .{ .name = "logsessions", .version = "1.0", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
+    .{ .name = "minimapicons", .version = "1.0", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
+    .{ .name = "transmogfix", .version = "1.0", .desc = "Enable transmog update coalescing" },
+    .{ .name = "customassets", .version = "1.0", .desc = "Enable loose file loading & permissive patch glob" },
+    .{ .name = "healtextfix", .version = "1.0", .desc = "Enable SuperWoW heal text fix" },
+    .{ .name = "bigcursor", .version = "1.0", .desc = "Enable big cursor module" },
+    .{ .name = "clickthrough", .version = "1.0", .desc = "Enable GO click-through (enlarge GO model bounds)" },
+    .{ .name = "dpslog", .version = "0.1", .desc = "Enable structured combat log events for addons", .default = false },
+    .{ .name = "transform44", .version = "1.0", .desc = "Enable transform44 profiling/A/B testing (dev only)", .default = false },
+    .{ .name = "addonperf", .version = "1.0", .desc = "Enable addon memory/CPU profiling API", .default = false },
+    .{ .name = "ssemaths", .version = "1.0", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
+    .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
+    .{ .name = "weirdperformance", .version = "1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
 };
 
 pub fn build(b: *std.Build) void {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .gnu,
+        .abi = .msvc,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
 
+    // Resolve module enable flags once (b.option can only be called once per name)
+    var module_enabled: [module_list.len]bool = undefined;
+    inline for (module_list, 0..) |m, i| {
+        module_enabled[i] = b.option(bool, m.name, m.desc) orelse m.default;
+    }
+
     const build_options = b.addOptions();
-    addModuleOptions(b, build_options);
+    addModuleOptionsFromArray(b, build_options, &module_enabled);
     const build_options_module = build_options.createModule();
 
     const zhook_dep = b.dependency("zhook", .{
@@ -85,7 +90,7 @@ pub fn build(b: *std.Build) void {
     const bone_sse_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .gnu,
+        .abi = .msvc,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
     });
     const bone_sse_obj = b.addObject(.{
@@ -102,7 +107,7 @@ pub fn build(b: *std.Build) void {
     const ref_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
-        .abi = .gnu,
+        .abi = .msvc,
         .cpu_features_sub = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
     const bone_sse_ref_obj = b.addObject(.{
@@ -181,6 +186,7 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{"-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI"},
     });
+    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/stubs"));
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
     libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
 
@@ -204,12 +210,9 @@ pub fn build(b: *std.Build) void {
             if (comptime std.mem.eql(u8, module_name, "weirdperformance")) {
                 mod.addObject(self.clip_sse);
                 mod.addObject(self.cull_sse);
-                mod.addObject(self.entity_sse);
                 mod.addObject(self.bone_sse);
-                mod.addObject(self.bone_sse_ref);
                 mod.addObject(self.silicon_sse);
                 mod.addObject(self.particle_sse);
-                mod.addObject(self.particle_ref);
                 mod.addObjectFile(self.libdeflate.getEmittedBin());
             }
             if (comptime std.mem.eql(u8, module_name, "transform44")) {
@@ -357,8 +360,40 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_bench.step);
     }
 
+    // Build combined DLL without performance module
+    const noperf_install = noperf_blk: {
+        const noperf_step = b.step("noperf", "Build weirdutils_noperf.dll (no performance module)");
+        const noperf_opts = b.addOptions();
+        var noperf_enabled = module_enabled;
+        // Force weirdperformance off
+        inline for (module_list, 0..) |m, i| {
+            if (comptime std.mem.eql(u8, m.name, "weirdperformance")) noperf_enabled[i] = false;
+        }
+        addModuleOptionsFromArray(b, noperf_opts, &noperf_enabled);
+
+        const noperf_lib = b.addLibrary(.{
+            .name = "weirdutils_noperf",
+            .linkage = .dynamic,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "zhook", .module = zhook_mod },
+                    .{ .name = "build_options", .module = noperf_opts.createModule() },
+                },
+            }),
+        });
+        const noperf_install = b.addInstallArtifact(noperf_lib, .{
+            .dest_dir = .{ .override = .{ .custom = "variants" } },
+        });
+        noperf_step.dependOn(&noperf_install.step);
+        break :noperf_blk noperf_install;
+    };
+
     // Convenience step to build all single-module variants
     const build_all_step = b.step("all-variants", "Build all DLL variants");
+    build_all_step.dependOn(&noperf_install.step);
 
     inline for (module_list) |variant_mod| {
         @setEvalBranchQuota(10000);
@@ -410,9 +445,9 @@ pub fn build(b: *std.Build) void {
 // Build options: enable flags + scanned file lists for each module
 // =============================================================================
 
-fn addModuleOptions(b: *std.Build, opts: *std.Build.Step.Options) void {
-    inline for (module_list) |mod| {
-        opts.addOption(bool, "enable_" ++ mod.name, b.option(bool, mod.name, mod.desc) orelse mod.default);
+fn addModuleOptionsFromArray(b: *std.Build, opts: *std.Build.Step.Options, enabled: *const [module_list.len]bool) void {
+    inline for (module_list, 0..) |mod, i| {
+        opts.addOption(bool, "enable_" ++ mod.name, enabled[i]);
     }
     // Pass full module name/version lists so main.zig/addons.zig can use them at comptime
     const names: []const []const u8 = comptime blk: {

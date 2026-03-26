@@ -4,10 +4,9 @@
 //! uses libdeflate (~2.2x faster than stock zlib). Falls back to original on failure.
 //!
 //! Thread-safety: the decompressor struct contains mutable decode tables rebuilt
-//! per block, so each thread gets its own cached decompressor via a thread-local
-//! pool keyed by Windows thread ID (FS:[0x24]). This avoids both the race condition
-//! (shared decompressor → wild writes) and the per-call alloc overhead (~8-9% gain
-//! over alloc/free each call).
+//! per block, so each thread gets its own cached decompressor via Zig's native
+//! threadlocal (OS-managed TLS). This avoids both the race condition
+//! (shared decompressor -> wild writes) and the per-call alloc overhead.
 //!
 //! Benchmark results (84k calls, heavy load):
 //!   stock=2681ms | per-call-alloc=1304ms (2.05x) | tls-cached=1194ms (2.2x)
@@ -24,43 +23,17 @@ extern fn libdeflate_zlib_decompress(?*anyopaque, [*]const u8, usize, [*]u8, usi
 var lib_available: bool = false;
 var log: logging.Logger = .{};
 
-// --- Thread-local decompressor pool ---
-// Keyed by Windows thread ID. WoW has ~5-10 threads; only 2-3 call decompress.
-const TLS_SLOTS = 8;
-const TlsSlot = struct {
-    thread_id: u32 = 0,
-    decomp: ?*anyopaque = null,
-};
-var tls_pool: [TLS_SLOTS]TlsSlot = [_]TlsSlot{.{}} ** TLS_SLOTS;
-
-fn getCurrentThreadId() u32 {
-    return asm volatile ("movl %%fs:0x24, %[ret]"
-        : [ret] "=r" (-> u32),
-    );
-}
+// --- Thread-local decompressor ---
+// Each thread lazily allocates its own decompressor on first use.
+// OS-managed TLS via Zig's threadlocal -- works correctly on both
+// native Windows and Wine without manual FS segment access.
+threadlocal var tls_decomp: ?*anyopaque = null;
 
 fn getTlsDecompressor() ?*anyopaque {
-    const tid = getCurrentThreadId();
-    for (&tls_pool) |*slot| {
-        if (slot.thread_id == tid) return slot.decomp;
-    }
-    const decomp = libdeflate_alloc_decompressor() orelse return null;
-    for (&tls_pool) |*slot| {
-        if (slot.thread_id == 0) {
-            slot.thread_id = tid;
-            slot.decomp = decomp;
-            return decomp;
-        }
-    }
-    libdeflate_free_decompressor(decomp);
-    return null;
-}
-
-fn freeTlsPool() void {
-    for (&tls_pool) |*slot| {
-        if (slot.decomp) |d| libdeflate_free_decompressor(d);
-        slot.* = .{};
-    }
+    if (tls_decomp) |d| return d;
+    const d = libdeflate_alloc_decompressor() orelse return null;
+    tls_decomp = d;
+    return d;
 }
 
 // --- Timing ---
@@ -142,5 +115,4 @@ pub fn install() bool {
 pub fn remove() void {
     decompress_hook.detach();
     lib_available = false;
-    freeTlsPool();
 }
