@@ -201,6 +201,7 @@ pub fn unitGUID(unit_id: [*:0]const u8) u64 {
 /// Resolve a GUID → object pointer via the object manager hash table.
 pub fn getObjectByGUID(guid: u64) u32 {
     if (guid == 0) return 0;
+    if (hook.readMem(u32, o.OBJECT_MANAGER_PTR) == 0) return 0;
     const lo: u32 = @truncate(guid);
     const hi: u32 = @truncate(guid >> 32);
     const result = hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, o.FN_GET_OBJECT_BY_GUID, .{ lo, hi });
@@ -212,6 +213,7 @@ pub fn getObjectByGUID(guid: u64) u32 {
 /// Split-GUID variant for callers that already have lo/hi parts.
 pub fn getObjectByGUIDSplit(guid_lo: u32, guid_hi: u32) u32 {
     if (guid_lo == 0 and guid_hi == 0) return 0;
+    if (hook.readMem(u32, o.OBJECT_MANAGER_PTR) == 0) return 0;
     return hook.call(fn (u32, u32) callconv(hook.cc.stdcall) u32, o.FN_GET_OBJECT_BY_GUID, .{ guid_lo, guid_hi });
 }
 
