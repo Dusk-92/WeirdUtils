@@ -312,52 +312,53 @@ pub fn build(b: *std.Build) void {
 
     // Convenience step to build all single-module variants
     const build_all_step = b.step("all-variants", "Build all DLL variants");
+    build_all_step.dependOn(b.getInstallStep());
     build_all_step.dependOn(&noperf_install.step);
 
-    inline for (module_list) |variant_mod| {
-        if (!variant_mod.default) continue;
-        @setEvalBranchQuota(10000);
-        const opts = b.addOptions();
-        inline for (module_list) |m| {
-            opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
+    inline for (module_list, 0..) |variant_mod, variant_idx| {
+        if (module_enabled[variant_idx]) {
+            @setEvalBranchQuota(10000);
+            const opts = b.addOptions();
+            inline for (module_list) |m| {
+                opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
+            }
+            addFileListOptions(b, opts);
+            const names: []const []const u8 = comptime blk: {
+                var n: [module_list.len][]const u8 = undefined;
+                for (module_list, 0..) |m2, mi| n[mi] = m2.name;
+                const final = n;
+                break :blk &final;
+            };
+            opts.addOption([]const []const u8, "all_module_names", names);
+            const versions: []const []const u8 = comptime blk: {
+                var v: [module_list.len][]const u8 = undefined;
+                for (module_list, 0..) |m2, mi| v[mi] = m2.version;
+                const final = v;
+                break :blk &final;
+            };
+            opts.addOption([]const []const u8, "all_module_versions", versions);
+
+            const variant_lib = b.addLibrary(.{
+                .name = variant_mod.name,
+                .linkage = .dynamic,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("src/main.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "zhook", .module = zhook_mod },
+                        .{ .name = "build_options", .module = opts.createModule() },
+                    },
+                }),
+            });
+
+            objs.linkFor(variant_lib.root_module, variant_mod.name);
+
+            const install_variant = b.addInstallArtifact(variant_lib, .{
+                .dest_dir = .{ .override = .{ .custom = "variants" } },
+            });
+            build_all_step.dependOn(&install_variant.step);
         }
-        addFileListOptions(b, opts);
-        // Variant builds also need the module name list for addons.zig
-        const names: []const []const u8 = comptime blk: {
-            var n: [module_list.len][]const u8 = undefined;
-            for (module_list, 0..) |m2, mi| n[mi] = m2.name;
-            const final = n;
-            break :blk &final;
-        };
-        opts.addOption([]const []const u8, "all_module_names", names);
-        const versions: []const []const u8 = comptime blk: {
-            var v: [module_list.len][]const u8 = undefined;
-            for (module_list, 0..) |m2, mi| v[mi] = m2.version;
-            const final = v;
-            break :blk &final;
-        };
-        opts.addOption([]const []const u8, "all_module_versions", versions);
-
-        const variant_lib = b.addLibrary(.{
-            .name = variant_mod.name,
-            .linkage = .dynamic,
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/main.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "zhook", .module = zhook_mod },
-                    .{ .name = "build_options", .module = opts.createModule() },
-                },
-            }),
-        });
-
-        objs.linkFor(variant_lib.root_module, variant_mod.name);
-
-        const install_variant = b.addInstallArtifact(variant_lib, .{
-            .dest_dir = .{ .override = .{ .custom = "variants" } },
-        });
-        build_all_step.dependOn(&install_variant.step);
     }
 }
 

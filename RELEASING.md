@@ -38,38 +38,17 @@ defaults. List them with:
 zig build --help 2>&1 | grep 'Enable'
 ```
 
-### Combined DLL
-
-Build `weirdutils.dll` with only the modules for this release. Explicitly
-disable everything not being included - defaults may enable modules you don't
-want:
-
-```sh
-# Example: only transmogfix + customassets + healtextfix
-zig build -Doptimize=ReleaseSmall \
-  -Dscreenshot=false -Dinteract=false -Doutline=false \
-  -Dworldmarkers=false -Dframecrash=false -Dlogsessions=false \
-  -Dminimapicons=false \
-  -Dtransmogfix=true -Dcustomassets=true -Dhealtextfix=true
-```
-
-### Individual variant DLLs
+`all-variants` builds everything in one command: the combined DLL, the noperf
+variant, and a standalone DLL per module. `-D` flags control which modules are
+included across all of them -- disabled modules are excluded from the combined
+DLL, noperf, and won't get a standalone variant built.
 
 ```sh
-zig build all-variants -Doptimize=ReleaseSmall
+zig build all-variants -Doptimize=ReleaseSmall \
+  -Dworldmarkers=false -Dinteract=false -Doutline=false \
+  -Dframecrash=false -Ddpslog=false -Daddonperf=false \
+  -Dssemaths=false -Dsilicon=false -Dtransform44=false
 ```
-
-This builds all variants - you only attach the ones for this release.
-
-### No-performance variant
-
-```sh
-zig build noperf -Doptimize=ReleaseSmall
-```
-
-Builds `weirdutils_noperf.dll` - the combined DLL with all default modules
-except `weirdperformance`. Provided as a release asset for users who experience
-issues with the performance module (e.g. Wine compatibility).
 
 ### Output locations
 

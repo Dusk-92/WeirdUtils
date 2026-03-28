@@ -126,15 +126,13 @@ Tracks various npc types and useful objects like Oranges and Brainwasher and Mai
 
 ### Clickthrough
 
-Smart cursor targeting that prioritizes useful interactions. Instead of always selecting the nearest object under the cursor, the module finds the most useful target along the ray in priority order: lootable corpses first, then interactable game objects, then interactable NPCs, then normal selection.
+Smart cursor targeting that prioritizes useful interactions. Instead of always selecting the nearest object under the cursor, the module finds the most useful target along the ray in priority order.
 
-- Lootable corpses are always reachable, even through players, pets, and non-lootable dead bodies
-- Interactable game objects (mailboxes, portals, soulwells) are reachable through players and non-interactable units
-- Interactable NPCs (vendors, trainers, quest givers) are reachable through players
+- Lootable corpses first, then interactable game objects/portals, then interactable NPCs, then normal selection
 - Dead non-lootable corpses can still be selected when nothing more useful is behind them
 - Disabled inside battlegrounds to prevent targeting objectives through enemy players
 
-Can replaces SuperWoW's `Clickthrough()` toggle with always-on smart targeting that doesn't require a manual toggle and preserves the ability to select dead bodies when needed. Disable corpse-clickthrough in SuperAPI if you want this.
+Can replace SuperWoW's `Clickthrough()` toggle with always-on smart targeting that doesn't require a manual toggle and preserves the ability to select dead bodies when needed. Disable corpse-clickthrough in SuperAPI if you want this.
 
 No configuration needed, install and forget.
 
