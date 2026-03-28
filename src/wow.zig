@@ -229,6 +229,33 @@ pub fn getLocalPlayer() u32 {
     return getObjectByGUID(guid);
 }
 
+// =============================================================================
+// Group membership (party + raid)
+// =============================================================================
+
+/// Check if a GUID is the local player or in the player's party/raid.
+pub fn isInGroup(guid: u64) bool {
+    if (guid == 0) return false;
+    if (getPlayerGUID() == guid) return true;
+
+    // Party: 4 GUID slots at PARTY_MEMBER_GUIDS
+    for (0..4) |i| {
+        const member = readGUID(@intCast(o.PARTY_MEMBER_GUIDS + i * 8));
+        if (member != 0 and member == guid) return true;
+    }
+
+    // Raid roster
+    const count = hook.readMem(u32, o.RAID_ROSTER_COUNT);
+    var j: u32 = 0;
+    while (j < count and j < 40) : (j += 1) {
+        const entry_ptr = hook.readMem(u32, @intCast(o.RAID_ROSTER_ARRAY + j * 4));
+        if (entry_ptr == 0) continue;
+        if (readGUID(entry_ptr) == guid) return true;
+    }
+
+    return false;
+}
+
 /// Creature cache at address 0xC0E138 (not a pointer — the object IS at this address).
 const CREATURE_CACHE: u32 = 0xC0E138;
 

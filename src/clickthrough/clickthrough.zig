@@ -20,6 +20,7 @@ const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
 const offsets = @import("../offsets.zig");
 const wow = @import("../wow.zig");
+const portal_filter = @import("portal_filter.zig");
 
 pub const module_name: [*:0]const u8 = "clickthrough";
 
@@ -80,9 +81,6 @@ fn checkObjTypeDetour(ctx: u32, obj_data: u32, perm_flags: u32) callconv(hook.cc
     // If original says exclude, respect that
     if (original == 0) return 0;
 
-    // No custom filtering active - pass through
-    if ((perm_flags & FLAG_CUSTOM_MASK) == 0) return original;
-
     // Resolve the object pointer from obj_data via ClntObjMgrObjectPtr.
     // __fastcall(ECX=typeMask, EDX=debugStr, stack: guid_lo, guid_hi, debugCode)
     // RET 0xC. See nampower ClntObjMgrObjectPtrT typedef.
@@ -96,6 +94,16 @@ fn checkObjTypeDetour(ctx: u32, obj_data: u32, perm_flags: u32) callconv(hook.cc
     const desc = wow.getDescriptor(obj);
     if (!wow.isValidPtr(desc)) return original;
     const type_mask = hook.readMem(u32, desc + 0x08);
+
+    // Always block unusable player-summoned portals/rituals (all passes)
+    if (type_mask == 0x21) {
+        const go_type = hook.readMem(u32, desc + offsets.DESC_GO_TYPE);
+        if ((go_type == 18 or go_type == 22) and portal_filter.shouldFilter(desc))
+            return 0;
+    }
+
+    // No custom filtering active - pass through
+    if ((perm_flags & FLAG_CUSTOM_MASK) == 0) return original;
 
     if ((perm_flags & FLAG_LOOT_ONLY) != 0) {
         if (type_mask != 0x09) return 0; // units only

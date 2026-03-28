@@ -139,6 +139,19 @@ pub const IS_IN_WORLD: usize = 0xB4B424;
 pub const RAID_TARGET_ARRAY: usize = 0x00B71368;
 
 // =============================================================================
+// Group / Party / Raid
+// =============================================================================
+
+/// Party member GUIDs: 4 slots, 8 bytes each (verified from is_player_in_allowed_list @ 0x4e7f70).
+pub const PARTY_MEMBER_GUIDS: usize = 0x00BC6F48;
+
+/// Raid roster: array of 40 pointers to roster entries (GUID at +0/+4).
+pub const RAID_ROSTER_ARRAY: usize = 0x00B712A8;
+
+/// Raid roster member count.
+pub const RAID_ROSTER_COUNT: usize = 0x00B713E0;
+
+// =============================================================================
 // Core function addresses
 // =============================================================================
 

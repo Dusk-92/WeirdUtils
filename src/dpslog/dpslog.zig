@@ -50,6 +50,118 @@ var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 var log: logging.Logger = .{};
 
+// =============================================================================
+// Cast/Channel state tracking — for UnitCastingInfo / UnitChannelInfo
+// =============================================================================
+
+/// OsGetAsyncTimeMs (0x42B790): __stdcall() -> u64 (ms). Same timebase as Lua GetTime().
+fn getTimeMs() u64 {
+    return hook.call(fn () callconv(hook.cc.stdcall) u64, 0x42B790, .{});
+}
+
+const CastState = struct {
+    guid: u64 = 0,
+    spell_id: u32 = 0,
+    start_ms: u64 = 0,
+    end_ms: u64 = 0,
+    is_channel: bool = false,
+};
+
+const CAST_TABLE_SIZE = 32;
+var cast_table: [CAST_TABLE_SIZE]CastState = [_]CastState{.{}} ** CAST_TABLE_SIZE;
+var cast_id_counter: u32 = 0; // monotonic cast ID for UnitCastingInfo
+
+fn setCastState(guid: u64, spell_id: u32, duration_ms: u32, is_channel: bool) void {
+    const now = getTimeMs();
+    // Find existing slot for this GUID, or oldest slot to evict
+    var best: usize = 0;
+    var oldest: u64 = ~@as(u64, 0);
+    for (&cast_table, 0..) |*entry, i| {
+        if (entry.guid == guid) {
+            best = i;
+            break;
+        }
+        if (entry.start_ms < oldest) {
+            oldest = entry.start_ms;
+            best = i;
+        }
+    }
+    cast_table[best] = .{
+        .guid = guid,
+        .spell_id = spell_id,
+        .start_ms = now,
+        .end_ms = now + duration_ms,
+        .is_channel = is_channel,
+    };
+    if (!is_channel) {
+        cast_id_counter +%= 1;
+    }
+}
+
+fn clearCastState(guid: u64) void {
+    for (&cast_table) |*entry| {
+        if (entry.guid == guid) {
+            entry.* = .{};
+            return;
+        }
+    }
+}
+
+fn getCastState(guid: u64, want_channel: bool) ?CastState {
+    const now = getTimeMs();
+    for (&cast_table) |*entry| {
+        if (entry.guid == guid and entry.is_channel == want_channel) {
+            // Expired?
+            if (now > entry.end_ms + 500) { // 500ms grace for latency
+                entry.* = .{};
+                return null;
+            }
+            return entry.*;
+        }
+    }
+    return null;
+}
+
+/// SpellDuration.dbc — for channel duration lookup
+/// Record: [0]=ID(u32), [0x04]=baseDuration(i32 ms), [0x08]=durationPerLevel, [0x0C]=maxDuration
+const SPELL_DURATION_RECORDS: u32 = 0xC0D828;
+const SPELL_DURATION_MAX_ID: u32 = 0xC0D82C;
+
+/// SpellRec field offsets for channel detection
+const SPELL_ATTRIBUTES_EX: u32 = 0x1C; // AttributesEx (field 7)
+const SPELL_DURATION_IDX: u32 = 0x78; // DurationIndex (field 30)
+const SPELL_EFFECT_BASE: u32 = 0xF4; // Effect[0] (field 61)
+
+/// SPELL_ATTR_EX_CHANNELED_1 | SPELL_ATTR_EX_CHANNELED_2
+const CHANNELED_MASK: u32 = 0x44;
+
+fn isChanneledSpell(spell_id: u32) bool {
+    const rec = getSpellRecord(spell_id) orelse return false;
+    return hook.readMem(u32, rec + SPELL_ATTRIBUTES_EX) & CHANNELED_MASK != 0;
+}
+
+fn getSpellDurationMs(spell_id: u32) u32 {
+    const rec = getSpellRecord(spell_id) orelse return 0;
+    const dur_idx = hook.readMem(u32, rec + SPELL_DURATION_IDX);
+    if (readDbRecord(SPELL_DURATION_RECORDS, SPELL_DURATION_MAX_ID, dur_idx)) |dur_rec| {
+        const base_dur: i32 = @bitCast(hook.readMem(u32, dur_rec + 4));
+        return if (base_dur > 0) @intCast(base_dur) else 0;
+    }
+    return 0;
+}
+
+fn isTradeSkillSpell(spell_id: u32) bool {
+    const rec = getSpellRecord(spell_id) orelse return false;
+    var i: u32 = 0;
+    while (i < 3) : (i += 1) {
+        if (hook.readMem(u32, rec + SPELL_EFFECT_BASE + i * 4) == 47) return true; // SPELL_EFFECT_TRADE_SKILL
+    }
+    return false;
+}
+
+/// Descriptor byte offset for UNIT_CHANNEL_SPELL (absolute index 0x90)
+const DESC_CHANNEL_SPELL: u32 = 0x90 * 4; // = 0x240
+
 // Ring buffer for recent damage events — used by SPELL_AURA_BROKEN heuristic.
 // Damage packets arrive BEFORE descriptor updates (which trigger aura removal),
 // so the buffer is populated by the time auraRemovedDetour checks it.
@@ -269,6 +381,9 @@ const SUB_UNIT_DIED: [*:0]const u8 = "UNIT_DIED";
 const SUB_DAMAGE_SPLIT: [*:0]const u8 = "DAMAGE_SPLIT";
 const SUB_SPELL_DISPEL_FAILED: [*:0]const u8 = "SPELL_DISPEL_FAILED";
 const SUB_UNIT_DESTROYED: [*:0]const u8 = "UNIT_DESTROYED";
+
+// Loot (novel extension — not in any WoW combat log, but useful for raid logging)
+const SUB_LOOT_ITEM: [*:0]const u8 = "LOOT_ITEM";
 
 // Miss type strings (for _MISSED suffix arg)
 const MISS_MISS: [*:0]const u8 = "MISS";
@@ -569,9 +684,9 @@ const FLAG_TARGET: u32 = 0x10000;
 const FLAG_FOCUS: u32 = 0x20000;
 const FLAG_MAINASSIST: u32 = 0x80000;
 
-const PARTY_MEMBER_GUIDS: u32 = 0x00BC75F8 + 8; // party[0] GUID at leader+8 (leader at BC75F8)
-const RAID_ROSTER_ARRAY: u32 = 0x00B712A8;
-const RAID_MEMBER_COUNT: u32 = 0x00B713E0;
+const PARTY_MEMBER_GUIDS: u32 = @intCast(o.PARTY_MEMBER_GUIDS);
+const RAID_ROSTER_ARRAY: u32 = @intCast(o.RAID_ROSTER_ARRAY);
+const RAID_MEMBER_COUNT: u32 = @intCast(o.RAID_ROSTER_COUNT);
 
 fn computeUnitFlags(guid: u64) u32 {
     if (guid == 0) return 0;
@@ -1236,6 +1351,14 @@ fn fireBase(sub: [*:0]const u8, src_guid: u64, dst_guid: u64) void {
     signalEvent();
 }
 
+/// Fire a loot event: LOOT_ITEM,playerGUID,...,itemID,itemCount
+fn fireLootItem(player_guid: u64, item_id: u32, count: u32) void {
+    cleuBase(SUB_LOOT_ITEM, player_guid, 0);
+    cleuNum(item_id);
+    cleuNum(count);
+    signalEvent();
+}
+
 // =============================================================================
 // Hook: InitializeGameEngine (0x401570)
 // __thiscall(ECX=this), RET 0xC (3 stack params)
@@ -1388,6 +1511,11 @@ fn installHandlerSwaps() void {
         log.print("FAILED to swap SPELLINSTAKILLLOG (0x32F)\n")
     else
         log.print("Swapped SPELLINSTAKILLLOG (0x32F)\n");
+
+    if (!swapHandler(0x166, @intFromPtr(&itemPushResultDetour)))
+        log.print("FAILED to swap ITEM_PUSH_RESULT (0x166)\n")
+    else
+        log.print("Swapped ITEM_PUSH_RESULT (0x166)\n");
 
     log.fmt("installHandlerSwaps: {d} handlers swapped\n", .{swap_count});
 }
@@ -2023,6 +2151,48 @@ fn instaKillDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.
 }
 
 // =============================================================================
+// Hook: Item_HandleItemPushUpdate (via table swap)
+// Packet: SMSG_ITEM_PUSH_RESULT (opcode 0x0166)
+// Fires: LOOT_ITEM — novel extension, no range limit
+// =============================================================================
+// Packet format (from server SendNewItem):
+//   playerGUID(u64), received(u32), created(u32), showInChat(u32),
+//   bagSlot(u8), itemSlot(u32), itemID(u32), suffixFactor(u32),
+//   randomPropertyId(u32), count(u32)
+
+fn itemPushResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc.fastcall) u32 {
+    asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
+
+    const saved_read = cdsGetRead(cds);
+
+    const player_guid = cdsGet(u64, cds);
+    const received = cdsGet(u32, cds);
+    const created = cdsGet(u32, cds);
+    const show_in_chat = cdsGet(u32, cds);
+    _ = cdsGet(u8, cds); // bagSlot
+    _ = cdsGet(u32, cds); // itemSlot
+    const item_id = cdsGet(u32, cds);
+    _ = cdsGet(u32, cds); // suffixFactor
+    _ = cdsGet(u32, cds); // randomPropertyId
+    const count = cdsGet(u32, cds);
+
+    cdsSetRead(cds, saved_read);
+
+    // Only fire for actual loot (received=0, created=0, showInChat=1)
+    // Excludes quest rewards, vendor purchases, crafted items
+    if (player_guid != null and item_id != null and count != null and
+        show_in_chat != null and show_in_chat.? != 0 and
+        received != null and created != null and
+        received.? == 0 and created.? == 0)
+    {
+        log.fmt("LOOT_ITEM: player=0x{X} item={d} x{d}\n", .{ player_guid.?, item_id.?, count.? });
+        fireLootItem(player_guid.?, item_id.?, count.?);
+    }
+
+    return callOriginalHandler(0x166, unk, opcode, unk2, cds);
+}
+
+// =============================================================================
 // Hook: PartyKillLogHandler (0x628890)
 // Packet: SMSG_PARTYKILLLOG (opcode 0x01F5)
 // Fires: PARTY_KILL
@@ -2072,10 +2242,14 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
 
             if (opcode == OPCODE_SPELL_START) {
                 // SPELL_START: timer(u32), then targetMask(u16), [unitTargetPackGUID if flag 0x2]
-                _ = cdsGet(u32, cds); // timer
+                const cast_timer = cdsGet(u32, cds) orelse 0;
                 const target_mask = cdsGet(u16, cds) orelse 0;
                 if (target_mask & 0x0002 != 0) { // TARGET_FLAG_UNIT
                     spell_target = cdsGetPackedGuid(cds) orelse 0;
+                }
+                // Track cast state for UnitCastingInfo
+                if (cast_timer > 0) {
+                    setCastState(caster_guid.?, spell_id.?, cast_timer, false);
                 }
                 fireSpell(SUB_SPELL_CAST_START, caster_guid.?, spell_target, spell_id.?);
             } else {
@@ -2101,6 +2275,15 @@ fn spellStartDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
                 }
 
                 fireSpell(SUB_SPELL_CAST_SUCCESS, caster_guid.?, spell_target, spell_id.?);
+
+                // Cast complete — clear cast state, start channel if applicable
+                clearCastState(caster_guid.?);
+                if (isChanneledSpell(spell_id.?)) {
+                    const dur = getSpellDurationMs(spell_id.?);
+                    if (dur > 0) {
+                        setCastState(caster_guid.?, spell_id.?, dur, true);
+                    }
+                }
 
                 // Record casts for aura caster inference
                 var t: u8 = 0;
@@ -2153,6 +2336,7 @@ fn castResultDetour(unk: u32, opcode: u32, unk2: u32, cds: u32) callconv(hook.cc
     if (spell_id != null and status != null and status.? != 0) {
         const player_guid = getActivePlayerGuid();
         if (player_guid != 0) {
+            clearCastState(player_guid);
             fireSpellStr(SUB_SPELL_CAST_FAILED, player_guid, 0, spell_id.?, "FAILED");
         }
     }
@@ -2182,6 +2366,7 @@ fn spellFailedOtherDetour(msg_type: u32, cds: u32) callconv(hook.cc.stdcall) ?*a
     cdsSetRead(cds, saved_read);
 
     if (caster_guid != null and spell_id != null and spell_id.? != 0) {
+        clearCastState(caster_guid.?);
         // Skip if this is the local player (already handled by CastResultHandler)
         const player_guid = getActivePlayerGuid();
         if (caster_guid.? != player_guid) {
@@ -3075,4 +3260,124 @@ pub fn luaGetSpellInfo(L: usize) callconv(hook.cc.fastcall) u32 {
     lua.pushnumber(state, @floatFromInt(spell_id));
 
     return 7; // 7 return values
+}
+
+// =============================================================================
+// Lua function: UnitCastingInfo(unit)
+// Returns: name, rank, displayName, icon, startTime, endTime, isTradeSkill, castID, notInterruptible, spellId
+// Times in milliseconds (GetTime()*1000 scale). Returns nil if not casting.
+// =============================================================================
+
+fn pushCastInfo(state: lua.State, cs: CastState, push_cast_id: bool) u32 {
+    const rec = getSpellRecord(cs.spell_id) orelse {
+        lua.pushnil(state);
+        return 1;
+    };
+
+    // 1. name
+    const name = readLocString(rec, SPELL_NAME_BASE);
+    lua.pushstring(state, name);
+
+    // 2. rank
+    lua.pushstring(state, readLocString(rec, SPELL_RANK_BASE));
+
+    // 3. displayName (same as name in vanilla)
+    lua.pushstring(state, name);
+
+    // 4. icon texture path
+    const icon_id = hook.readMem(u32, rec + SPELL_ICON_ID);
+    if (readDbRecord(SPELL_ICON_RECORDS, SPELL_ICON_MAX_ID, icon_id)) |icon_rec| {
+        const tex_ptr = hook.readMem(u32, icon_rec + 4);
+        if (tex_ptr != 0) {
+            lua.pushstring(state, @ptrFromInt(tex_ptr));
+        } else {
+            lua.pushnil(state);
+        }
+    } else {
+        lua.pushnil(state);
+    }
+
+    // 5. startTime (ms)
+    lua.pushnumber(state, @floatFromInt(cs.start_ms));
+
+    // 6. endTime (ms)
+    lua.pushnumber(state, @floatFromInt(cs.end_ms));
+
+    // 7. isTradeSkill
+    lua.pushnumber(state, if (isTradeSkillSpell(cs.spell_id)) 1 else 0);
+
+    if (push_cast_id) {
+        // 8. castID (UnitCastingInfo only)
+        lua.pushnumber(state, @floatFromInt(cast_id_counter));
+        // 9. notInterruptible (always false in vanilla — all casts are interruptible)
+        lua.pushnil(state);
+        // 10. spellId (added in Legion 7.2.5, we include it for addon convenience)
+        lua.pushnumber(state, @floatFromInt(cs.spell_id));
+        return 10;
+    } else {
+        // 8. notInterruptible (UnitChannelInfo — no castID)
+        lua.pushnil(state);
+        // 9. spellId (added in BfA 8.0.1 for UnitChannelInfo)
+        lua.pushnumber(state, @floatFromInt(cs.spell_id));
+        return 9;
+    }
+}
+
+pub fn luaUnitCastingInfo(L: usize) callconv(hook.cc.fastcall) u32 {
+    const state: lua.State = @ptrFromInt(L);
+    if (lua.gettop(state) < 1) return 0;
+
+    const unit_str = lua.tostring(state, 1);
+    if (unit_str == null) return 0;
+
+    const guid = wow.unitGUID(unit_str.?);
+    if (guid == 0) return 0;
+
+    if (getCastState(guid, false)) |cs| {
+        return pushCastInfo(state, cs, true);
+    }
+
+    lua.pushnil(state);
+    return 1;
+}
+
+// =============================================================================
+// Lua function: UnitChannelInfo(unit)
+// Returns: name, rank, displayName, icon, startTime, endTime, isTradeSkill, notInterruptible, spellId
+// Times in milliseconds (GetTime()*1000 scale). Returns nil if not channeling.
+//
+// Cross-validates against UNIT_CHANNEL_SPELL descriptor for non-self units.
+// =============================================================================
+
+pub fn luaUnitChannelInfo(L: usize) callconv(hook.cc.fastcall) u32 {
+    const state: lua.State = @ptrFromInt(L);
+    if (lua.gettop(state) < 1) return 0;
+
+    const unit_str = lua.tostring(state, 1);
+    if (unit_str == null) return 0;
+
+    const guid = wow.unitGUID(unit_str.?);
+    if (guid == 0) return 0;
+
+    // Validate channel is still active via descriptor
+    const obj = wow.getObjectByGUID(guid);
+    if (obj != 0) {
+        const m_data = hook.readMem(u32, obj + 0x08);
+        if (m_data != 0) {
+            const channel_spell = hook.readMem(u32, m_data + DESC_CHANNEL_SPELL);
+            if (channel_spell == 0) {
+                // Descriptor says not channeling — clear stale state
+                clearCastState(guid);
+                lua.pushnil(state);
+                return 1;
+            }
+        }
+    }
+
+    if (getCastState(guid, true)) |cs| {
+        return pushCastInfo(state, cs, false);
+    }
+
+    lua.pushnil(state);
+    return 1;
 }
