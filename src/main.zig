@@ -43,7 +43,7 @@ const transform44 = if (build_opts.transform44) @import("transform44/transform44
 const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") else struct {};
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
-const weirdperformance = if (build_opts.weirdperformance) @import("performance/weirdperformance.zig") else struct {};
+const weirdperformance = if (build_opts.weirdperformance) @import("weirdperformance/weirdperformance.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -665,6 +665,9 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     }
     if (build_opts.silicon) {
         silicon.lateInit();
+    }
+    if (build_opts.weirdperformance) {
+        weirdperformance.lateInit();
     }
 }
 

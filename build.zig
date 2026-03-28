@@ -41,7 +41,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86,
         .os_tag = .windows,
         .abi = .msvc,
-        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
+        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
     });
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
 
@@ -61,46 +61,6 @@ pub fn build(b: *std.Build) void {
     });
     const zhook_mod = zhook_dep.module("zhook");
 
-    // Hot math — separate compilation units, always ReleaseFast.
-    // Source lives in src/performance/ — the production SSE module.
-    const clip_sse_obj = b.addObject(.{
-        .name = "clip_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/clip_sse.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    const cull_sse_obj = b.addObject(.{
-        .name = "cull_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/cull_sse.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    const entity_sse_obj = b.addObject(.{
-        .name = "entity_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/entity_sse.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    const bone_sse_target = b.resolveTargetQuery(.{
-        .cpu_arch = .x86,
-        .os_tag = .windows,
-        .abi = .msvc,
-        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2, .sse3, .sse4_1, .fma, .avx }),
-    });
-    const bone_sse_obj = b.addObject(.{
-        .name = "bone_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/bone_sse.zig"),
-            .target = bone_sse_target,
-            .optimize = .ReleaseFast,
-        }),
-    });
     // REF uses x87-only target to match original game code structure.
     // The global target has SSE/SSE2 which generates movss/mulss;
     // the original at 0x714260 uses pure x87 (FLD/FMUL/FSTP).
@@ -126,28 +86,11 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
         }),
     });
-    const silicon_sse_obj = b.addObject(.{
-        .name = "silicon_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/silicon_sse.zig"),
-            .target = bone_sse_target, // SSE4.1+FMA+AVX, same as bone_sse
-            .optimize = .ReleaseFast,
-        }),
-    });
-
-    const particle_sse_obj = b.addObject(.{
-        .name = "particle_sse",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/performance/particle_sse.zig"),
-            .target = bone_sse_target,
-            .optimize = .ReleaseFast,
-        }),
-    });
     const particle_ref_obj = b.addObject(.{
         .name = "particle_sse_ref",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/transform44/particle_sse_reference.zig"),
-            .target = bone_sse_target,
+            .target = target,
             .optimize = .ReleaseFast,
         }),
     });
@@ -178,54 +121,36 @@ pub fn build(b: *std.Build) void {
     });
     libdeflate.root_module.addCSourceFiles(.{
         .files = &.{
-            "src/performance/libdeflate/lib/deflate_decompress.c",
-            "src/performance/libdeflate/lib/zlib_decompress.c",
-            "src/performance/libdeflate/lib/utils.c",
-            "src/performance/libdeflate/lib/adler32.c",
-            "src/performance/libdeflate/lib/x86/cpu_features.c",
+            "src/weirdperformance/libdeflate/lib/deflate_decompress.c",
+            "src/weirdperformance/libdeflate/lib/zlib_decompress.c",
+            "src/weirdperformance/libdeflate/lib/utils.c",
+            "src/weirdperformance/libdeflate/lib/adler32.c",
+            "src/weirdperformance/libdeflate/lib/x86/cpu_features.c",
+            "src/weirdperformance/libdeflate/stubs/game_alloc.c",
         },
         .flags = &.{"-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX512VNNI"},
     });
-    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/stubs"));
-    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate"));
-    libdeflate.root_module.addIncludePath(b.path("src/performance/libdeflate/lib"));
+    libdeflate.root_module.addIncludePath(b.path("src/weirdperformance/libdeflate/stubs"));
+    libdeflate.root_module.addIncludePath(b.path("src/weirdperformance/libdeflate"));
+    libdeflate.root_module.addIncludePath(b.path("src/weirdperformance/libdeflate/lib"));
 
     // Link module-specific object files into a DLL.
     // Single source of truth for which objects each module needs.
     // Called for both the main weirdutils build and each variant.
     const ModuleObjects = struct {
-        clip_sse: *std.Build.Step.Compile,
-        cull_sse: *std.Build.Step.Compile,
-        entity_sse: *std.Build.Step.Compile,
-        bone_sse: *std.Build.Step.Compile,
         bone_sse_ref: *std.Build.Step.Compile,
         math_sse: *std.Build.Step.Compile,
-        silicon_sse: *std.Build.Step.Compile,
-        particle_sse: *std.Build.Step.Compile,
         particle_ref: *std.Build.Step.Compile,
         libdeflate: *std.Build.Step.Compile,
 
         fn linkFor(self: @This(), mod: *std.Build.Module, comptime module_name: []const u8) void {
             @setEvalBranchQuota(10000);
             if (comptime std.mem.eql(u8, module_name, "weirdperformance")) {
-                mod.addObject(self.clip_sse);
-                mod.addObject(self.cull_sse);
-                mod.addObject(self.bone_sse);
-                mod.addObject(self.silicon_sse);
-                mod.addObject(self.particle_sse);
                 mod.addObjectFile(self.libdeflate.getEmittedBin());
             }
             if (comptime std.mem.eql(u8, module_name, "transform44")) {
-                mod.addObject(self.clip_sse);
-                mod.addObject(self.cull_sse);
-                mod.addObject(self.entity_sse);
-                mod.addObject(self.bone_sse);
                 mod.addObject(self.bone_sse_ref);
-                mod.addObject(self.particle_sse);
                 mod.addObject(self.particle_ref);
-            }
-            if (comptime std.mem.eql(u8, module_name, "silicon")) {
-                mod.addObject(self.silicon_sse);
             }
             if (comptime std.mem.eql(u8, module_name, "ssemaths")) {
                 mod.addObject(self.math_sse);
@@ -233,21 +158,15 @@ pub fn build(b: *std.Build) void {
         }
     };
     const objs = ModuleObjects{
-        .clip_sse = clip_sse_obj,
-        .cull_sse = cull_sse_obj,
-        .entity_sse = entity_sse_obj,
-        .bone_sse = bone_sse_obj,
         .bone_sse_ref = bone_sse_ref_obj,
         .math_sse = math_sse_obj,
-        .silicon_sse = silicon_sse_obj,
-        .particle_sse = particle_sse_obj,
         .particle_ref = particle_ref_obj,
         .libdeflate = libdeflate,
     };
 
-    // Main DLL: link all module objects
-    inline for (module_list) |mod| {
-        objs.linkFor(lib.root_module, mod.name);
+    // Main DLL: link module objects only for enabled modules
+    inline for (module_list, 0..) |mod, i| {
+        if (module_enabled[i]) objs.linkFor(lib.root_module, mod.name);
     }
 
     b.installArtifact(lib);
@@ -282,7 +201,7 @@ pub fn build(b: *std.Build) void {
         const bench_silicon_sse = b.addObject(.{
             .name = "bench_silicon_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/performance/silicon_sse.zig"),
+                .root_source_file = b.path("src/weirdperformance/silicon_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,
@@ -294,7 +213,7 @@ pub fn build(b: *std.Build) void {
         const bench_bone_sse = b.addObject(.{
             .name = "bench_bone_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/performance/bone_sse.zig"),
+                .root_source_file = b.path("src/weirdperformance/bone_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,
@@ -318,7 +237,7 @@ pub fn build(b: *std.Build) void {
         const bench_particle_sse = b.addObject(.{
             .name = "bench_particle_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/performance/particle_sse.zig"),
+                .root_source_file = b.path("src/weirdperformance/particle_sse.zig"),
                 .target = b.resolveTargetQuery(.{
                     .cpu_arch = .x86,
                     .os_tag = .linux,
@@ -330,7 +249,7 @@ pub fn build(b: *std.Build) void {
         const bench_cull_sse = b.addObject(.{
             .name = "bench_cull_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/performance/cull_sse.zig"),
+                .root_source_file = b.path("src/weirdperformance/cull_sse.zig"),
                 .target = bench_target,
                 .optimize = .ReleaseFast,
             }),
@@ -344,7 +263,7 @@ pub fn build(b: *std.Build) void {
         const bench_entity_sse = b.addObject(.{
             .name = "bench_entity_sse",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/performance/entity_sse.zig"),
+                .root_source_file = b.path("src/weirdperformance/entity_sse.zig"),
                 .target = bench_target,
                 .optimize = .ReleaseFast,
             }),
@@ -396,6 +315,7 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(&noperf_install.step);
 
     inline for (module_list) |variant_mod| {
+        if (!variant_mod.default) continue;
         @setEvalBranchQuota(10000);
         const opts = b.addOptions();
         inline for (module_list) |m| {

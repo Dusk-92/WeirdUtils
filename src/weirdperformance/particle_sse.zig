@@ -168,7 +168,6 @@ const VBState = struct {
     light: [3]u32,
 
     fn load(vb: u32) VBState {
-        logStrides(vb);
         return .{
             .pos = ru32(vb + VB.pos),
             .normal = ru32(vb + VB.normal),
@@ -260,37 +259,12 @@ inline fn emitVertex(vb: u32, px: f32, py: f32, pz: f32, color: u32, tu: f32, tv
 // Reset each frame via resetParticleCache() called from the frame hook.
 var cached_render_state: u32 = 0;
 
-var stride_logged: bool = false;
-var debug_logged: bool = false;
-export var debug_vertex_count: u32 = 0;
-export var debug_max_sprites: u32 = 0;
-export var debug_fmt_index: u32 = 0;
-export var debug_data_ptr: u32 = 0;
 
 /// Reset per-frame caches. Call from OnWorldUpdate or executeSceneRenderPass hook.
-export fn resetParticleCache() void {
+pub fn resetParticleCache() void {
     cached_render_state = 0;
 }
 
-/// Log VB strides once for analysis. Called from first VBState.load.
-fn logStrides(vb: u32) void {
-    if (stride_logged) return;
-    stride_logged = true;
-    // Write to a known memory location that the profiler can dump, or just use
-    // the debug console. For now, store in a global we can read.
-    stride_info = .{
-        ru32(vb + VB.pos_stride),
-        ru32(vb + VB.normal_stride),
-        ru32(vb + VB.color_stride),
-        ru32(vb + VB.texcoord_stride),
-        ru32(vb + VB.pos),
-        ru32(vb + VB.normal),
-        ru32(vb + VB.color),
-        ru32(vb + VB.texcoord),
-    };
-}
-
-export var stride_info: [8]u32 = .{0} ** 8;
 
 // =============================================================================
 // RenderParticleSprites (0x7B2A50)
@@ -299,7 +273,7 @@ export var stride_info: [8]u32 = .{0} ** 8;
 //
 // Faithful recreation from assembly + Ghidra decompilation.
 // =============================================================================
-export fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buffers: u32) callconv(TC) u32 {
+pub fn renderParticleSprites_SSE(emitter: u32, particle_data: u32, vertex_buffers: u32) callconv(TC) u32 {
     const pd = particle_data; // particleData pointer (float*)
     const vb = vertex_buffers; // vertexBuffers pointer (float**)
 
@@ -762,7 +736,7 @@ const SG = struct {
 // Faithful recreation from Ghidra decompilation + assembly.
 // All game function calls preserved, matrix math inlined with V4.
 // =============================================================================
-export fn setupParticleRendering_SSE(emitter: u32, view_matrix: u32) callconv(TC) void {
+pub fn setupParticleRendering_SSE(emitter: u32, view_matrix: u32) callconv(TC) void {
     // =========================================================================
     // Section 1: Identity matrices for render state
     // Optimization: use static identity instead of rebuilding on stack each call.
@@ -999,15 +973,6 @@ export fn setupParticleRendering_SSE(emitter: u32, view_matrix: u32) callconv(TC
     // =========================================================================
     gameRenderSorted(emitter, @intFromPtr(&vb_ptrs));
 
-    // DEBUG: log vertex count produced
-    if (!debug_logged and vb_ptrs[8] > 0) {
-        debug_logged = true;
-        debug_vertex_count = vb_ptrs[8];
-        debug_max_sprites = max_sprites;
-        debug_fmt_index = fmt_index;
-        debug_data_ptr = data_ptr;
-    }
-
     gameUnlockVB(vb_ptr, 0);
     gameDrawPrim(vb_ptr, fmt_index);
 
@@ -1095,7 +1060,7 @@ inline fn displayModeOffset(sprite_type: u32, count: u32) u32 {
     return divided -% ru32(DISPLAY_MODE_OFFSET_TABLE + sprite_type * 4);
 }
 
-export fn renderSpriteQuads_SSE(this: u32, sprite_data: u32, sprite_count: u32, render_mode: u32) callconv(TC) void {
+pub fn renderSpriteQuads_SSE(this: u32, sprite_data: u32, sprite_count: u32, render_mode: u32) callconv(TC) void {
     // Early out: this+0xF2C == 0
     if (ru32(this + 0xF2C) == 0) return;
 

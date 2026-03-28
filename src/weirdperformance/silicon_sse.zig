@@ -54,7 +54,7 @@ inline fn cvtss2si(x: f32) i32 {
 // --- 0x4549C0: normalizeVec3 (137K/7.5s) ---
 // Naked thiscall: ECX=vec, [ESP+4]=length_bits. RET 4. Original: 38 bytes.
 // rcpss + NR for fast reciprocal, then 3 multiplies.
-export fn si_normalizeVec3() callconv(.naked) void {
+pub fn si_normalizeVec3() callconv(.naked) void {
     asm volatile (
         // xmm0 = 1.0 / length (via rcpss + Newton-Raphson)
         \\vmovss 4(%%esp), %%xmm0
@@ -77,7 +77,7 @@ export fn si_normalizeVec3() callconv(.naked) void {
 // out = A * B (3x4 layout: 3x3 rotation + 3 translation)
 // Layout: [r0c0 r0c1 r0c2 | r1c0 r1c1 r1c2 | r2c0 r2c1 r2c2 | tx ty tz]
 // V4 per row: broadcast b[row*3+k], multiply with a's columns, accumulate.
-export fn si_mulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
+pub fn si_mulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
     const dst: [*]f32 = @ptrFromInt(out);
     const aa: [*]const f32 = @ptrFromInt(a_ptr);
     const b: [*]const f32 = @ptrFromInt(b_ptr);
@@ -117,7 +117,7 @@ export fn si_mulMat3x4(out: u32, a_ptr: u32, b_ptr: u32) callconv(FC) u32 {
 // --- 0x7BDDB0: rotateMatByQuat ---
 // builds rotation matrix from quaternion, multiplies with existing 4x4 matrix
 // Uses V4 for the matrix multiply (same pattern as bone_sse)
-export fn si_rotateMatByQuat(mat: u32, quat: u32) callconv(TC) u32 {
+pub fn si_rotateMatByQuat(mat: u32, quat: u32) callconv(TC) u32 {
     const q: [*]const f32 = @ptrFromInt(quat);
     const x = q[0]; const y = q[1]; const z = q[2]; const w = q[3];
     const x2 = x + x; const y2 = y + y; const z2 = z + z;
@@ -146,7 +146,7 @@ export fn si_rotateMatByQuat(mat: u32, quat: u32) callconv(TC) u32 {
 
 // --- 0x7BB860: createRotMat3x4 ---
 // Rodrigues rotation matrix, 3x4 layout. Uses @mulAdd for all 9 entries.
-export fn si_createRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normalized: u32) callconv(FC) u32 {
+pub fn si_createRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normalized: u32) callconv(FC) u32 {
     const m: [*]f32 = @ptrFromInt(out);
     const ax: [*]const f32 = @ptrFromInt(axis_ptr);
     var x = ax[0]; var y = ax[1]; var z = ax[2];
@@ -168,7 +168,7 @@ export fn si_createRotMat3x4(out: u32, axis_ptr: u32, angle_bits: u32, is_normal
 
 // --- 0x6329E0: distanceToPlane (525K/7.5s) ---
 // __fastcall(ECX=point, EDX=plane, stack=direction), returns f64 via ST(0), RET 0x4.
-export fn si_distanceToPlane(point: u32, plane: u32, direction: u32) callconv(FC) f64 {
+pub fn si_distanceToPlane(point: u32, plane: u32, direction: u32) callconv(FC) f64 {
     const p: [*]const f32 = @ptrFromInt(point);
     const pl: [*]const f32 = @ptrFromInt(plane);
     const dir: [*]const f32 = @ptrFromInt(direction);
@@ -183,7 +183,7 @@ export fn si_distanceToPlane(point: u32, plane: u32, direction: u32) callconv(FC
 // Tests point against 6 frustum planes, produces 6-bit bitmask.
 // Scalar @mulAdd dot4 per plane — the FMA chain has best throughput for this pattern.
 // Tried: V4 batch 4 planes (gather kills it), V4 hsum (shuffle overhead kills it).
-export fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) callconv(TC) u32 {
+pub fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) callconv(TC) u32 {
     const mask: *u32 = @ptrFromInt(out_mask);
     const pt = loadV3_1(point);
     var bits: u32 = 0;
@@ -199,7 +199,7 @@ export fn si_classifyPointFrustum(planes_ptr: u32, point: u32, out_mask: u32) ca
 
 // --- 0x6DC5A0: checkBoxLineIntersect (2.7M/7.5s) ---
 // Slab AABB test. Branchless min/max for t0/t1 swap and tmin/tmax accumulation.
-export fn si_checkBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32) callconv(FC) u32 {
+pub fn si_checkBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32) callconv(FC) u32 {
     const bmin: [*]const f32 = @ptrFromInt(box_ptr);
     const bmax: [*]const f32 = @ptrFromInt(box_ptr + 0xC);
     const start: [*]const f32 = @ptrFromInt(line_start);
@@ -225,7 +225,7 @@ export fn si_checkBoxLineIntersect(box_ptr: u32, line_start: u32, line_end: u32)
 
 // --- 0x6869C0: testOBBFrustum ---
 // Tests OBB against 6 frustum planes. Uses V4 for corner transform and plane test.
-export fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_ptr: u32) callconv(TC) u32 {
+pub fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_ptr: u32) callconv(TC) u32 {
     const aabb: [*]const f32 = @ptrFromInt(aabb_ptr);
     const rot: [*]const f32 = @ptrFromInt(rot_ptr);
     const t: [*]const f32 = @ptrFromInt(trans_ptr);
@@ -285,7 +285,7 @@ export fn si_testOBBFrustum(planes_ptr: u32, aabb_ptr: u32, rot_ptr: u32, trans_
 
 // --- 0x686B80: testSphereFrustum (375K/7.5s) ---
 // Zig thiscall: naked asm tested at 10cy (vhaddps slow), Zig dot4v at 8cy.
-export fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
+pub fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
     const s: [*]const f32 = @ptrFromInt(sphere);
     const center = V4{ s[0], s[1], s[2], 1.0 };
     const r = s[3];
@@ -299,7 +299,7 @@ export fn si_testSphereFrustum(planes_ptr: u32, sphere: u32) callconv(TC) u32 {
 
 // --- 0x7C0570: quatSlerp ---
 // V4 for final blend, @mulAdd for dot product
-export fn si_quatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) callconv(FC) u32 {
+pub fn si_quatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) callconv(FC) u32 {
     const dst: [*]f32 = @ptrFromInt(out);
     const av = loadV4(a_ptr);
     const bv = loadV4(b_ptr);
@@ -326,7 +326,7 @@ export fn si_quatSlerp(out: u32, a_ptr: u32, t_bits: u32, b_ptr: u32) callconv(F
 
 // --- 0x699330: isPointInsideBounds (1.7M/7.5s) ---
 // __fastcall(ECX=a, EDX=b), returns u32.
-export fn si_isPointInsideBounds(a: u32, b: u32) callconv(FC) u32 {
+pub fn si_isPointInsideBounds(a: u32, b: u32) callconv(FC) u32 {
     const va: [*]const f32 = @ptrFromInt(a);
     const vb: [*]const f32 = @ptrFromInt(b);
     if (vb[0] <= va[0] and vb[1] <= va[1] and vb[2] <= va[2]) return 1;
@@ -334,7 +334,7 @@ export fn si_isPointInsideBounds(a: u32, b: u32) callconv(FC) u32 {
 }
 
 // --- 0x749280: calculateSinCos ---
-export fn si_calculateSinCos(angle_bits: u32, out_sin: u32, out_cos: u32) callconv(SC) void {
+pub fn si_calculateSinCos(angle_bits: u32, out_sin: u32, out_cos: u32) callconv(SC) void {
     const angle: f32 = @bitCast(angle_bits);
     const sp: *f32 = @ptrFromInt(out_sin);
     const cp: *f32 = @ptrFromInt(out_cos);
@@ -343,7 +343,7 @@ export fn si_calculateSinCos(angle_bits: u32, out_sin: u32, out_cos: u32) callco
 }
 
 // --- 0x7BE5B0: createZRotMat3x3 ---
-export fn si_createZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
+pub fn si_createZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
     const m: [*]f32 = @ptrFromInt(out);
     const angle: f32 = @bitCast(angle_bits);
     const c = @cos(angle); const s = @sin(angle);
@@ -356,7 +356,7 @@ export fn si_createZRotMat3x3(out: u32, angle_bits: u32) callconv(TC) u32 {
 // --- 0x7BCEF0: transposeMat4x4 ---
 // Naked thiscall: ECX=src, [ESP+4]=dst. RET 4. Original: 156 bytes.
 // SSE unpacklo/unpackhi transpose: 4 loads + 4 shuffles + 4 stores.
-export fn si_transposeMat4x4() callconv(.naked) void {
+pub fn si_transposeMat4x4() callconv(.naked) void {
     asm volatile (
         \\mov 4(%%esp), %%eax
         // Load 4 rows from src (ECX)
@@ -387,7 +387,7 @@ export fn si_transposeMat4x4() callconv(.naked) void {
 
 // --- 0x7BB420: mulMat3x4InPlace ---
 // this = this * matB. V4 columns loaded upfront, write directly back (no tmp needed).
-export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
+pub fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
     const a: [*]f32 = @ptrFromInt(mat_a);
     const b: [*]const f32 = @ptrFromInt(mat_b);
 
@@ -419,7 +419,7 @@ export fn si_mulMat3x4InPlace(mat_a: u32, mat_b: u32) callconv(TC) u32 {
 // --- 0x6720F0: normalizeVec3InPlace ---
 // sqrt + reciprocal. 14cy (2.2x). rsqrt+NR tested at 15cy — no gain, compiler's
 // vsqrtss+vdivss pipeline is already optimal for scalar inverse sqrt.
-export fn si_normalizeVec3InPlace(vec: u32) callconv(TC) void {
+pub fn si_normalizeVec3InPlace(vec: u32) callconv(TC) void {
     const v: [*]f32 = @ptrFromInt(vec);
     const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     if (len > 1.0e-20) {
@@ -432,7 +432,7 @@ export fn si_normalizeVec3InPlace(vec: u32) callconv(TC) void {
 
 // --- 0x71BC70: addVec3ToAccumulator (136K/7.5s) ---
 // thiscall(ECX=this, stack=vec). Scale is a global at 0x81207C, NOT a parameter.
-export fn si_addVec3ToAccumulator(this: u32, vec: u32) callconv(TC) void {
+pub fn si_addVec3ToAccumulator(this: u32, vec: u32) callconv(TC) void {
     const obj: [*]f32 = @ptrFromInt(this);
     const v: [*]const f32 = @ptrFromInt(vec);
     const scale: f32 = @as(*const f32, @ptrFromInt(0x81207C)).*;
@@ -447,7 +447,7 @@ export fn si_addVec3ToAccumulator(this: u32, vec: u32) callconv(TC) void {
 // --- 0x71BF60: addToColorAccumulator (10K/7.5s) ---
 // Naked thiscall: ECX=this, [ESP+4]=color_ptr. RET 4. Original: 34 bytes.
 // 3 SSE adds at this+0x6C from color[0..2].
-export fn si_addToColorAccumulator() callconv(.naked) void {
+pub fn si_addToColorAccumulator() callconv(.naked) void {
     asm volatile (
         \\mov 4(%%esp), %%eax
         \\vmovss (%%eax), %%xmm0
@@ -465,7 +465,7 @@ export fn si_addToColorAccumulator() callconv(.naked) void {
 
 // --- 0x7B7A80: packParticleColor (2K/7.5s) ---
 // V4 multiply + clamp, then packed round+convert via @Vector(4, i32) for all channels at once.
-export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) callconv(TC) void {
+pub fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) callconv(TC) void {
     const base: [*]u8 = @ptrFromInt(obj);
     const out: *align(1) u32 = @ptrCast(base + 0x12C);
     const alpha = base[0x12F];
@@ -480,7 +480,7 @@ export fn si_packParticleColor(obj: u32, r_bits: u32, g_bits: u32, b_bits: u32) 
 // --- 0x7B7B10: setParticleAlpha (2K/7.5s) ---
 // Naked fastcall: ECX=obj, [ESP+4]=alpha_bits. RET 4.
 // Clamp alpha*255 to [0,255], write byte to obj+0x12F.
-export fn si_setParticleAlpha() callconv(.naked) void {
+pub fn si_setParticleAlpha() callconv(.naked) void {
     asm volatile (
         \\vmovss 4(%%esp), %%xmm0
         \\mov $0x437F0000, %%eax
@@ -499,7 +499,7 @@ export fn si_setParticleAlpha() callconv(.naked) void {
 // --- 0x40A2B0: __ftol ---
 // Drop-in binary replacement. Input: ST(0). Output: EAX:EDX (i64).
 // SSE3 FISTTP: truncate directly from x87 (9 bytes, replaces 39-byte original)
-export fn si_ftol() callconv(.naked) void {
+pub fn si_ftol() callconv(.naked) void {
     asm volatile (
         \\sub $8, %%esp
         \\fisttpll (%%esp)
@@ -511,7 +511,7 @@ export fn si_ftol() callconv(.naked) void {
 
 // --- 0x602630: vec3Dot (31K/7.5s) ---
 // __fastcall(ECX=a, EDX=b), returns f64 via ST(0).
-export fn si_vec3Dot(a: u32, b: u32) callconv(FC) f64 {
+pub fn si_vec3Dot(a: u32, b: u32) callconv(FC) f64 {
     const va: [*]const f32 = @ptrFromInt(a);
     const vb: [*]const f32 = @ptrFromInt(b);
     return @floatCast(@mulAdd(f32, va[2], vb[2], @mulAdd(f32, va[1], vb[1], va[0] * vb[0])));
@@ -519,7 +519,7 @@ export fn si_vec3Dot(a: u32, b: u32) callconv(FC) f64 {
 
 // --- 0x686820: translateBoundingVol ---
 // @mulAdd for plane distances. Scalar corner adds (stride 3 — V4 unaligned tested, slower).
-export fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
+pub fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
     const obj: [*]f32 = @ptrFromInt(this);
     const off: [*]const f32 = @ptrFromInt(offset);
     const dx = off[0]; const dy = off[1]; const dz = off[2];
@@ -543,7 +543,7 @@ export fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
 // Original: 380 bytes, 2 calls to mat*vec3 (0x7BCA80), x87 perspective divide, x87 column scan.
 // SSE: inline V4 mat*vec3, SSE perspective divide, 4-wide column scan.
 // __fastcall(bbox_ECX, flags_EDX, radius_stack), RET 0x4
-export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) u32 {
+pub fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) u32 {
     // Early out: global occlusion flag bit 5
     if ((@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20) == 0) return 0;
 
@@ -638,7 +638,7 @@ export fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(F
 // __fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack), RET 0x8
 // addGeometryToBuffer at 0x6ABD90: __fastcall(queryBox_ECX, nodeData_EDX, resultBuf_stack), RET 0x4
 // Visited sentinel: *(u32*)0xC89F20
-export fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_buf: u32, flags: u32) callconv(FC) u32 {
+pub fn si_processLinkedListCollision(list_head: u32, query_box: u32, result_buf: u32, flags: u32) callconv(FC) u32 {
     if ((flags & 0xF0000F) == 0) return 1;
 
     const addGeometryToBuffer: *const fn (u32, u32, u32) callconv(FC) void = @ptrFromInt(0x6ABD90);

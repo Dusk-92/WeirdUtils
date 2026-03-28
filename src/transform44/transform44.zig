@@ -15,37 +15,6 @@ const std = @import("std");
 const hook = @import("zhook");
 const logging = @import("../logging.zig");
 const mod_mutex = @import("../mutex.zig");
-extern fn clipPolygonToSinglePlane(u32, u32, u32) void;
-extern fn buildTrianglePlanes(u32, u32, u32, u32, u32) u32;
-extern fn rayTriangleIntersection(u32, u32, u32, u32, u32, u32) u32;
-extern fn rotateMatrixByAxisAngle(u32, u32, u32, u32) void;
-extern fn multiplyMatrix4x4(u32, u32, u32) u32;
-extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
-extern fn calcColorValues_SSE(u32, u32, u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn renderParticleSprites_REF(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn resetParticleCache() void;
-extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn updateEntityAndChunksPositions(u32) callconv(.{ .x86_fastcall = .{} }) void;
-extern fn updateEntitiesInBoundsSSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
-extern fn addToSpatialGridSSE(u32) callconv(.{ .x86_fastcall = .{} }) void;
-extern fn findObjectByGUID_Cached(u32, u32) callconv(.{ .x86_stdcall = .{} }) u32;
-extern fn setupParticleRendering_SSE(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-extern fn renderSpriteQuads_SSE(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-extern var stride_info: [8]u32; // exported from particle_sse.zig
-extern var debug_vertex_count: u32;
-extern var debug_max_sprites: u32;
-extern var debug_fmt_index: u32;
-extern var debug_data_ptr: u32;
-var stride_dumped: bool = false;
-
-/// Thiscall wrapper for the SSE implementation. Lives here (baseline SSE2 unit)
-/// so LLVM can't inline transformImpl_SSE's alignment into the thiscall frame.
-fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
-    transformImpl_SSE(this, mat1, mat2, mat3, mat4);
-}
 extern fn transformMatrix4x4_REF(u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 extern var bisect_stop_section: u32;
 
@@ -82,12 +51,6 @@ const AB_OTHER_HOOKS = true;
 var diag_cmp_count: u32 = 0;
 export var original_trampoline: u32 = 0; // DEBUG: expose trampoline for REF passthrough test
 
-// Teardown guard: set true when CleanupWorldAndEntities fires.
-// During teardown, SceneObject data may be partially freed — our SSE code
-// must not process it. Falls back to original function which the game
-// controls. NOTE: binary patching (instead of hooking) would avoid this
-// issue entirely since the patched code IS the original entry point.
-var teardown_active: bool = false;
 
 
 // Persistent blit totals per A/B mode — NOT reset each dump period.
@@ -325,11 +288,7 @@ fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callco
     t44_depth +|= 1;
     if (t44_depth > prof.t44_max_depth) prof.t44_max_depth = t44_depth;
 
-    if (teardown_active) {
-        transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
-    } else {
-        transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
-    }
+    transform_hook.callOriginal(.{ this, mat1, mat2, mat3, mat4 });
 
     t44_depth -|= 1;
     const elapsed = rdtsc() - start;
@@ -392,7 +351,6 @@ const WorldUpdateFn = fn (u32) callconv(hook.cc.fastcall) void;
 var world_update_hook: hook.Detour(WorldUpdateFn) = .{};
 
 fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
-    resetParticleCache();
     const now = rdtsc();
     if (last_frame_tsc != 0) {
         const delta = now - last_frame_tsc;
@@ -408,23 +366,6 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
     if (prof.frames >= DUMP_FRAMES or prof.wall_cycles >= DUMP_CYCLES) {
         dumpStats();
     }
-}
-
-// =============================================================================
-// Hook: World_HandleLogoutCleanup (0x491180)
-// Fires at the START of the logout/disconnect cleanup sequence, BEFORE any
-// model data is freed. Sets teardown_active flag so our SSE code falls back
-// to the original function during the entire cleanup chain.
-// NOTE: binary patching instead of hooking would avoid this issue entirely.
-// =============================================================================
-
-const TeardownFn = fn () callconv(.{ .x86_stdcall = .{} }) void;
-var teardown_hook: hook.Detour(TeardownFn) = .{};
-
-fn teardownDetour() callconv(.{ .x86_stdcall = .{} }) void {
-    teardown_active = true;
-    teardown_hook.callOriginal(.{});
-    teardown_active = false;
 }
 
 // =============================================================================
@@ -897,12 +838,6 @@ var staticcull_hook: hook.Detour(Fn2) = .{}; // ProcessStaticObjectsCulling: fas
 fn clipDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        clipPolygonToSinglePlane(a, b, c);
-        prof.clip_cycles +|= rdtsc() - s;
-        prof.clip_calls +|= 1;
-        return null; // original is void — EAX not read by callers
-    }
     const ret = clip_hook.callOriginal(.{ a, b, c });
     prof.clip_cycles +|= rdtsc() - s;
     prof.clip_calls +|= 1;
@@ -948,13 +883,12 @@ fn glyphDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyo
     prof.glyph_calls +|= 1;
     return ret;
 }
-fn particleDetour(a: u32, _: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
-    // a=ECX(emitter), c=particleData, d=vertexBuffers
+fn particleDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
-    const result = renderParticleSprites_SSE(a, c, d);
+    const ret = particle_hook.callOriginal(.{ a, b, c, d });
     prof.particle_cycles +|= rdtsc() - s;
     prof.particle_calls +|= 1;
-    return @ptrFromInt(result);
+    return ret;
 }
 fn collisionDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
@@ -965,12 +899,6 @@ fn collisionDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*
 }
 fn entposDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        updateEntityAndChunksPositions(a);
-        prof.entpos_cycles +|= rdtsc() - s;
-        prof.entpos_calls +|= 1;
-        return null;
-    }
     const ret = entpos_hook.callOriginal(.{ a, b });
     prof.entpos_cycles +|= rdtsc() - s;
     prof.entpos_calls +|= 1;
@@ -1022,12 +950,6 @@ fn spatialDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
 fn raytriDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        const ret = rayTriangleIntersection(a, b, c, d, e, f);
-        prof.raytri_cycles +|= rdtsc() - s;
-        prof.raytri_calls +|= 1;
-        return @ptrFromInt(ret);
-    }
     const ret = raytri_hook.callOriginal(.{ a, b, c, d, e, f });
     prof.raytri_cycles +|= rdtsc() - s;
     prof.raytri_calls +|= 1;
@@ -1059,12 +981,6 @@ fn setvecDetour(a: u32, b: u32) callconv(hook.cc.fastcall) ?*anyopaque {
 }
 fn cullDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        const ret = performSpatialCulling(a, c, d);
-        prof.cull_cycles +|= rdtsc() - s;
-        prof.cull_calls +|= 1;
-        return @ptrFromInt(ret);
-    }
     const ret = cull_hook.callOriginal(.{ a, b, c, d });
     prof.cull_cycles +|= rdtsc() - s;
     prof.cull_calls +|= 1;
@@ -1072,12 +988,6 @@ fn cullDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyop
 }
 fn colldetDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        const ret = performCollisionDetectionSSE(a, c, d);
-        prof.colldet_cycles +|= rdtsc() - s;
-        prof.colldet_calls +|= 1;
-        return @ptrFromInt(ret);
-    }
     const ret = colldet_hook.callOriginal(.{ a, b, c, d });
     prof.colldet_cycles +|= rdtsc() - s;
     prof.colldet_calls +|= 1;
@@ -1216,13 +1126,6 @@ fn bboxchkDetour(a: u32, b: u32, c: u32, d: u32) callconv(hook.cc.fastcall) ?*an
 fn rotmatDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        // thiscall: a=ECX=matrix, b=EDX=unused, c=angle, d=axis_ptr, e=is_unit
-        rotateMatrixByAxisAngle(a, c, d, e);
-        prof.rotmat_cycles +|= rdtsc() - s;
-        prof.rotmat_calls +|= 1;
-        return null; // void function, EAX not read by callers
-    }
     const ret = rotmat_hook.callOriginal(.{ a, b, c, d, e });
     prof.rotmat_cycles +|= rdtsc() - s;
     prof.rotmat_calls +|= 1;
@@ -1231,12 +1134,6 @@ fn rotmatDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcal
 fn triplaneDetour(a: u32, b: u32, c: u32, d: u32, e: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        const ret = buildTrianglePlanes(a, b, c, d, e);
-        prof.triplane_cycles +|= rdtsc() - s;
-        prof.triplane_calls +|= 1;
-        return @ptrFromInt(ret);
-    }
     const ret = triplane_hook.callOriginal(.{ a, b, c, d, e });
     prof.triplane_cycles +|= rdtsc() - s;
     prof.triplane_calls +|= 1;
@@ -1252,13 +1149,6 @@ fn partsetupDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaqu
 fn matmulDetour(a: u32, b: u32, c: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     asm volatile ("" ::: .{ .esi = true, .edi = true, .ebx = true });
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        // fastcall: a=ECX=result, b=EDX=left, c=right
-        const ret = multiplyMatrix4x4(a, b, c);
-        prof.matmul_cycles +|= rdtsc() - s;
-        prof.matmul_calls +|= 1;
-        return @ptrFromInt(ret);
-    }
     const ret = matmul_hook.callOriginal(.{ a, b, c });
     prof.matmul_cycles +|= rdtsc() - s;
     prof.matmul_calls +|= 1;
@@ -1294,12 +1184,6 @@ fn rendersphDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32, g: u32, h: u3
 }
 fn raytriIntDetour(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) callconv(hook.cc.fastcall) ?*anyopaque {
     const s = rdtsc();
-    if (AB_OTHER_HOOKS and ab_use_custom) {
-        const ret = rayTriIntersectIndexedInt(a, b, c, d, e, f);
-        prof.raytri_int_cycles +|= rdtsc() - s;
-        prof.raytri_int_calls +|= 1;
-        return @ptrFromInt(@as(u32, ret));
-    }
     const ret = raytri_int_hook.callOriginal(.{ a, b, c, d, e, f });
     prof.raytri_int_cycles +|= rdtsc() - s;
     prof.raytri_int_calls +|= 1;
@@ -1606,24 +1490,6 @@ fn dumpStats() void {
         guid_cache_evictions = 0;
     }
 
-    // Dump particle VB stride info (once)
-    if (debug_vertex_count != 0) {
-        log.fmt("  partsetup_debug: verts={d} maxSprites={d} fmt={d} dataPtr=0x{x}\n", .{
-            debug_vertex_count, debug_max_sprites, debug_fmt_index, debug_data_ptr,
-        });
-        debug_vertex_count = 0;
-    }
-
-    if (stride_info[0] != 0 and !stride_dumped) {
-        stride_dumped = true;
-        log.fmt("  vb_strides: pos={d} norm={d} color={d} tc={d}\n", .{
-            stride_info[0], stride_info[1], stride_info[2], stride_info[3],
-        });
-        log.fmt("  vb_bases: pos=0x{x} norm=0x{x} color=0x{x} tc=0x{x}\n", .{
-            stride_info[4], stride_info[5], stride_info[6], stride_info[7],
-        });
-    }
-
     // Flip A/B mode
     ab_use_custom = !ab_use_custom;
     diag_cmp_count = 0;
@@ -1687,7 +1553,6 @@ pub fn installHooks() void {
         _ = transform_hook.attach(0x714260, &transformDetour);
         original_trampoline = @intCast(transform_hook.inner.trampoline);
     }
-    _ = teardown_hook.attach(0x491180, &teardownDetour);
     _ = render_frame_hook.attach(0x707680, &renderFrameDetour);
     _ = exec_render_pass_hook.attach(0x708900, &execRenderPassDetour);
     _ = world_update_hook.attach(0x482EA0, &worldUpdateDetour);
@@ -1776,7 +1641,6 @@ pub fn removeHooks() void {
         render_frame_hook.detach();
         exec_render_pass_hook.detach();
         world_update_hook.detach();
-        teardown_hook.detach();
         render_quads_hook.detach();
         movement_hook.detach();
         interp_kf_hook.detach();

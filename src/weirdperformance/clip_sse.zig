@@ -9,7 +9,7 @@ const V4 = @Vector(4, f32);
 const CLIP_EPSILON: f32 = @bitCast(@as(u32, 0x3ab60b61)); // +0.00139, global at 0x80dfec
 const MOVEMENT_EPSILON: f32 = @bitCast(@as(u32, 0x35800000)); // 9.54e-7, global at 0x8026bc
 
-export fn clipPolygonToSinglePlane(plane_addr: u32, poly_addr: u32, attrib_bits: u32) void {
+pub fn clipPolygonToSinglePlane(plane_addr: u32, poly_addr: u32, attrib_bits: u32) void {
     const plane: [*]const f32 = @ptrFromInt(plane_addr);
     const poly: [*]f32 = @ptrFromInt(poly_addr);
     const new_attrib: f32 = @bitCast(attrib_bits);
@@ -116,7 +116,7 @@ inline fn lerp(poly: [*]f32, attribs: [*]f32, out: *u32, p: [*]const f32, c: [*]
 //   planes[3]:    cap plane (from plane_normal, offset by offset_vector)
 // =============================================================================
 
-export fn buildTrianglePlanes(verts_addr: u32, indices_addr: u32, normal_addr: u32, offset_addr: u32, out_addr: u32) u32 {
+pub fn buildTrianglePlanes(verts_addr: u32, indices_addr: u32, normal_addr: u32, offset_addr: u32, out_addr: u32) u32 {
     const verts: [*]const f32 = @ptrFromInt(verts_addr);
     const indices: [*]const u8 = @ptrFromInt(indices_addr);
     const plane_normal: [*]const f32 = @ptrFromInt(normal_addr);
@@ -191,7 +191,7 @@ export fn buildTrianglePlanes(verts_addr: u32, indices_addr: u32, normal_addr: u
 // Returns: 1 = hit, 0 = miss
 // =============================================================================
 
-export fn rayTriangleIntersection(
+pub fn rayTriangleIntersection(
     ray_addr: u32,
     verts_addr: u32,
     indices_addr: u32,
@@ -267,7 +267,7 @@ export fn rayTriangleIntersection(
 // Returns result pointer (EAX = result_addr).
 // =============================================================================
 
-export fn multiplyMatrix4x4(result_addr: u32, left_addr: u32, right_addr: u32) u32 {
+pub fn multiplyMatrix4x4(result_addr: u32, left_addr: u32, right_addr: u32) u32 {
     const result: [*]f32 = @ptrFromInt(result_addr);
     const left: [*]const f32 = @ptrFromInt(left_addr);
     const right: [*]const f32 = @ptrFromInt(right_addr);
@@ -296,7 +296,7 @@ export fn multiplyMatrix4x4(result_addr: u32, left_addr: u32, right_addr: u32) u
 // __thiscall(ECX=matrix, stack: angle, axis_ptr, is_unit_flag)
 // =============================================================================
 
-export fn rotateMatrixByAxisAngle(
+pub fn rotateMatrixByAxisAngle(
     matrix_addr: u32,
     angle_bits: u32,
     axis_addr: u32,

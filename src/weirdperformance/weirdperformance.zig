@@ -22,21 +22,8 @@ const filecache = @import("filecache.zig");
 
 pub const module_name: [*:0]const u8 = "weirdperformance";
 
-// Provide malloc/free for libdeflate's default allocator (linked without libc).
-// Use game's Storm memory manager:
-//   ReallocMemory (0x646320): __stdcall(ptr, size, filename, line, flags) → ptr
-//     When ptr=NULL, acts as malloc via AllocateBufferWithPowerOfTwo.
-//   FreeMemory (0x646430): __stdcall(ptr, filename, line, flags) RET 0x10 = 4 params
-const gameRealloc: *const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) ?*anyopaque = @ptrFromInt(0x646320);
-const gameFree: *const fn (u32, u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) u32 = @ptrFromInt(0x646430);
-
-export fn malloc(size: usize) callconv(.c) ?*anyopaque {
-    return gameRealloc(0, @intCast(size), 0, 0, 0);
-}
-
-export fn free(ptr: ?*anyopaque) callconv(.c) void {
-    if (ptr) |p| _ = gameFree(@intFromPtr(p), 0, 0, 0);
-}
+// malloc/free for libdeflate provided by stubs/game_alloc.c (compiled into
+// the libdeflate static lib). This avoids exporting malloc/free from the DLL.
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -47,12 +34,18 @@ pub fn isActive() bool {
 }
 
 // =============================================================================
-// Extern SSE functions (from separate ReleaseFast compilation units)
+// SSE functions (imported directly to avoid addObject SizeOfImage bloat)
 // =============================================================================
 
-extern fn transformImpl_SSE(u32, u32, u32, u32, u32) callconv(.c) void;
-extern fn renderParticleSprites_SSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn resetParticleCache() void;
+const bone_sse = @import("bone_sse.zig");
+const particle_sse = @import("particle_sse.zig");
+const clip_sse = @import("clip_sse.zig");
+const cull_sse = @import("cull_sse.zig");
+const silicon_sse = @import("silicon_sse.zig");
+
+const transformImpl_SSE = bone_sse.transformImpl_SSE;
+const renderParticleSprites_SSE = particle_sse.renderParticleSprites_SSE;
+const resetParticleCache = particle_sse.resetParticleCache;
 
 // =============================================================================
 // transformMatrix4x4 hook (0x714260)
@@ -218,35 +211,12 @@ fn worldUpdateDetour(frame_count: u32) callconv(hook.cc.fastcall) void {
 // =============================================================================
 
 // cull_sse.zig
-extern fn performSpatialCulling(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-extern fn rayTriIntersectIndexedInt(u32, u32, u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u8;
+const performSpatialCulling = cull_sse.performSpatialCulling;
+const performCollisionDetectionSSE = cull_sse.performCollisionDetectionSSE;
+const rayTriIntersectIndexedInt = cull_sse.rayTriIntersectIndexedInt;
 
 // silicon_sse.zig
-const sse = struct {
-    extern fn si_normalizeVec3() callconv(.naked) void;
-    extern fn si_mulMat3x4(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-    extern fn si_rotateMatByQuat(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_createRotMat3x4(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-    extern fn si_classifyPointFrustum(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_checkBoxLineIntersect(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-    extern fn si_testOBBFrustum(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_testSphereFrustum(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_quatSlerp(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-    extern fn si_calculateSinCos(u32, u32, u32) callconv(.{ .x86_stdcall = .{} }) void;
-    extern fn si_createZRotMat3x3(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_transposeMat4x4() callconv(.naked) void;
-    extern fn si_mulMat3x4InPlace(u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
-    extern fn si_normalizeVec3InPlace(u32) callconv(.{ .x86_thiscall = .{} }) void;
-    extern fn si_addVec3ToAccumulator(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-    extern fn si_addToColorAccumulator() callconv(.naked) void;
-    extern fn si_packParticleColor(u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-    extern fn si_setParticleAlpha() callconv(.naked) void;
-    extern fn si_ftol() callconv(.naked) void;
-    extern fn si_translateBoundingVol(u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
-    extern fn si_processLinkedListCollision(u32, u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-    extern fn si_frustumCullBBox(u32, u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
-};
+const sse = silicon_sse;
 
 const PatchEntry = struct {
     target: u32,
@@ -348,7 +318,10 @@ pub fn installHooks() void {
     // libdeflate inflate replacement
     if (inflate_hook.install()) installed += 1;
 
-    // TSC timer calibration + OS timer tweaks
+}
+
+pub fn lateInit() void {
+    if (!g_is_hook_owner) return;
     timer_fix.init();
 }
 

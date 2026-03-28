@@ -7,36 +7,12 @@
 This project is developed entirely locally. The remote repo is **only** a
 distribution point for releases - no source code is pushed.
 
-The remote `main` branch contains a single file: `README.md` (built from the
-local `DLL_README.md`). This must be set up once when creating the repo:
+The remote `main` branch contains `README.md` (built from the local
+`DLL_README.md`), `weirdutils_api.h`, and issue templates under `.gitea/`.
 
-```sh
-tea repo create --name WeirdUtils --description "Vanilla WoW 1.12.1 utility DLLs" --login MarcelineVQ
-```
-
-Codeberg disables releases on new repos by default. Enable via API
-(get your token from `grep 'token:' ~/.config/tea/config.yml | head -1 | awk '{print $2}'`):
-
-```sh
-curl -s -X PATCH \
-  -H "Authorization: token <your-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"has_releases":true}' \
-  "https://codeberg.org/api/v1/repos/MarcelineVQ/WeirdUtils"
-```
-
-Then push the initial README:
-
-```sh
-# In a temporary directory:
-git init && git remote add origin ssh://git@codeberg.org/MarcelineVQ/WeirdUtils.git && git checkout -b main
-cp /path/to/weirdutils/DLL_README.md README.md
-git add README.md
-git commit -m "Add README"
-git push origin main
-```
-
-After that, the remote `main` only needs updating when `DLL_README.md` changes.
+A local clone of the remote repo lives at `remote/WeirdUtils/`. The wiki
+lives at `remote/wiki/`. Use these for all remote operations - no tmp clones
+needed.
 
 ## 1. Bump module versions
 
@@ -120,11 +96,12 @@ The module name list in the Developer Notes section must also only list
 released module names.
 
 ```sh
-# from a clone or worktree of the remote repo
+cd remote/WeirdUtils
 # edit README.md: remove sections for modules not in this release
 git add README.md
 git commit -m "Update README for vX.Y.Z"
 git push origin main
+cd ../..
 ```
 
 ## 4. Write the release notes
@@ -221,6 +198,11 @@ r=[x for x in releases if x['tag_name']=='vX.Y.Z']
 print(r[0]['id']) if r else print('not found')
 "
 ```
+
+## Known Issues
+
+- **vanillafixes launcher**: Incompatible with WeirdUtils DLL injection. Users
+  should load the DLL via WoW.exe + `dlls.txt` or another loader instead.
 
 ## Checklist
 

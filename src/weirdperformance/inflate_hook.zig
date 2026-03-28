@@ -13,7 +13,6 @@
 
 const hook_lib = @import("zhook");
 const logging = @import("../logging.zig");
-const std = @import("std");
 
 // libdeflate C API
 extern fn libdeflate_alloc_decompressor() ?*anyopaque;
@@ -24,15 +23,12 @@ var lib_available: bool = false;
 var log: logging.Logger = .{};
 
 // --- Thread-local decompressor ---
-// Each thread lazily allocates its own decompressor on first use.
-// OS-managed TLS via Zig's threadlocal -- works correctly on both
-// native Windows and Wine without manual FS segment access.
-threadlocal var tls_decomp: ?*anyopaque = null;
+threadlocal var tls_decompressor: ?*anyopaque = null;
 
 fn getTlsDecompressor() ?*anyopaque {
-    if (tls_decomp) |d| return d;
+    if (tls_decompressor) |d| return d;
     const d = libdeflate_alloc_decompressor() orelse return null;
-    tls_decomp = d;
+    tls_decompressor = d;
     return d;
 }
 

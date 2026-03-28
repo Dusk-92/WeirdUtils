@@ -15,7 +15,7 @@
 /// Compute outcodes for `count` vertices at `verts_ptr` (stride 12 bytes = 3 floats)
 /// against AABB at `bounds_ptr` (6 floats: minX, minY, minZ, maxX, maxY, maxZ).
 /// Writes results to `out_ptr` (1 byte per vertex).
-export fn benchComputeOutcodes(verts_ptr: u32, bounds_ptr: u32, out_ptr: u32, count: u32) void {
+pub fn benchComputeOutcodes(verts_ptr: u32, bounds_ptr: u32, out_ptr: u32, count: u32) void {
     if (count == 0) return;
     const v_min: V4 = .{ readF32(bounds_ptr), readF32(bounds_ptr + 4), readF32(bounds_ptr + 8), 0 };
     const v_max: V4 = .{ readF32(bounds_ptr + 12), readF32(bounds_ptr + 16), readF32(bounds_ptr + 20), 0 };
@@ -54,7 +54,7 @@ var guid_cache: [GUID_CACHE_SIZE]GuidCacheEntry = [_]GuidCacheEntry{.{}} ** GUID
 
 const origFindObjectByGUID = @as(*const fn (u32, u32) callconv(.{ .x86_stdcall = .{} }) u32, @ptrFromInt(0x464890));
 
-export fn findObjectByGUID_Cached(guid_lo: u32, guid_hi: u32) callconv(.{ .x86_stdcall = .{} }) u32 {
+pub fn findObjectByGUID_Cached(guid_lo: u32, guid_hi: u32) callconv(.{ .x86_stdcall = .{} }) u32 {
     const hash = (guid_lo ^ (guid_hi *% 0x9E3779B9)) & GUID_CACHE_MASK;
     const entry = &guid_cache[hash];
 
@@ -92,7 +92,7 @@ const g_grid_offset: *const f32 = @ptrFromInt(0x86861C);
 // Dot product coefficients at 0xC7CFB8..C7CFC4 (same as entpos view coeffs but different address)
 const g_spatial_coeffs: u32 = 0xC7CFB8;
 
-export fn addToSpatialGridSSE(obj: u32) callconv(.{ .x86_fastcall = .{} }) void {
+pub fn addToSpatialGridSSE(obj: u32) callconv(.{ .x86_fastcall = .{} }) void {
     // Dot product: coeff_a * obj[0x5C] + coeff_b * obj[0x60] + coeff_c * obj[0x64] + coeff_d
     const depth = readF32(g_spatial_coeffs) * readF32(obj + 0x5C) +
         readF32(g_spatial_coeffs + 4) * readF32(obj + 0x60) +
@@ -144,7 +144,7 @@ export fn addToSpatialGridSSE(obj: u32) callconv(.{ .x86_fastcall = .{} }) void 
 // RET 0x10
 // =============================================================================
 
-export fn rayTriIntersectIndexedInt(
+pub fn rayTriIntersectIndexedInt(
     ray_ptr: u32,
     vert_pool: u32,
     indices_ptr: u32,
@@ -279,7 +279,7 @@ fn computeAllOutcodes(
 /// Finds mesh data via hash, computes vertex outcodes against AABB from this+0x10,
 /// then iterates triangles: filters by visibility mask, trivial-rejects by outcode AND,
 /// adds survivors to global visible/render lists.
-export fn performSpatialCulling(this: u32, key_data: u32, key_size: u32) callconv(.{ .x86_thiscall = .{} }) u32 {
+pub fn performSpatialCulling(this: u32, key_data: u32, key_size: u32) callconv(.{ .x86_thiscall = .{} }) u32 {
     if (g_guard.* == 0) return 0;
 
     const hash_table = g_guard.*;
@@ -377,7 +377,7 @@ inline fn dot3(a: V4, b: V4) f32 {
 /// Fully inlined SSE rewrite. No external calls except FindOrCreateHashEntry.
 /// Moller-Trumbore ray-triangle intersection is inlined with SSE cross/dot,
 /// eliminating 4 SetVector3 calls and the ray_tri function call per triangle.
-export fn performCollisionDetectionSSE(this: u32, key_data: u32, key_size: u32) callconv(.{ .x86_thiscall = .{} }) u32 {
+pub fn performCollisionDetectionSSE(this: u32, key_data: u32, key_size: u32) callconv(.{ .x86_thiscall = .{} }) u32 {
     if (g_guard.* == 0) return 0;
 
     const hash_table = g_guard.*;

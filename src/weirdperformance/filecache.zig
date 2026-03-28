@@ -52,7 +52,12 @@ const CacheSet = struct {
     lru: u8 = 0,
 };
 
-var cache: [NUM_SETS]CacheSet = @splat(CacheSet{});
+const WINAPI = @import("std").builtin.CallingConvention.winapi;
+extern "kernel32" fn GetProcessHeap() callconv(WINAPI) ?*anyopaque;
+extern "kernel32" fn HeapAlloc(hHeap: ?*anyopaque, dwFlags: u32, dwBytes: usize) callconv(WINAPI) ?[*]u8;
+extern "kernel32" fn HeapFree(hHeap: ?*anyopaque, dwFlags: u32, lpMem: *anyopaque) callconv(WINAPI) i32;
+
+var cache: ?[*]CacheSet = null;
 var cache_entries: u32 = 0;
 var cache_hits: u64 = 0;
 var cache_negative_hits: u64 = 0;
@@ -66,8 +71,9 @@ var cache_miss_p2_archive: u64 = 0;
 
 /// Lookup: hash picks set, check both ways for name match.
 pub fn archiveCacheLookup(h: u32, path: [*:0]const u8) ?ArchiveCacheEntry {
+    const c = cache orelse return null;
     const set_idx = h & (NUM_SETS - 1);
-    const set = &cache[set_idx];
+    const set = &c[set_idx];
     const span = std.mem.span(path);
 
     for (0..WAYS) |w| {
@@ -93,11 +99,12 @@ pub fn computeBlockEntry(archive: u32, index: u32) u32 {
 }
 
 pub fn archiveCacheInsert(h: u32, path: [*:0]const u8, outer: u32, inner: u32, block: u32, negative: bool) void {
+    const c = cache orelse return;
     const span = std.mem.span(path);
     if (span.len > CACHE_NAME_LEN) return;
 
     const set_idx = h & (NUM_SETS - 1);
-    const set = &cache[set_idx];
+    const set = &c[set_idx];
 
     var target: u8 = set.lru;
     for (0..WAYS) |w| {
@@ -135,8 +142,9 @@ pub fn recordMissP2() void { cache_miss_p2 +|= 1; }
 pub fn recordMissP2Archive() void { cache_miss_p2_archive +|= 1; }
 
 pub fn getSlotOccupant(h: u32) ?[]const u8 {
+    const c = cache orelse return null;
     const set_idx = h & (NUM_SETS - 1);
-    const set = &cache[set_idx];
+    const set = &c[set_idx];
     for (0..WAYS) |w| {
         if (set.entries[w].name_len != 0)
             return set.entries[w].name[0..set.entries[w].name_len];
@@ -246,11 +254,19 @@ fn fileFindDetour(
 }
 
 pub fn install() bool {
+    const size = NUM_SETS * @sizeOf(CacheSet);
+    const heap = GetProcessHeap() orelse return false;
+    const ptr = HeapAlloc(heap, 0x00000008, size) orelse return false; // HEAP_ZERO_MEMORY
+    cache = @alignCast(@ptrCast(ptr));
     return file_find_hook.attach(0x6549a0, &fileFindDetour) == .ok;
 }
 
 pub fn remove() void {
     file_find_hook.detach();
+    if (cache) |c| {
+        if (GetProcessHeap()) |heap| _ = HeapFree(heap, 0, @ptrCast(c));
+        cache = null;
+    }
 }
 
 // =============================================================================
