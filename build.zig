@@ -34,10 +34,20 @@ const module_list = [_]ModuleDesc{
     .{ .name = "ssemaths", .version = "1.0", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
     .{ .name = "weirdperformance", .version = "1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
+    .{ .name = "superweirdo", .version = "0.1", .desc = "Enable GO loot sparkle on interactable objects", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
     const target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86,
+        .os_tag = .windows,
+        .abi = .msvc,
+        .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
+    });
+    // SSE objects that replace hot game functions use the full feature set.
+    // FMA/AVX are only emitted in these separately-compiled units, so the
+    // main DLL runs on any CPU with SSE2 (WoW's baseline).
+    const sse_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86,
         .os_tag = .windows,
         .abi = .msvc,
@@ -82,7 +92,7 @@ pub fn build(b: *std.Build) void {
         .name = "math_sse",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/ssemaths/math_sse.zig"),
-            .target = target,
+            .target = sse_target,
             .optimize = .ReleaseFast,
         }),
     });
@@ -90,7 +100,7 @@ pub fn build(b: *std.Build) void {
         .name = "particle_sse_ref",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/transform44/particle_sse_reference.zig"),
-            .target = target,
+            .target = sse_target,
             .optimize = .ReleaseFast,
         }),
     });
