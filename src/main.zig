@@ -216,7 +216,6 @@ fn luaGetWeirdUtilsVersion(L_ecx: usize) callconv(hook.cc.fastcall) u32 {
 
 const build_options = @import("build_options");
 const addons = @import("addons.zig");
-const mod_mutex = @import("mutex.zig");
 const findEmbeddedFile = addons.findEmbeddedFile;
 
 // =============================================================================
@@ -671,9 +670,6 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     if (build_opts.weirdperformance) {
         weirdperformance.lateInit();
     }
-    if (build_opts.clickthrough) {
-        clickthrough.lateInit();
-    }
 }
 
 // =============================================================================
@@ -763,31 +759,25 @@ fn shutdownDetour() callconv(hook.cc.stdcall) void {
 // Init / Cleanup
 // =============================================================================
 
-var g_core_mutex: ?*anyopaque = null;
-var g_core_owner: bool = false;
 
 fn install() void {
     logging.init();
     log = logging.Logger.open("weirdutils", .console);
 
-    // Core mutex gates shared infrastructure hooks (file serving, Lua registration,
-    // engine init/shutdown). Prevents double-hooking when both weirdutils.dll and
-    // a standalone module DLL are loaded in the same process.
-    const core = mod_mutex.acquire("weirdutils");
-    g_core_mutex = core.handle;
-    g_core_owner = core.is_owner;
-
-    if (g_core_owner) {
-        log.print("Installing core hooks\n");
-        _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
-        installFileHooks();
-        _ = file_hook.attach(0x648620, &loadFileDetour);
-        _ = register_commands_hook.attach(0x490250, &registerAllSystemCommandsDetour);
-        _ = glue_commands_hook.attach(0x46ABB0, &glueLoadScriptFunctionsDetour);
-        _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
-        _ = logout_hook.attach(0x491180, &logoutDetour);
-        _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
-    }
+    // Core hooks chain safely across multiple DLLs via zhook's E9-detect path:
+    // each DLL's trampoline JMPs to the previous DLL's detour, forming a LIFO
+    // call chain. Callbacks are additive (Lua registration, file serving) or
+    // guarded by per-module mutexes (lateInit, onShutdown). DLL_PROCESS_DETACH
+    // fires in reverse load order, so detach unwinds the chain correctly.
+    log.print("Installing core hooks\n");
+    _ = protection_hook.attach(0x42a320, &luaProtectionDetour);
+    installFileHooks();
+    _ = file_hook.attach(0x648620, &loadFileDetour);
+    _ = register_commands_hook.attach(0x490250, &registerAllSystemCommandsDetour);
+    _ = glue_commands_hook.attach(0x46ABB0, &glueLoadScriptFunctionsDetour);
+    _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
+    _ = logout_hook.attach(0x491180, &logoutDetour);
+    _ = shutdown_hook.attach(0x490BD0, &shutdownDetour);
 
     // Module hooks always run (each module has its own mutex)
     inline for (modules) |m| {
@@ -812,18 +802,14 @@ fn uninstall() void {
 
     addons.uninstall();
 
-    if (g_core_owner) {
-        shutdown_hook.detach();
-        logout_hook.detach();
-        engine_init_hook.detach();
-        register_commands_hook.detach();
-        glue_commands_hook.detach();
-        file_hook.detach();
-        removeFileHooks();
-        protection_hook.detach();
-        g_core_owner = false;
-    }
-    mod_mutex.release(&g_core_mutex);
+    shutdown_hook.detach();
+    logout_hook.detach();
+    engine_init_hook.detach();
+    register_commands_hook.detach();
+    glue_commands_hook.detach();
+    file_hook.detach();
+    removeFileHooks();
+    protection_hook.detach();
     logging.deinit();
 }
 
