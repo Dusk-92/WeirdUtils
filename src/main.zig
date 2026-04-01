@@ -23,6 +23,7 @@ const build_opts = struct {
     const ssemaths = @import("build_options").enable_ssemaths;
     const silicon = @import("build_options").enable_silicon;
     const weirdperformance = @import("build_options").enable_weirdperformance;
+    const superweirdo = @import("build_options").enable_superweirdo;
 };
 
 // Conditional module imports
@@ -44,6 +45,7 @@ const addonperf = if (build_opts.addonperf) @import("addonperf/addonperf.zig") e
 const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else struct {};
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
 const weirdperformance = if (build_opts.weirdperformance) @import("weirdperformance/weirdperformance.zig") else struct {};
+const superweirdo = if (build_opts.superweirdo) @import("superweirdo/superweirdo.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -669,6 +671,9 @@ fn engineInitDetour() callconv(hook.cc.stdcall) void {
     if (build_opts.weirdperformance) {
         weirdperformance.lateInit();
     }
+    if (build_opts.clickthrough) {
+        clickthrough.lateInit();
+    }
 }
 
 // =============================================================================
@@ -743,7 +748,8 @@ const modules = [_]ModuleHooks{
     if (build_opts.outline) .{ .name = outline.module_name, .remove = outline.cleanup, .is_active = outline.isActive } else .{},
     if (build_opts.screenshot) .{ .name = screenshot.module_name, .remove = screenshot.removeHook, .is_active = screenshot.isActive } else .{},
     if (build_opts.silicon) .{ .name = silicon.module_name, .install = silicon.installHooks, .remove = silicon.removeHooks, .is_active = silicon.isActive } else .{},
-    if (build_opts.weirdperformance) .{ .name = weirdperformance.module_name, .install = weirdperformance.installHooks, .remove = weirdperformance.removeHooks, .is_active = weirdperformance.isActive } else .{},
+    if (build_opts.weirdperformance) .{ .name = weirdperformance.module_name, .install = weirdperformance.installHooks, .remove = weirdperformance.removeHooks, .is_active = weirdperformance.isActive, .remove_on_shutdown = true } else .{},
+    if (build_opts.superweirdo) .{ .name = superweirdo.module_name, .install = superweirdo.installHooks, .remove = superweirdo.removeHooks, .is_active = superweirdo.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
