@@ -21,6 +21,7 @@ const mod_mutex = @import("../mutex.zig");
 const offsets = @import("../offsets.zig");
 const wow = @import("../wow.zig");
 const portal_filter = @import("portal_filter.zig");
+// const portal_visual = @import("portal_visual.zig");
 
 pub const module_name: [*:0]const u8 = "clickthrough";
 
@@ -44,6 +45,13 @@ const HIT_RESULT_SIZE: usize = 0x34;
 // Custom raycast flag bits (upper bits unused by game)
 // =============================================================================
 
+// Standard vanilla NPC interaction flags (gossip through repair)
+const NPC_INTERACT_MASK: u32 = 0x00007FFF;
+
+// PLAYER_FLAGS descriptor offset (UpdateField index 190, byte offset 190*4=0x2F8)
+const DESC_PLAYER_FLAGS: usize = 0x2F8;
+const PLAYER_FLAG_GM: u32 = 0x08;
+
 const FLAG_LOOT_ONLY: u32 = 0x01000000; // pass 1: only lootable corpses
 const FLAG_GO_ONLY: u32 = 0x02000000; // pass 2: only interactable GOs
 const FLAG_NPC_ONLY: u32 = 0x04000000; // pass 3: only interactable NPCs
@@ -52,6 +60,14 @@ const FLAG_CUSTOM_MASK: u32 = FLAG_LOOT_ONLY | FLAG_GO_ONLY | FLAG_NPC_ONLY;
 // =============================================================================
 // Hook state
 // =============================================================================
+
+fn isGM() bool {
+    const player = wow.getLocalPlayer();
+    if (player == 0) return false;
+    const desc = wow.getDescriptor(player);
+    if (!wow.isValidPtr(desc)) return false;
+    return (hook.readMem(u32, desc + DESC_PLAYER_FLAGS) & PLAYER_FLAG_GM) != 0;
+}
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
@@ -122,7 +138,7 @@ fn checkObjTypeDetour(ctx: u32, obj_data: u32, perm_flags: u32) callconv(hook.cc
 
     if ((perm_flags & FLAG_NPC_ONLY) != 0) {
         if (type_mask != 0x09 and type_mask != 0x19) return 0; // units/players only
-        if (wow.getNpcFlags(obj) == 0) return 0;
+        if ((wow.getNpcFlags(obj) & NPC_INTERACT_MASK) == 0) return 0;
         return original;
     }
 
@@ -135,9 +151,9 @@ fn checkObjTypeDetour(ctx: u32, obj_data: u32, perm_flags: u32) callconv(hook.cc
 // =============================================================================
 
 fn worldIntersectDetour(world_frame: u32, ray_start: u32, ray_end: u32, flags: u32, hit_result: u32) callconv(hook.cc.thiscall) u32 {
-    // Don't cascade if we're already in a custom pass (prevent recursion)
-    // or if in a battleground
-    if (!g_is_hook_owner or (flags & FLAG_CUSTOM_MASK) != 0 or wow.isInBattleground()) {
+    // Don't cascade if we're already in a custom pass (prevent recursion),
+    // in a battleground, or in GM mode (GMs need unfiltered targeting)
+    if (!g_is_hook_owner or (flags & FLAG_CUSTOM_MASK) != 0 or wow.isInBattleground() or isGM()) {
         return wit_hook.callOriginal(.{ world_frame, ray_start, ray_end, flags, hit_result });
     }
 
@@ -183,11 +199,18 @@ pub fn installHooks() void {
     log = logging.Logger.open(module_name, .both);
     _ = cotp_hook.attach(ADDR_CheckObjectTypePermissions, &checkObjTypeDetour);
     _ = wit_hook.attach(ADDR_WorldIntersectionTest, &worldIntersectDetour);
+    // _ = portal_visual.install();
     log.print("clickthrough: cascade raycast active\n");
+}
+
+pub fn lateInit() void {
+    if (!g_is_hook_owner) return;
+    // portal_visual.lateInit();
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        // portal_visual.remove();
         wit_hook.detach();
         cotp_hook.detach();
         log.close();
