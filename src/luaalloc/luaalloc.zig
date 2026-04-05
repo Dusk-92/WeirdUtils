@@ -3,8 +3,9 @@
 //! Hooks memory_pool_allocate (0x6FAE90) to replace WoW's 6-class slab
 //! allocator with a faster Zig slab. Improvements over WoW's allocator:
 //!
-//!   - O(1) free/realloc: 4-byte header stores slot size (WoW scans all
-//!     pools and pages to find the owning pool -- O(classes * pages))
+//!   - O(1) free/realloc via segment table lookup (WoW scans all pools
+//!     and pages to find the owning pool -- O(classes * pages))
+//!   - Zero per-allocation overhead (no header -- class stored per-page)
 //!   - 15 size classes vs 6: less internal fragmentation
 //!   - @memcpy for cross-class realloc (WoW does a manual dword loop)
 //!   - Slabs up to 4096 bytes (WoW falls to system heap at >256)
@@ -25,50 +26,74 @@ pub const module_name: [*:0]const u8 = "luaalloc";
 var log: logging.Logger = .{};
 
 // ============================================================================
-// Slab allocator
+// Slab allocator -- segment-based lookup
 //
-// Layout: [header: 4 bytes (u32 slot_size)][user data][padding to slot boundary]
-// Free slots store a next pointer in the first 4 bytes of user area.
+// Each 64KB page is dedicated to one size class. A 64KB segment table
+// maps (ptr >> 16) -> class index, giving O(1) lookup with zero
+// per-allocation overhead. Free slots store a next pointer in the
+// slot body (minimum slot size is 4 bytes, smallest class is 16).
 //
-// Size classes chosen to cover Lua's common allocation sizes with <25%
-// internal fragmentation at each step. Usable bytes = slot_size - HEADER.
+// Pages are allocated via VirtualAlloc which guarantees 64KB alignment
+// on Windows (allocation granularity). Large allocations (>4096 bytes)
+// also use VirtualAlloc with a size header.
 // ============================================================================
 
-const HEADER = 4; // bytes before user pointer, stores slot_size as u32
+// VirtualAlloc for 64KB-aligned slab pages.
+const MEM_COMMIT = 0x1000;
+const MEM_RESERVE = 0x2000;
+const MEM_RELEASE = 0x8000;
+const PAGE_READWRITE = 0x04;
+extern "kernel32" fn VirtualAlloc(lpAddress: ?*anyopaque, dwSize: u32, flAllocationType: u32, flProtect: u32) callconv(hook.cc.stdcall) ?[*]u8;
+extern "kernel32" fn VirtualFree(lpAddress: *anyopaque, dwSize: u32, dwFreeType: u32) callconv(hook.cc.stdcall) i32;
 
-// Slot sizes (including header). Each class is roughly 1.5x the previous.
-// Usable sizes: 12, 20, 28, 44, 60, 92, 124, 188, 252, 380, 508, 764, 1020, 2044, 4092
+const SEGMENT_SHIFT = 16; // 64KB pages
+const PAGE_SIZE = 1 << SEGMENT_SHIFT; // 65536
+
+// Class index values: 1-15 = slab classes, LARGE_CLASS = large alloc, 0 = unowned
+const LARGE_CLASS = 0xFF;
+
+// Segment table: one byte per 64KB of 32-bit address space = 64KB table.
+// Stays hot in L1/L2 since every alloc/free/realloc touches it.
+var segment_table: [65536]u8 = .{0} ** 65536;
+
+// Slot sizes. Each class is roughly 1.5x the previous.
 const class_sizes = [_]u32{ 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048, 4096 };
 const NUM_CLASSES = class_sizes.len;
 
-// Page size for backing allocations. Each page is carved into slots of one class.
-const PAGE_SIZE = 65536;
+var free_lists: [NUM_CLASSES]u32 = .{0} ** NUM_CLASSES;
 
-var free_lists: [NUM_CLASSES]u32 = .{0} ** NUM_CLASSES; // head of free list (ptr as u32, 0 = empty)
-
-/// Find the smallest size class that fits `total` bytes (including header).
-fn sizeClassIndex(total: u32) ?usize {
+/// Find the smallest size class index that fits `size` bytes.
+fn sizeClassIndex(size: u32) ?usize {
     inline for (class_sizes, 0..) |sz, i| {
-        if (total <= sz) return i;
+        if (size <= sz) return i;
     }
-    return null; // too large for slab
+    return null;
 }
 
-/// Allocate a new page of slots for the given class, link them into the free list.
+/// Look up class index from pointer via segment table.
+fn classFromPtr(ptr: u32) u8 {
+    return segment_table[ptr >> SEGMENT_SHIFT];
+}
+
+/// Allocate a new 64KB page for the given class, register in segment table,
+/// and link all slots into the free list.
 fn refillClass(class_idx: usize) bool {
     const slot_size = class_sizes[class_idx];
-    const page = std.heap.page_allocator.rawAlloc(PAGE_SIZE, .@"1", @returnAddress()) orelse return false;
+    // VirtualAlloc with NULL base always returns 64KB-aligned addresses.
+    const page = VirtualAlloc(null, PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) orelse return false;
     const base = @intFromPtr(page);
-    const slots_per_page = PAGE_SIZE / slot_size;
 
-    // Carve page into slots and chain them via free list.
-    // Build chain from last to first so the first slot is the head.
+    // Register this page in the segment table (class indices are 0-based,
+    // store as idx+1 so 0 remains "unowned")
+    segment_table[base >> SEGMENT_SHIFT] = @intCast(class_idx + 1);
+
+    // Carve page into slots, chain from last to first
+    const slots_per_page = PAGE_SIZE / slot_size;
     var i: u32 = slots_per_page;
     while (i > 0) {
         i -= 1;
         const slot_addr = base + i * slot_size;
-        // Write next-free pointer into user area (offset HEADER from slot start)
-        const next_ptr: *u32 = @ptrFromInt(slot_addr + HEADER);
+        const next_ptr: *u32 = @ptrFromInt(slot_addr);
         next_ptr.* = free_lists[class_idx];
         free_lists[class_idx] = slot_addr;
     }
@@ -76,91 +101,128 @@ fn refillClass(class_idx: usize) bool {
 }
 
 fn slabAlloc(size: u32) ?[*]u8 {
-    const total = size + HEADER;
-    const class_idx = sizeClassIndex(total) orelse return largeMalloc(size);
-    const slot_size = class_sizes[class_idx];
+    const class_idx = sizeClassIndex(size) orelse return largeMalloc(size);
 
-    // Pop from free list, refilling if empty
     if (free_lists[class_idx] == 0) {
         if (!refillClass(class_idx)) return null;
     }
     const slot_addr = free_lists[class_idx];
-    const next_ptr: *const u32 = @ptrFromInt(slot_addr + HEADER);
+    const next_ptr: *const u32 = @ptrFromInt(slot_addr);
     free_lists[class_idx] = next_ptr.*;
 
-    // Write slot size into header
-    const header: *u32 = @ptrFromInt(slot_addr);
-    header.* = slot_size;
-
-    // Return pointer past header
-    return @ptrFromInt(slot_addr + HEADER);
+    return @ptrFromInt(slot_addr);
 }
 
-fn slabFree(user_ptr: u32) void {
-    const slot_addr = user_ptr - HEADER;
-    const header: *const u32 = @ptrFromInt(slot_addr);
-    const slot_size = header.*;
-
-    // Validate it's a slab allocation (slot_size must match a known class)
-    const class_idx = sizeClassIndex(slot_size) orelse {
-        // Large allocation
-        largeFree(user_ptr, slot_size - HEADER);
-        return;
-    };
-    if (class_sizes[class_idx] != slot_size) {
-        // Corrupted header or not our allocation -- fall through to large free
-        largeFree(user_ptr, slot_size - HEADER);
+fn slabFree(ptr: u32, pool_ctx: u32) void {
+    const seg_val = classFromPtr(ptr);
+    if (seg_val == 0) {
+        // Not ours (e.g. allocated before hook install). Let original handle it.
+        _ = pool_alloc_hook.callOriginal(.{ pool_ctx, ptr, @as(u32, 0) });
         return;
     }
+    if (seg_val == LARGE_CLASS) {
+        largeFree(ptr);
+        return;
+    }
+    const class_idx: usize = seg_val - 1;
 
-    // Push onto free list
-    const next_ptr: *u32 = @ptrFromInt(user_ptr);
+    const next_ptr: *u32 = @ptrFromInt(ptr);
     next_ptr.* = free_lists[class_idx];
-    free_lists[class_idx] = slot_addr;
+    free_lists[class_idx] = ptr;
 }
 
-fn slabRealloc(user_ptr: u32, new_size: u32) ?[*]u8 {
-    const slot_addr = user_ptr - HEADER;
-    const header: *const u32 = @ptrFromInt(slot_addr);
-    const old_slot_size = header.*;
-    const old_usable = old_slot_size - HEADER;
+fn slabRealloc(ptr: u32, new_size: u32, pool_ctx: u32) ?[*]u8 {
+    const seg_val = classFromPtr(ptr);
+    if (seg_val == 0) {
+        // Not ours. Allocate from our slab, copy, free old via original.
+        const new_ptr = slabAlloc(new_size) orelse return null;
+        const dst: [*]u8 = new_ptr;
+        const src: [*]const u8 = @ptrFromInt(ptr);
+        @memcpy(dst[0..new_size], src[0..new_size]);
+        _ = pool_alloc_hook.callOriginal(.{ pool_ctx, ptr, @as(u32, 0) });
+        return new_ptr;
+    }
+    if (seg_val == LARGE_CLASS) return largeRealloc(ptr, new_size);
+
+    const class_idx: usize = seg_val - 1;
+    const old_slot_size = class_sizes[class_idx];
 
     // If new size fits in current slot, return same pointer
-    if (new_size <= old_usable) return @ptrFromInt(user_ptr);
+    if (new_size <= old_slot_size) return @ptrFromInt(ptr);
 
     // Allocate new, copy, free old
     const new_ptr = slabAlloc(new_size) orelse return null;
-    const copy_len = @min(old_usable, new_size);
+    const copy_len = @min(old_slot_size, new_size);
     const dst: [*]u8 = new_ptr;
-    const src: [*]const u8 = @ptrFromInt(user_ptr);
+    const src: [*]const u8 = @ptrFromInt(ptr);
     @memcpy(dst[0..copy_len], src[0..copy_len]);
-    slabFree(user_ptr);
+    slabFree(ptr, pool_ctx);
     return new_ptr;
 }
 
-// Large allocations (>4092 usable bytes): fall through to WoW's system heap.
-// We still prepend our 4-byte header so free/realloc can identify them.
+// ============================================================================
+// Large allocations (>4096 bytes): VirtualAlloc with 8-byte header.
+// Header stores size (u32) + magic (u32) for identification.
+// ============================================================================
 
-// M2_AllocateModelBuffer (0x6462E0): __stdcall(size, src, line, flags) -> ptr. RET 0x10.
-const AllocMemory: *const fn (u32, [*:0]const u8, u32, u32) callconv(hook.cc.stdcall) ?[*]u8 =
-    @ptrFromInt(0x6462E0);
-// FreeMemory (0x646430): __stdcall(ptr, src, line, flags). RET 0x10.
-const FreeMemory: *const fn (?*anyopaque, [*:0]const u8, u32, u32) callconv(hook.cc.stdcall) void =
-    @ptrFromInt(0x646430);
-
-const large_src: [*:0]const u8 = "luaalloc";
+const LARGE_HEADER = 8;
+const LARGE_MAGIC: u32 = 0x4C554121; // "LUA!"
 
 fn largeMalloc(size: u32) ?[*]u8 {
-    const total = size + HEADER;
-    const mem = AllocMemory(total, large_src, 0, 0) orelse return null;
+    const total = size + LARGE_HEADER;
+    // Round up to page boundary for VirtualAlloc
+    const alloc_size = (total + 0xFFF) & ~@as(u32, 0xFFF);
+    const mem = VirtualAlloc(null, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) orelse return null;
     const base = @intFromPtr(mem);
-    const header: *u32 = @ptrFromInt(base);
-    header.* = total; // store total as "slot size" so realloc/free works
-    return @ptrFromInt(base + HEADER);
+
+    // Mark segment(s) as large
+    var seg = base >> SEGMENT_SHIFT;
+    const end_seg = (base + alloc_size - 1) >> SEGMENT_SHIFT;
+    while (seg <= end_seg) : (seg += 1) {
+        segment_table[seg] = LARGE_CLASS;
+    }
+
+    const hdr_size: *u32 = @ptrFromInt(base);
+    const hdr_magic: *u32 = @ptrFromInt(base + 4);
+    hdr_size.* = size;
+    hdr_magic.* = LARGE_MAGIC;
+    return @ptrFromInt(base + LARGE_HEADER);
 }
 
-fn largeFree(user_ptr: u32, _: u32) void {
-    FreeMemory(@ptrFromInt(user_ptr - HEADER), large_src, 0, 0);
+fn largeFree(ptr: u32) void {
+    const base = ptr - LARGE_HEADER;
+    const hdr_magic: *const u32 = @ptrFromInt(base + 4);
+    if (hdr_magic.* != LARGE_MAGIC) return;
+    const hdr_size: *const u32 = @ptrFromInt(base);
+    const total = hdr_size.* + LARGE_HEADER;
+    const alloc_size = (total + 0xFFF) & ~@as(u32, 0xFFF);
+
+    // Clear segment entries
+    var seg = base >> SEGMENT_SHIFT;
+    const end_seg = (base + alloc_size - 1) >> SEGMENT_SHIFT;
+    while (seg <= end_seg) : (seg += 1) {
+        segment_table[seg] = 0;
+    }
+
+    _ = VirtualFree(@ptrFromInt(base), 0, MEM_RELEASE);
+}
+
+fn largeRealloc(ptr: u32, new_size: u32) ?[*]u8 {
+    const base = ptr - LARGE_HEADER;
+    const hdr_magic: *const u32 = @ptrFromInt(base + 4);
+    if (hdr_magic.* != LARGE_MAGIC) return null;
+    const hdr_size: *const u32 = @ptrFromInt(base);
+    const old_size = hdr_size.*;
+
+    if (new_size <= old_size) return @ptrFromInt(ptr);
+
+    const new_ptr = slabAlloc(new_size) orelse return null;
+    const copy_len = @min(old_size, new_size);
+    const dst: [*]u8 = new_ptr;
+    const src: [*]const u8 = @ptrFromInt(ptr);
+    @memcpy(dst[0..copy_len], src[0..copy_len]);
+    largeFree(ptr);
+    return new_ptr;
 }
 
 // ============================================================================
@@ -181,15 +243,18 @@ const PoolAllocFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) ?[*]u8;
 var pool_alloc_hook: hook.Detour(PoolAllocFn) = .{};
 
 fn poolAllocDetour(pool_ctx: u32, old_ptr_raw: u32, new_size: u32) callconv(hook.cc.fastcall) ?[*]u8 {
-    _ = pool_ctx;
+    // ECX=0 means non-Lua path -- pass through to original
+    if (pool_ctx == 0) {
+        return pool_alloc_hook.callOriginal(.{ pool_ctx, old_ptr_raw, new_size });
+    }
 
     if (new_size == 0) {
-        if (old_ptr_raw != 0) slabFree(old_ptr_raw);
+        if (old_ptr_raw != 0) slabFree(old_ptr_raw, pool_ctx);
         return null;
     }
 
     if (old_ptr_raw != 0) {
-        return slabRealloc(old_ptr_raw, new_size);
+        return slabRealloc(old_ptr_raw, new_size, pool_ctx);
     }
 
     return slabAlloc(new_size);
