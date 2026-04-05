@@ -42,8 +42,8 @@ const particle_sse = @import("particle_sse.zig");
 const clip_sse = @import("clip_sse.zig");
 const cull_sse = @import("cull_sse.zig");
 const silicon_sse = @import("silicon_sse.zig");
+const luaalloc = @import("luaalloc.zig");
 
-const transformImpl_SSE = bone_sse.transformImpl_SSE;
 const renderParticleSprites_SSE = particle_sse.renderParticleSprites_SSE;
 const resetParticleCache = particle_sse.resetParticleCache;
 
@@ -51,16 +51,17 @@ const resetParticleCache = particle_sse.resetParticleCache;
 // transformMatrix4x4 hook (0x714260)
 // =============================================================================
 
-fn transformMatrix4x4_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
-    transformImpl_SSE(this, mat1, mat2, mat3, mat4);
-}
-
 const TransformFn = fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
 var transform_hook: hook.Detour(TransformFn) = .{};
 
-fn transformDetour(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
-    transformMatrix4x4_SSE(this, mat1, mat2, mat3, mat4);
-}
+// =============================================================================
+// ClipPolygonToSinglePlane hook (0x6318C0)
+// __fastcall(ECX=plane*, EDX=poly*, stack: attrib_bits), RET 0x4
+// 1.9x speedup (410 -> 206 cycles/call), 2.55% of CPU in town
+// =============================================================================
+
+const ClipFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
+var clip_hook: hook.Detour(ClipFn) = .{};
 
 // =============================================================================
 // RenderParticleSprites hook (0x7B2A50)
@@ -294,7 +295,10 @@ pub fn installHooks() void {
     var installed: u32 = 0;
 
     // Bone transform SSE
-    if (transform_hook.attach(0x714260, &transformDetour) == .ok) installed += 1;
+    if (transform_hook.attach(0x714260, &bone_sse.transformImpl_SSE) == .ok) installed += 1;
+
+    // Frustum clip SSE (1.9x speedup)
+    if (clip_hook.attach(0x6318C0, &clip_sse.clipPolygonToSinglePlane) == .ok) installed += 1;
 
     // Particle rendering SSE
     if (particle_hook.attach(0x7B2A50, &particleDetour) == .ok) installed += 1;
@@ -321,6 +325,8 @@ pub fn installHooks() void {
     // libdeflate inflate replacement
     if (inflate_hook.install()) installed += 1;
 
+    // Lua slab allocator replacement
+    installed += luaalloc.install();
 }
 
 pub fn lateInit() void {

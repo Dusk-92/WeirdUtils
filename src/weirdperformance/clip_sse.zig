@@ -9,7 +9,7 @@ const V4 = @Vector(4, f32);
 const CLIP_EPSILON: f32 = @bitCast(@as(u32, 0x3ab60b61)); // +0.00139, global at 0x80dfec
 const MOVEMENT_EPSILON: f32 = @bitCast(@as(u32, 0x35800000)); // 9.54e-7, global at 0x8026bc
 
-pub fn clipPolygonToSinglePlane(plane_addr: u32, poly_addr: u32, attrib_bits: u32) void {
+pub fn clipPolygonToSinglePlane(plane_addr: u32, poly_addr: u32, attrib_bits: u32) callconv(.{ .x86_fastcall = .{} }) void {
     const plane: [*]const f32 = @ptrFromInt(plane_addr);
     const poly: [*]f32 = @ptrFromInt(poly_addr);
     const new_attrib: f32 = @bitCast(attrib_bits);

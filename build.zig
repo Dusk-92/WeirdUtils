@@ -37,7 +37,6 @@ const module_list = [_]ModuleDesc{
     .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
     .{ .name = "weirdperformance", .version = "1.1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
     .{ .name = "superweirdo", .version = "0.1", .desc = "Enable GO loot sparkle on interactable objects", .default = false },
-    .{ .name = "luaalloc", .version = "0.1", .desc = "Enable Lua slab allocator replacement", .default = false },
 };
 
 pub fn build(b: *std.Build) void {

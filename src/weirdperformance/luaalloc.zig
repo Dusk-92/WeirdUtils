@@ -19,11 +19,7 @@
 
 const std = @import("std");
 const hook = @import("zhook");
-const logging = @import("../logging.zig");
 
-pub const module_name: [*:0]const u8 = "luaalloc";
-
-var log: logging.Logger = .{};
 
 // ============================================================================
 // Slab allocator -- segment-based lookup
@@ -285,29 +281,14 @@ fn gcStepDetour(lua_state: u32) callconv(hook.cc.fastcall) void {
     global_state[9] = totalbytes + (totalbytes >> 2); // offset 0x24 = GCthreshold
 }
 
-// ============================================================================
-// Module interface
-// ============================================================================
-
-var g_is_hook_owner: bool = false;
-
-pub fn installHooks() void {
-    log = logging.Logger.open(module_name, .console);
-    _ = pool_alloc_hook.attach(0x6FAE90, &poolAllocDetour);
-    _ = gc_step_hook.attach(0x6FAE00, &gcStepDetour);
-    g_is_hook_owner = true;
-    log.print("hooked memory_pool_allocate + lua_gc_step\n");
+pub fn install() u32 {
+    var installed: u32 = 0;
+    if (pool_alloc_hook.attach(0x6FAE90, &poolAllocDetour) == .ok) installed += 1;
+    if (gc_step_hook.attach(0x6FAE00, &gcStepDetour) == .ok) installed += 1;
+    return installed;
 }
 
-pub fn removeHooks() void {
-    if (g_is_hook_owner) {
-        gc_step_hook.detach();
-        pool_alloc_hook.detach();
-        log.close();
-    }
-    g_is_hook_owner = false;
-}
-
-pub fn isActive() bool {
-    return g_is_hook_owner;
+pub fn remove() void {
+    gc_step_hook.detach();
+    pool_alloc_hook.detach();
 }

@@ -58,6 +58,8 @@ extern fn si_packParticleColor(u32, u32, u32, u32) callconv(cc_tc) void;
 extern fn si_setParticleAlpha(u32, u32, u32) callconv(cc_fc) void; // fastcall(ECX=obj, EDX=unused, stack=alpha)
 extern fn si_ftol() callconv(.naked) void;
 
+// clip_sse.zig -- benched separately, now wired into weirdperformance as fastcall
+
 // cull_sse.zig exports
 extern fn benchComputeOutcodes(u32, u32, u32, u32) void;
 extern fn performCollisionDetectionSSE(u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
@@ -241,8 +243,10 @@ pub fn main() void {
     // AddToSpatialGrid -- linked list requires game state, A/B test in-game only
     // bench_addToSpatialGrid();
 
+    if (false) { // disabled: link errors / already benched
     bench_collisionDetection();
     bench_rayTriIndexedInt();
+    }
 
     if (false) { // disabled
     bench_entityUpdate();
@@ -1655,7 +1659,7 @@ pub fn main() void {
         const pos = [3]f32{ 0, 0, 0 };
         const ofs = [3]f32{ 0, 0, 0 };
         const sb: u32 = @bitCast(@as(f32, 1.0));
-        const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_SSE" });
+        const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_SSE" });
         const transformImpl_BASELINE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_BASELINE" });
 
         // Pre-set boneKeyframe init flag so we skip the atexit call (Windows CRT, can't run on Linux)
@@ -2349,6 +2353,8 @@ fn sseRayTri(ray_ptr: u32, vert_pool: u32, idx_base: u32, t_out: *f32) bool {
     t_out.* = benchDot3(edge2, qvec) * inv_det;
     return true;
 }
+
+// bench_clipPolygon removed -- benched at 1.9x (410->206 cyc), now wired into weirdperformance
 
 fn bench_collisionDetection() void {
     // Build synthetic mesh data matching game's hash entry layout.
