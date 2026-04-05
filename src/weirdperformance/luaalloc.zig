@@ -17,9 +17,10 @@
 //! calculate GC thresholds. Since pools are empty (all allocs go through us),
 //! we replace it with standard Lua 5.0 threshold logic: threshold = totalbytes * 1.25.
 
-const std = @import("std");
 const hook = @import("zhook");
+const logging = @import("../logging.zig");
 
+const PROFILE = false; // set true to collect size histogram, dump with dumpStats()
 
 // ============================================================================
 // Slab allocator -- segment-based lookup
@@ -52,24 +53,46 @@ const LARGE_CLASS = 0xFF;
 // Stays hot in L1/L2 since every alloc/free/realloc touches it.
 var segment_table: [65536]u8 = .{0} ** 65536;
 
-// Slot sizes. Each class is roughly 1.5x the previous.
-const class_sizes = [_]u32{ 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 2048, 4096 };
+// Slot sizes tuned from runtime profiling of 6M Lua allocations.
+// Lua table nodes are 40 bytes; hash tables are power-of-2 arrays of nodes,
+// giving hot sizes at 80, 160, 320, 640, 1280, 2560 (2..64 nodes * 40).
+// Adding these 6 classes eliminates ~73 MB of the 84 MB total waste.
+const class_sizes = [_]u32{ 16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512, 640, 768, 1024, 1280, 2048, 2560, 4096 };
 const NUM_CLASSES = class_sizes.len;
 
-var free_lists: [NUM_CLASSES]u32 = .{0} ** NUM_CLASSES;
+// Precomputed lookup table: size_class_lut[n] = class index for size n.
+// Direct indexing -- one byte load, zero computation on the hot path.
+const LUT_SIZE = 4097; // covers sizes 0-4096
+const size_class_lut: [LUT_SIZE]u8 = blk: {
+    @setEvalBranchQuota(100000);
+    var lut: [LUT_SIZE]u8 = .{0xFF} ** LUT_SIZE;
+    lut[0] = 0; // size 0 -> class 0
+    for (1..LUT_SIZE) |sz| {
+        for (class_sizes, 0..) |cs, ci| {
+            if (sz <= cs) {
+                lut[sz] = @intCast(ci);
+                break;
+            }
+        }
+    }
+    break :blk lut;
+};
 
 /// Find the smallest size class index that fits `size` bytes.
-fn sizeClassIndex(size: u32) ?usize {
-    inline for (class_sizes, 0..) |sz, i| {
-        if (size <= sz) return i;
-    }
-    return null;
+/// Direct table lookup -- one byte load for sizes 0-4096.
+inline fn sizeClassIndex(size: u32) ?usize {
+    if (size >= LUT_SIZE) return null;
+    const cls = size_class_lut[size];
+    if (cls == 0xFF) return null;
+    return cls;
 }
 
 /// Look up class index from pointer via segment table.
-fn classFromPtr(ptr: u32) u8 {
+inline fn classFromPtr(ptr: u32) u8 {
     return segment_table[ptr >> SEGMENT_SHIFT];
 }
+
+var free_lists: [NUM_CLASSES]u32 = .{0} ** NUM_CLASSES;
 
 /// Allocate a new 64KB page for the given class, register in segment table,
 /// and link all slots into the free list.
@@ -97,6 +120,7 @@ fn refillClass(class_idx: usize) bool {
 }
 
 fn slabAlloc(size: u32) ?[*]u8 {
+    profileAlloc(size);
     const class_idx = sizeClassIndex(size) orelse return largeMalloc(size);
 
     if (free_lists[class_idx] == 0) {
@@ -109,17 +133,13 @@ fn slabAlloc(size: u32) ?[*]u8 {
     return @ptrFromInt(slot_addr);
 }
 
-fn slabFree(ptr: u32, pool_ctx: u32) void {
+fn slabFree(ptr: u32) void {
     const seg_val = classFromPtr(ptr);
-    if (seg_val == 0) {
-        // Not ours (e.g. allocated before hook install). Let original handle it.
-        _ = pool_alloc_hook.callOriginal(.{ pool_ctx, ptr, @as(u32, 0) });
-        return;
-    }
     if (seg_val == LARGE_CLASS) {
         largeFree(ptr);
         return;
     }
+    if (seg_val == 0) return; // not ours (shouldn't happen)
     const class_idx: usize = seg_val - 1;
 
     const next_ptr: *u32 = @ptrFromInt(ptr);
@@ -127,18 +147,10 @@ fn slabFree(ptr: u32, pool_ctx: u32) void {
     free_lists[class_idx] = ptr;
 }
 
-fn slabRealloc(ptr: u32, new_size: u32, pool_ctx: u32) ?[*]u8 {
+fn slabRealloc(ptr: u32, new_size: u32) ?[*]u8 {
     const seg_val = classFromPtr(ptr);
-    if (seg_val == 0) {
-        // Not ours. Allocate from our slab, copy, free old via original.
-        const new_ptr = slabAlloc(new_size) orelse return null;
-        const dst: [*]u8 = new_ptr;
-        const src: [*]const u8 = @ptrFromInt(ptr);
-        @memcpy(dst[0..new_size], src[0..new_size]);
-        _ = pool_alloc_hook.callOriginal(.{ pool_ctx, ptr, @as(u32, 0) });
-        return new_ptr;
-    }
     if (seg_val == LARGE_CLASS) return largeRealloc(ptr, new_size);
+    if (seg_val == 0) return null; // not ours (shouldn't happen)
 
     const class_idx: usize = seg_val - 1;
     const old_slot_size = class_sizes[class_idx];
@@ -152,7 +164,7 @@ fn slabRealloc(ptr: u32, new_size: u32, pool_ctx: u32) ?[*]u8 {
     const dst: [*]u8 = new_ptr;
     const src: [*]const u8 = @ptrFromInt(ptr);
     @memcpy(dst[0..copy_len], src[0..copy_len]);
-    slabFree(ptr, pool_ctx);
+    slabFree(ptr);
     return new_ptr;
 }
 
@@ -231,26 +243,20 @@ fn largeRealloc(ptr: u32, new_size: u32) ?[*]u8 {
 //   All 11 RET instructions are RET 0x4.
 //
 // Called from LuaMemoryRealloc (0x6FC980) which handles totalbytes accounting.
-// Also called from non-Lua paths (ECX=NULL) for general pool allocation.
 // ============================================================================
 
 const PoolAllocFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) ?[*]u8;
 
 var pool_alloc_hook: hook.Detour(PoolAllocFn) = .{};
 
-fn poolAllocDetour(pool_ctx: u32, old_ptr_raw: u32, new_size: u32) callconv(hook.cc.fastcall) ?[*]u8 {
-    // ECX=0 means non-Lua path -- pass through to original
-    if (pool_ctx == 0) {
-        return pool_alloc_hook.callOriginal(.{ pool_ctx, old_ptr_raw, new_size });
-    }
-
+fn poolAllocDetour(_: u32, old_ptr_raw: u32, new_size: u32) callconv(hook.cc.fastcall) ?[*]u8 {
     if (new_size == 0) {
-        if (old_ptr_raw != 0) slabFree(old_ptr_raw, pool_ctx);
+        if (old_ptr_raw != 0) slabFree(old_ptr_raw);
         return null;
     }
 
     if (old_ptr_raw != 0) {
-        return slabRealloc(old_ptr_raw, new_size, pool_ctx);
+        return slabRealloc(old_ptr_raw, new_size);
     }
 
     return slabAlloc(new_size);
@@ -279,6 +285,54 @@ fn gcStepDetour(lua_state: u32) callconv(hook.cc.fastcall) void {
     const global_state: [*]u32 = @ptrFromInt(@as(*const u32, @ptrFromInt(lua_state + 0x10)).*);
     const totalbytes = global_state[10]; // offset 0x28
     global_state[9] = totalbytes + (totalbytes >> 2); // offset 0x24 = GCthreshold
+}
+
+// ============================================================================
+// Size profiling -- enabled by PROFILE flag
+// Collects per-size allocation counts, dumps to log file on request.
+// ============================================================================
+
+const HIST_MAX = 4096; // track sizes 0..4095 individually
+const HIST_BUCKETS = if (PROFILE) HIST_MAX + 1 else 0;
+var size_histogram: [HIST_BUCKETS]u32 = .{0} ** HIST_BUCKETS;
+var large_alloc_count: u32 = 0;
+var total_alloc_count: u32 = 0;
+
+inline fn profileAlloc(size: u32) void {
+    if (!PROFILE) return;
+    total_alloc_count +|= 1;
+    if (size <= HIST_MAX) {
+        size_histogram[size] +|= 1;
+    } else {
+        large_alloc_count +|= 1;
+    }
+}
+
+pub fn dumpStats() void {
+    if (!PROFILE) return;
+    var log = logging.Logger.open("luaalloc", .file);
+    defer log.close();
+    var buf: [256]u8 = undefined;
+
+    log.print("=== luaalloc size histogram ===\n");
+    log.print(fmt(&buf, "total allocs: {d}\n", .{total_alloc_count}));
+    log.print(fmt(&buf, "large allocs (>{d}): {d}\n", .{ HIST_MAX, large_alloc_count }));
+
+    log.print("  size    count  class  waste total_waste\n");
+    for (0..HIST_BUCKETS) |sz| {
+        const count = size_histogram[sz];
+        if (count == 0) continue;
+        const s: u32 = @intCast(sz);
+        const cls_idx = sizeClassIndex(s);
+        const cls_size: u32 = if (cls_idx) |ci| class_sizes[ci] else 0;
+        const waste: u32 = if (cls_size > 0) cls_size - s else 0;
+        log.print(fmt(&buf, "{d:>6} {d:>8} {d:>6} {d:>6} {d:>10}\n", .{ s, count, cls_size, waste, waste *% count }));
+    }
+    log.print("=== end ===\n");
+}
+
+fn fmt(buf: []u8, comptime f: []const u8, args: anytype) []const u8 {
+    return @import("std").fmt.bufPrint(buf, f, args) catch "???";
 }
 
 pub fn install() u32 {

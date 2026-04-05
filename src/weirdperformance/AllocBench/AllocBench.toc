@@ -1,0 +1,4 @@
+## Interface: 11200
+## Title: AllocBench
+## Notes: Lua allocation benchmark - /allocbench to run
+AllocBench.lua
