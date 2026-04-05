@@ -43,6 +43,7 @@ const clip_sse = @import("clip_sse.zig");
 const cull_sse = @import("cull_sse.zig");
 const silicon_sse = @import("silicon_sse.zig");
 const luaalloc = @import("luaalloc.zig");
+const luagc = @import("luagc.zig");
 
 const renderParticleSprites_SSE = particle_sse.renderParticleSprites_SSE;
 const resetParticleCache = particle_sse.resetParticleCache;
@@ -326,7 +327,10 @@ pub fn installHooks() void {
     if (inflate_hook.install()) installed += 1;
 
     // Lua slab allocator replacement
-    installed += luaalloc.install();
+    // installed += luaalloc.install(); // disabled for testing
+
+    // Incremental GC -- disabled, needs more research
+    // installed += luagc.install();
 }
 
 pub fn lateInit() void {
@@ -336,6 +340,7 @@ pub fn lateInit() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        luaalloc.dumpStats(); // dump size histogram before unhooking
         filecache.remove();
         inflate_hook.remove();
         transform_hook.detach();

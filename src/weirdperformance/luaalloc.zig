@@ -35,7 +35,6 @@ const PROFILE = false; // set true to collect size histogram, dump with dumpStat
 // also use VirtualAlloc with a size header.
 // ============================================================================
 
-// VirtualAlloc for 64KB-aligned slab pages.
 const MEM_COMMIT = 0x1000;
 const MEM_RESERVE = 0x2000;
 const MEM_RELEASE = 0x8000;
@@ -45,6 +44,11 @@ extern "kernel32" fn VirtualFree(lpAddress: *anyopaque, dwSize: u32, dwFreeType:
 
 const SEGMENT_SHIFT = 16; // 64KB pages
 const PAGE_SIZE = 1 << SEGMENT_SHIFT; // 65536
+
+// Arena: reserve 256MB of address space upfront (no physical memory),
+// then commit 64KB pages from it. Commit is much cheaper than
+// reserve+commit and avoids the VirtualAlloc syscall overhead that
+// causes allocation stutter.
 
 // Class index values: 1-15 = slab classes, LARGE_CLASS = large alloc, 0 = unowned
 const LARGE_CLASS = 0xFF;
