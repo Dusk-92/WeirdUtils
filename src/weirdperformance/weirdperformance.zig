@@ -260,6 +260,8 @@ fn installPatches() u32 {
         .{ .target = 0x686820, .replacement = @intFromPtr(&sse.si_translateBoundingVol), .name = "translateBoundingVol" },
         .{ .target = 0x6ABC40, .replacement = @intFromPtr(&sse.si_processLinkedListCollision), .name = "processLinkedListCollision" },
         .{ .target = 0x686000, .replacement = @intFromPtr(&sse.si_frustumCullBBox), .name = "frustumCullBBox" },
+        .{ .target = 0x686180, .replacement = @intFromPtr(&sse.si_frustumCullBBox8), .name = "frustumCullBBox8" },
+        .{ .target = 0x686940, .replacement = @intFromPtr(&sse.si_testAABBFrustum), .name = "testAABBFrustum" },
         .{ .target = 0x6B8C60, .replacement = @intFromPtr(&performSpatialCulling), .name = "PerformSpatialCulling" },
         .{ .target = 0x6B88E0, .replacement = @intFromPtr(&performCollisionDetectionSSE), .name = "performCollisionDetection" },
         .{ .target = 0x7C2C40, .replacement = @intFromPtr(&rayTriIntersectIndexedInt), .name = "rayTriIndexedInt" },
@@ -276,6 +278,7 @@ fn installPatches() u32 {
     }
     return count;
 }
+
 
 // =============================================================================
 // Install / Remove

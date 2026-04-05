@@ -13,6 +13,7 @@ const TC: CC = .{ .x86_thiscall = .{} };
 const FC: CC = .{ .x86_fastcall = .{} };
 const SC: CC = .{ .x86_stdcall = .{} };
 
+
 inline fn loadV4(ptr: u32) V4 {
     return @as(*align(1) const V4, @ptrFromInt(ptr)).*;
 }
@@ -537,13 +538,16 @@ pub fn si_translateBoundingVol(this: u32, offset: u32) callconv(TC) void {
     obj[51] += dx; obj[52] += dy; obj[53] += dz;
 }
 
-// --- 0x686000: FrustumCullBoundingBox ---
-// Transforms bbox through view-proj matrix, perspective divides, projects to 320-column
-// occlusion buffer. Returns 0 (culled) / 2 (visible).
+// --- 0x686000: FrustumCullBoundingBox (center+radius variant) ---
+// Transforms bbox center through view-proj matrix, perspective divides, projects to 320-column
+// occlusion buffer. Returns 0 (visible/passthrough) / 2 (occluded).
+// Callers treat 0 as "render" and 2 as "skip". Original returned 0 for behind-camera
+// objects, which is wrong -- they should be occluded (2).
 // Original: 380 bytes, 2 calls to mat*vec3 (0x7BCA80), x87 perspective divide, x87 column scan.
 // SSE: inline V4 mat*vec3, SSE perspective divide, 4-wide column scan.
 // __fastcall(bbox_ECX, flags_EDX, radius_stack), RET 0x4
 pub fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) u32 {
+
     // Early out: global occlusion flag bit 5
     if ((@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20) == 0) return 0;
 
@@ -575,6 +579,7 @@ pub fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) 
 
     // Behind-camera check (unless flags & 8)
     if ((flags & 0x8) == 0) {
+        if (center[2] < 0.0) return 2;
         if (center[2] < @as(*align(1) const f32, @ptrFromInt(0x80FED4)).*) return 0;
     }
 
@@ -628,6 +633,147 @@ pub fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) 
     }
 
     return 2; // visible — survived all columns
+}
+
+// --- 0x686180: FrustumCullBoundingBox (8-corner AABB variant) ---
+// Transforms all 8 AABB corners through view-proj matrix, perspective divides,
+// tracks min/max screen X and max depth, checks 320-column horizon buffer.
+// Returns 0 (visible/passthrough) / 2 (occluded).
+// Original bug: returned 0 for behind-camera corners, callers treat 0 as "render".
+// Fix: return 2 for behind-camera to properly cull.
+// __fastcall(bbox_ECX, flags_EDX), RET (no stack cleanup)
+pub fn si_frustumCullBBox8(bbox: u32, flags: u32) callconv(FC) u32 {
+
+    // Early out: global occlusion flag bit 5
+    if ((@as(*const u8, @ptrFromInt(0xC7B2A4)).* & 0x20) == 0) return 0;
+
+    // Early out: global value must be in valid range
+    const global_val: f32 = @as(*align(1) const f32, @ptrFromInt(0xC7CFF4)).*;
+    if (global_val < @as(*align(1) const f32, @ptrFromInt(0x8101AC)).*) return 0;
+    if (global_val > @as(*align(1) const f32, @ptrFromInt(0x804588)).*) return 0;
+
+    const bp_min: [*]const f32 = @ptrFromInt(bbox);
+    const bp_max: [*]const f32 = @ptrFromInt(bbox + 0xC);
+    const check_behind = (flags & 0x8) == 0;
+    const near_z: f32 = @as(*align(1) const f32, @ptrFromInt(0x80FED4)).*;
+    const K: f32 = @as(*align(1) const f32, @ptrFromInt(0x7FF9D8)).*;
+
+    var min_sx: f32 = std.math.floatMax(f32);
+    var max_sx: f32 = -std.math.floatMax(f32);
+    var max_depth: f32 = -std.math.floatMax(f32);
+    var corners_behind: u32 = 0;
+    var any_near: bool = false;
+
+    // Corner lookup: bit 0=x, bit 1=y, bit 2=z; 0=min, 1=max
+    const m1: u32 = 0xC7B700;
+    const c0 = loadV4(m1);
+    const c1 = loadV4(m1 + 16);
+    const c2 = loadV4(m1 + 32);
+    const c3 = loadV4(m1 + 48);
+
+    // Transform all 8 corners, classify each
+    var clip_results: [8]V4 = undefined;
+    inline for (0..8) |ci| {
+        const corner_x: f32 = if (ci & 1 != 0) bp_max[0] else bp_min[0];
+        const corner_y: f32 = if (ci & 2 != 0) bp_max[1] else bp_min[1];
+        const corner_z: f32 = if (ci & 4 != 0) bp_max[2] else bp_min[2];
+        const vx: V4 = @splat(corner_x);
+        const vy: V4 = @splat(corner_y);
+        const vz: V4 = @splat(corner_z);
+        clip_results[ci] = @mulAdd(V4, vz, c2, @mulAdd(V4, vy, c1, @mulAdd(V4, vx, c0, c3)));
+    }
+
+    for (&clip_results) |clip| {
+        if (check_behind) {
+            if (clip[2] < 0.0) {
+                corners_behind += 1;
+                continue;
+            }
+            if (clip[2] < near_z) {
+                any_near = true;
+                continue;
+            }
+        }
+
+        const inv_w = K * fastRecip(clip[2]);
+        const sx = clip[0] * inv_w;
+        const sy = clip[1] * inv_w;
+
+        if (sx < min_sx) min_sx = sx;
+        if (sx > max_sx) max_sx = sx;
+        if (sy > max_depth) max_depth = sy;
+    }
+
+    // All 8 corners behind camera -- cull
+    if (check_behind and corners_behind == 8) return 2;
+
+    // Any corner in near zone or no valid projections -- can't test horizon
+    if (any_near or min_sx > max_sx) return 0;
+
+    // Column projection
+    const col_scale: f32 = @as(*align(1) const f32, @ptrFromInt(0x810170)).*;
+    const col_offset: f32 = @as(*align(1) const f32, @ptrFromInt(0x86861C)).*;
+
+    var left_col: i32 = cvtss2si(@mulAdd(f32, min_sx, col_scale, -col_offset));
+    left_col += 0xA0;
+    var right_col: i32 = cvtss2si(@mulAdd(f32, max_sx, col_scale, -col_offset));
+    right_col += 0xA1;
+
+    // Bounds check
+    if (left_col >= 0x140) return 0;
+    if (right_col < 0) return 0;
+    if (left_col < 0) left_col = 0;
+    if (right_col >= 0x140) right_col = 0x13F;
+    if (left_col > right_col) return 2;
+
+    // Horizon buffer scan
+    const horizon_base: u32 = 0xC7B750;
+    var col: u32 = @intCast(left_col);
+    const end: u32 = @intCast(right_col);
+    const depth_v: V4 = @splat(max_depth);
+
+    while (col + 3 <= end) {
+        const h = loadV4(horizon_base + col * 4);
+        const lt_bits: u4 = @bitCast(h < depth_v);
+        if (lt_bits != 0) return 0;
+        col += 4;
+    }
+    while (col <= end) {
+        if (@as(*align(1) const f32, @ptrFromInt(horizon_base + col * 4)).* < max_depth) return 0;
+        col += 1;
+    }
+
+    return 2; // visible -- survived all columns
+}
+
+// --- 0x686940: testAABBFrustum ---
+// Tests AABB against 6 frustum planes using P-vertex method (sign-bit corner selection).
+// For each plane, selects the AABB corner most aligned with the plane normal.
+// If that corner is behind the plane, the entire AABB is outside.
+// ~160M cycles/7.5s across all callers. SSE: center/extent formulation avoids branching.
+// __thiscall(frustumPlanes_ECX, aabb_stack), RET 0x4
+// Returns 0 (outside) / 3 (inside/intersecting)
+pub fn si_testAABBFrustum(planes_ptr: u32, aabb_ptr: u32) callconv(TC) u32 {
+
+    const mn: [*]const f32 = @ptrFromInt(aabb_ptr);
+    const mx: [*]const f32 = @ptrFromInt(aabb_ptr + 0xC);
+
+    // Center/extent formulation: for each plane, dist = dot(center, n) + d
+    // P-vertex dist = dist + dot(extent, |n|). If < tolerance, outside.
+    const center = V4{ (mn[0] + mx[0]) * 0.5, (mn[1] + mx[1]) * 0.5, (mn[2] + mx[2]) * 0.5, 0 };
+    const extent = V4{ (mx[0] - mn[0]) * 0.5, (mx[1] - mn[1]) * 0.5, (mx[2] - mn[2]) * 0.5, 0 };
+    const tolerance: f32 = @bitCast(@as(*const u32, @ptrFromInt(0x8101B4)).*);
+
+    inline for (0..6) |i| {
+        const pl = loadV4(planes_ptr + i * 16);
+        const n = V4{ pl[0], pl[1], pl[2], 0 };
+        const abs_n = @abs(n);
+        const center_dist = dot3v(center, n) + pl[3];
+        const extent_dist = dot3v(extent, abs_n);
+        // P-vertex distance = center_dist + extent_dist
+        if (center_dist + extent_dist < tolerance) return 0;
+    }
+    return 3;
 }
 
 // --- 0x6ABC40: processLinkedListCollision ---
