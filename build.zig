@@ -15,26 +15,29 @@ const ModuleDesc = struct {
 
 /// Single source of truth for all modules. Adding a module here is enough
 /// to wire up the build option, build_options passthrough, and DLL variant.
+/// Versioning: major.minor.bugfix - bump bugfix for core/infra fixes that
+/// affect the module's DLL, minor for feature changes, major for breaking.
 const module_list = [_]ModuleDesc{
-    .{ .name = "pngscreenshots", .version = "1.0", .desc = "Enable screenshot module", .src_dir = "screenshot" },
+    .{ .name = "pngscreenshots", .version = "1.0.1", .desc = "Enable screenshot module", .src_dir = "screenshot" },
     .{ .name = "interact", .version = "1.0", .desc = "Enable interact module", .addon_name = "Interact" },
     .{ .name = "outline", .version = "1.0", .desc = "Enable outline module", .default = false, .addon_name = "Outline" },
     .{ .name = "worldmarkers", .version = "1.0", .desc = "Enable world markers module", .addon_name = "WorldMarkers", .addon_hidden = true },
     .{ .name = "framecrash", .version = "1.0", .desc = "Enable framecrash fix", .default = false },
-    .{ .name = "logsessions", .version = "1.0", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
-    .{ .name = "minimapicons", .version = "1.0", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
-    .{ .name = "transmogfix", .version = "1.0", .desc = "Enable transmog update coalescing" },
-    .{ .name = "customassets", .version = "1.0", .desc = "Enable loose file loading & permissive patch glob" },
-    .{ .name = "healtextfix", .version = "1.0", .desc = "Enable SuperWoW heal text fix" },
-    .{ .name = "bigcursor", .version = "1.0", .desc = "Enable big cursor module" },
-    .{ .name = "clickthrough", .version = "1.0", .desc = "Enable GO click-through (enlarge GO model bounds)" },
+    .{ .name = "logsessions", .version = "1.0.1", .desc = "Enable log session rotation", .addon_name = "LogSessions" },
+    .{ .name = "minimapicons", .version = "1.0.1", .desc = "Enable custom minimap icons", .addon_name = "MinimapIcons" },
+    .{ .name = "transmogfix", .version = "1.0.1", .desc = "Enable transmog update coalescing" },
+    .{ .name = "customassets", .version = "1.0.1", .desc = "Enable loose file loading & permissive patch glob" },
+    .{ .name = "healtextfix", .version = "1.0.1", .desc = "Enable SuperWoW heal text fix" },
+    .{ .name = "bigcursor", .version = "1.0.1", .desc = "Enable big cursor module" },
+    .{ .name = "clickthrough", .version = "1.0.2", .desc = "Enable GO click-through" },
     .{ .name = "dpslog", .version = "0.1", .desc = "Enable structured combat log events for addons", .default = false },
     .{ .name = "transform44", .version = "1.0", .desc = "Enable transform44 profiling/A/B testing (dev only)", .default = false },
     .{ .name = "addonperf", .version = "1.0", .desc = "Enable addon memory/CPU profiling API", .default = false },
     .{ .name = "ssemaths", .version = "1.0", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
-    .{ .name = "weirdperformance", .version = "1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
+    .{ .name = "weirdperformance", .version = "1.1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
     .{ .name = "superweirdo", .version = "0.1", .desc = "Enable GO loot sparkle on interactable objects", .default = false },
+    .{ .name = "luaalloc", .version = "0.1", .desc = "Enable Lua slab allocator replacement", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
