@@ -1,102 +1,76 @@
-//! Incremental garbage collector for Lua 5.0.
+//! Incremental GC for Lua 5.0.
 //!
-//! WoW's Lua 5.0 uses stop-the-world mark-and-sweep GC. When it triggers,
-//! the entire game freezes while every Lua object is visited. With 500K+
-//! objects from addons, this causes visible stutters.
+//! The original stop-the-world GC freezes the game for up to 5 seconds.
+//! This module splits the rootgc sweep across multiple GC triggers.
 //!
-//! This module hooks luaC_collectgarbage (0x6F7340) and replaces it with
-//! an incremental state machine:
+//! Strategy:
+//!   1. Mark + udata sweep + string sweep run atomically (mark is fast)
+//!   2. Rootgc is split into chunks. Each chunk is swept by the original
+//!      lua_gc_remove_objects. After sweeping, surviving objects are moved
+//!      to a separate "swept" list so they can't be re-swept.
+//!   3. After all chunks are processed, the swept list is reconnected.
 //!
-//!   IDLE -> MARK -> SWEEP -> FINALIZE -> IDLE
-//!
-//! Mark phase runs atomically (it's fast -- only visits reachable objects).
-//! Sweep phase runs incrementally -- each time allocation pressure triggers
-//! the GC, we sweep a batch of objects and return. Lua's own allocation
-//! pattern drives the sweep rate: heavy allocation = faster sweep.
-//!
-//! No write barriers needed because mark is atomic. The mutator doesn't
-//! run between mark start and mark end, so no objects can be missed.
+//! Birth-mark: binary patch in luaC_link makes new objects born marked=1
+//! during sweep so they survive until the next GC cycle.
 
 const hook = @import("zhook");
-
-// ============================================================================
-// Lua internals
-//
-// lua_State layout:
-//   +0x10: global_State* (l_G)
-//   +0x60: allowhook (checked by luaC_collectgarbage before proceeding)
-//
-// global_State layout (verified from disassembly):
-//   +0x00: strt.hash (GCObject**)
-//   +0x04: strt.nuse (int)
-//   +0x08: strt.size (int)
-//   +0x10: rootgc (GCObject*) -- main object list
-//   +0x14: rootudata (GCObject*) -- userdata list (swept first for finalizers)
-//   +0x18: tmudata (GCObject*) -- userdata pending __gc
-//   +0x24: GCthreshold (lu_mem)
-//   +0x28: totalbytes (lu_mem)
-//
-// GCObject common header:
-//   +0x00: next (GCObject*) -- intrusive linked list
-//   +0x04: tt (byte) -- type tag
-//   +0x05: marked (byte) -- GC mark bits
-// ============================================================================
 
 const GS_ROOTGC = 0x10;
 const GS_ROOTUDATA = 0x14;
 const GS_GCTHRESHOLD = 0x24;
 const GS_TOTALBYTES = 0x28;
-
 const OBJ_NEXT = 0x00;
-const OBJ_MARKED = 0x05;
 
-const MARK_BIT: u8 = 0x01;
+const CHUNK_SIZE: u32 = 50000;
+const BATCH_HEADROOM: u32 = 128 * 1024;
 
-// Batch size: number of objects to sweep per GC invocation.
-// Tuned for ~0.1ms per batch at typical object sizes.
-const SWEEP_BATCH = 0xFFFFFFFF; // DEBUG: sweep everything in one batch
+const lua_gc_full_collection: *const fn (u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F73E0);
+const lua_gc_shrink_memory: *const fn (u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F7370);
+const luaCallUserDataGC: *const fn (u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F7080);
+const lua_gc_sweep_all_lists: *const fn (u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F72F0);
+const lua_gc_remove_objects: *const fn (u32, u32, u32) callconv(hook.cc.fastcall) u32 = @ptrFromInt(0x6F7210);
 
-// Headroom: bytes of allocation allowed between sweep batches.
-// Prevents GC from being re-triggered immediately after a batch.
-const BATCH_HEADROOM = 64 * 1024; // 64KB
+var sweeping: bool = false;
+var in_gc: bool = false;
 
-// ============================================================================
-// Original function pointers (called directly, not hooked)
-// ============================================================================
+// The "already swept" list: objects that survived sweep, detached from rootgc.
+// swept_head -> first swept survivor, swept_tail -> last (for O(1) append).
+var swept_head: u32 = 0;
+var swept_tail: u32 = 0;
+var unsept_rest: u32 = 0;
+var saved_g: u32 = 0; // global_State for cleanup in remove()
 
-// lua_gc_full_collection (0x6F73E0): __fastcall(ECX=L) -- mark phase
-const MarkFn = *const fn (u32) callconv(hook.cc.fastcall) void;
-const lua_gc_full_collection: MarkFn = @ptrFromInt(0x6F73E0);
+// Per-call timing via rdtsc
+inline fn rdtsc() u64 {
+    var lo: u32 = undefined;
+    var hi: u32 = undefined;
+    asm volatile ("rdtsc"
+        : [lo] "={eax}" (lo),
+          [hi] "={edx}" (hi),
+    );
+    return (@as(u64, hi) << 32) | lo;
+}
 
-// lua_gc_free_object (0x6F7260): __fastcall(ECX=L, EDX=obj)
-const FreeObjFn = *const fn (u32, u32) callconv(hook.cc.fastcall) void;
-const lua_gc_free_object: FreeObjFn = @ptrFromInt(0x6F7260);
+const logging = @import("../logging.zig");
+var gc_log: logging.Logger = .{};
+var gc_log_open: bool = false;
 
-// lua_gc_sweep_all_lists (0x6F72F0): __fastcall(ECX=L, EDX=threshold)
-const SweepStringsFn = *const fn (u32, u32) callconv(hook.cc.fastcall) void;
-const lua_gc_sweep_all_lists: SweepStringsFn = @ptrFromInt(0x6F72F0);
+fn logGc(comptime phase: []const u8, cycles: u64, extra: u32) void {
+    if (!gc_log_open) {
+        gc_log = logging.Logger.openAppend("luagc", .file);
+        gc_log_open = true;
+    }
+    var buf: [128]u8 = undefined;
+    const ms = cycles / 3000000; // ~3GHz approx
+    const msg = @import("std").fmt.bufPrint(&buf, "{s}: {d}ms ({d}Kcyc) extra={d}\n", .{ phase, ms, cycles / 1000, extra }) catch return;
+    gc_log.print(msg);
+}
 
-// lua_gc_shrink_memory (0x6F7370): __fastcall(ECX=L)
-const ShrinkFn = *const fn (u32) callconv(hook.cc.fastcall) void;
-const lua_gc_shrink_memory: ShrinkFn = @ptrFromInt(0x6F7370);
+const BIRTH_MARK_ADDR: usize = 0x6F7B37;
 
-// luaCallUserDataGC (0x6F7080): __fastcall(ECX=L)
-const FinalizeFn = *const fn (u32) callconv(hook.cc.fastcall) void;
-const luaCallUserDataGC: FinalizeFn = @ptrFromInt(0x6F7080);
-
-// ============================================================================
-// GC state machine
-// ============================================================================
-
-const GcPhase = enum { idle, sweeping_udata, sweeping_strings, sweeping_rootgc, finalizing };
-
-var phase: GcPhase = .idle;
-var sweep_ptr: u32 = 0; // pointer TO current position in linked list (so we can unlink)
-var sweep_threshold: u32 = 0; // mark threshold for current cycle
-var saved_L: u32 = 0; // lua_State* for calling back into Lua
-
-fn getGlobalState(L: u32) u32 {
-    return @as(*const u32, @ptrFromInt(L + 0x10)).*;
+fn setBirthMark(marked: bool) void {
+    const val = [1]u8{if (marked) 0x01 else 0x00};
+    hook.writeProtected(BIRTH_MARK_ADDR, &val);
 }
 
 fn readU32(addr: u32) u32 {
@@ -107,183 +81,157 @@ fn writeU32(addr: u32, val: u32) void {
     @as(*u32, @ptrFromInt(addr)).* = val;
 }
 
-fn readU8(addr: u32) u8 {
-    return @as(*const u8, @ptrFromInt(addr)).*;
+fn getGlobalState(L: u32) u32 {
+    return @as(*const u32, @ptrFromInt(L + 0x10)).*;
 }
 
-fn writeU8(addr: u32, val: u8) void {
-    @as(*u8, @ptrFromInt(addr)).* = val;
-}
-
-/// Sweep a batch of objects from the linked list at *sweep_ptr.
-/// Returns number of objects freed.
-fn sweepBatch(L: u32, count: u32) u32 {
-    var freed: u32 = 0;
-    var remaining = count;
-
-    while (remaining > 0) {
-        const obj = readU32(sweep_ptr);
-        if (obj == 0) break; // end of list
-
-        const marked = readU8(obj + OBJ_MARKED);
-        if (marked > sweep_threshold) {
-            // Object is marked (alive) -- clear mark bit, advance
-            writeU8(obj + OBJ_MARKED, marked & ~MARK_BIT);
-            sweep_ptr = obj + OBJ_NEXT;
-        } else {
-            // Object is unmarked (dead) -- unlink and free
-            writeU32(sweep_ptr, readU32(obj + OBJ_NEXT));
-            lua_gc_free_object(L, obj);
-            freed += 1;
-        }
-        remaining -= 1;
+/// Walk the list from a head pointer, find the Nth object.
+/// Returns (obj_addr, count_walked). obj_addr=0 if list shorter than N.
+fn findNth(head: u32, n: u32) struct { obj: u32, count: u32 } {
+    var obj = head;
+    var i: u32 = 0;
+    while (obj != 0 and i < n) : (i += 1) {
+        const next = readU32(obj + OBJ_NEXT);
+        if (next == 0) return .{ .obj = 0, .count = i + 1 };
+        obj = next;
     }
-
-    return freed;
+    return .{ .obj = obj, .count = i };
 }
 
-/// Main hook replacing luaC_collectgarbage (0x6F7340).
-/// __fastcall(ECX=lua_State*), plain RET.
-var in_gc: bool = false;
+/// Find the tail of a singly-linked list (last non-NULL node).
+fn findTail(head: u32) u32 {
+    var obj = head;
+    if (obj == 0) return 0;
+    while (readU32(obj + OBJ_NEXT) != 0) {
+        obj = readU32(obj + OBJ_NEXT);
+    }
+    return obj;
+}
+
+/// Detach the current rootgc list (after sweep) and append to swept list.
+/// Then point rootgc at unsept_rest.
+fn detachSweptAndRestore(g: u32) void {
+    const current_head = readU32(g + GS_ROOTGC);
+    if (current_head != 0) {
+        // Append current rootgc (swept survivors) to our swept list
+        const tail = findTail(current_head);
+        if (swept_head == 0) {
+            swept_head = current_head;
+            swept_tail = tail;
+        } else {
+            writeU32(swept_tail + OBJ_NEXT, current_head);
+            swept_tail = tail;
+        }
+    }
+    // Point rootgc at the unsept remainder
+    writeU32(g + GS_ROOTGC, unsept_rest);
+    unsept_rest = 0;
+}
 
 fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
-    if (in_gc) return; // re-entrancy guard
-    // Original checks L->allowhook (offset 0x60) before proceeding
+    if (in_gc) return;
     if (@as(*const u32, @ptrFromInt(L + 0x60)).* == 0) return;
     in_gc = true;
     defer in_gc = false;
 
     const g = getGlobalState(L);
-    saved_L = L;
 
-    switch (phase) {
-        .idle => {
-            // Start new GC cycle: run full mark phase atomically
-            // lua_gc_full_collection expects state set up via prior calls.
-            // The original luaC_collectgarbage calls it after checking allowhook
-            // with ECX = L still in register. We replicate this.
-            lua_gc_full_collection(L);
+    if (!sweeping) {
+        // === Atomic: mark + udata sweep + string sweep ===
+        const t0 = rdtsc();
+        lua_gc_full_collection(L);
+        const t1 = rdtsc();
+        _ = lua_gc_remove_objects(L, g + GS_ROOTUDATA, 0);
+        lua_gc_sweep_all_lists(L, 0);
+        const t2 = rdtsc();
+        logGc("mark", t1 - t0, 0);
+        logGc("udata+str", t2 - t1, 0);
 
-            // Mark phase done. Start sweeping userdata first (same order as original).
-            phase = .sweeping_udata;
-            sweep_ptr = g + GS_ROOTUDATA;
-            sweep_threshold = 0; // first sweep pass uses threshold 0x100
-            // Actually the original passes param_2=0x100 for userdata sweep.
-            // The threshold comparison is: if marked > threshold, keep alive.
-            // With threshold 0x100, only objects with marked > 256 survive,
-            // which means nothing survives (marked is a byte, max 255).
-            // Wait -- that means the first udata sweep frees EVERYTHING?
-            // No: the original passes EDI=0 (from XOR EDX,EDX -> param_2=0),
-            // then luaGarbageCollect sets EDI=0x100 if param_2!=0.
-            // luaC_collectgarbage calls luaGarbageCollect(L, 0), so EDI=0.
-            // threshold=0 means: if marked > 0, keep (marked objects survive).
-            sweep_threshold = 0;
+        // Initialize swept list
+        swept_head = 0;
+        swept_tail = 0;
 
-            // Raise GCthreshold to prevent immediate re-trigger
-            const totalbytes = readU32(g + GS_TOTALBYTES);
-            writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
-
-            // Do first batch of udata sweep
-            _ = sweepBatch(L, SWEEP_BATCH);
-
-            // Check if udata sweep is done
-            if (readU32(sweep_ptr) == 0) {
-                phase = .sweeping_strings;
-            }
-        },
-
-        .sweeping_udata => {
-            _ = sweepBatch(L, SWEEP_BATCH);
-
-            if (readU32(sweep_ptr) == 0) {
-                phase = .sweeping_strings;
-            }
-
-            // Keep threshold ahead of allocations
-            const totalbytes = readU32(g + GS_TOTALBYTES);
-            writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
-        },
-
-        .sweeping_strings => {
-            // String table sweep is not a linked list walk -- it's a hash
-            // table scan. Run it atomically (it's bounded by string count,
-            // typically fast).
-            lua_gc_sweep_all_lists(L, 0);
-
-            // Now start main rootgc sweep
-            phase = .sweeping_rootgc;
-            sweep_ptr = g + GS_ROOTGC;
-
-            _ = sweepBatch(L, SWEEP_BATCH);
-
-            if (readU32(sweep_ptr) == 0) {
-                phase = .finalizing;
-            }
-
-            const totalbytes = readU32(g + GS_TOTALBYTES);
-            writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
-        },
-
-        .sweeping_rootgc => {
-            _ = sweepBatch(L, SWEEP_BATCH);
-
-            if (readU32(sweep_ptr) == 0) {
-                phase = .finalizing;
-            }
-
-            const totalbytes = readU32(g + GS_TOTALBYTES);
-            writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
-        },
-
-        .finalizing => {
-            // Shrink string table + buffers, set final threshold
+        // Check if rootgc is short enough to sweep in one go
+        const rootgc_head = readU32(g + GS_ROOTGC);
+        const result = findNth(rootgc_head, CHUNK_SIZE);
+        if (result.obj == 0) {
+            // Short list, sweep all at once
+            _ = lua_gc_remove_objects(L, g + GS_ROOTGC, 0);
             lua_gc_shrink_memory(L);
-            // Run __gc finalizers
             luaCallUserDataGC(L);
-            phase = .idle;
-        },
+            return;
+        }
+
+        // Truncate rootgc at the chunk boundary
+        unsept_rest = readU32(result.obj + OBJ_NEXT);
+        writeU32(result.obj + OBJ_NEXT, 0);
+
+        sweeping = true;
+        saved_g = g;
+        setBirthMark(true);
+
+        // Sweep the truncated chunk
+        const ts0 = rdtsc();
+        _ = lua_gc_remove_objects(L, g + GS_ROOTGC, 0);
+        detachSweptAndRestore(g);
+        logGc("chunk0", rdtsc() - ts0, CHUNK_SIZE);
+
+        const totalbytes = readU32(g + GS_TOTALBYTES);
+        writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
+        return;
     }
+
+    // === Continue incremental sweep ===
+    // rootgc currently points at the unsept portion (+ any new objects at head).
+    // New objects born during sweep have marked=1 and will survive.
+
+    const rootgc_head = readU32(g + GS_ROOTGC);
+    const result = findNth(rootgc_head, CHUNK_SIZE);
+
+    const tc0 = rdtsc();
+
+    if (result.obj == 0) {
+        // Remaining list fits in one sweep -- finish
+        _ = lua_gc_remove_objects(L, g + GS_ROOTGC, 0);
+
+        // Reconnect swept list
+        const current_head = readU32(g + GS_ROOTGC);
+        if (swept_head != 0) {
+            if (current_head != 0) {
+                writeU32(swept_tail + OBJ_NEXT, current_head);
+            }
+            writeU32(g + GS_ROOTGC, swept_head);
+        }
+
+        swept_head = 0;
+        swept_tail = 0;
+        sweeping = false;
+        setBirthMark(false);
+        logGc("final", rdtsc() - tc0, result.count);
+
+        lua_gc_shrink_memory(L);
+        luaCallUserDataGC(L);
+        return;
+    }
+
+    // Truncate and sweep next chunk
+    unsept_rest = readU32(result.obj + OBJ_NEXT);
+    writeU32(result.obj + OBJ_NEXT, 0);
+
+    _ = lua_gc_remove_objects(L, g + GS_ROOTGC, 0);
+    detachSweptAndRestore(g);
+    logGc("chunkN", rdtsc() - tc0, CHUNK_SIZE);
+
+    const totalbytes = readU32(g + GS_TOTALBYTES);
+    writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
 }
 
-// ============================================================================
-// luaC_link hook (0x6F7B20) -- birth-mark barrier
-//
-// luaC_link adds every new GC object to rootgc and sets marked=0 (white).
-// During incremental sweep, white objects get freed. New objects born during
-// sweep must be born BLACK (marked=1) so the sweep skips them.
-//
-// Original: __fastcall(ECX=L, EDX=obj, stack: type_tag), RET 0x4
-//   MOV EAX, [ECX+0x10]       ; global_State
-//   MOV EAX, [EAX+0x10]       ; old rootgc head
-//   MOV [EDX], EAX             ; obj->next = old head
-//   MOV ECX, [ECX+0x10]        ; global_State
-//   MOV [ECX+0x10], EDX        ; rootgc = obj
-//   MOV byte [EDX+0x5], 0x0    ; obj->marked = 0 (WHITE)
-//   MOV byte [EDX+0x4], AL     ; obj->tt = type_tag
-// ============================================================================
-
-const LinkFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
-var link_hook: hook.Detour(LinkFn) = .{};
-
-fn linkDetour(L: u32, obj: u32, type_tag: u32) callconv(hook.cc.fastcall) void {
-    // Replicate original luaC_link logic
-    const g = getGlobalState(L);
-    const old_head = readU32(g + GS_ROOTGC);
-    writeU32(obj + OBJ_NEXT, old_head); // obj->next = old head
-    writeU32(g + GS_ROOTGC, obj); // rootgc = obj
-    writeU8(obj + 0x04, @truncate(type_tag)); // obj->tt = type_tag
-
-    // Birth-mark: during sweep, born BLACK so sweep skips this object
-    if (phase != .idle) {
-        writeU8(obj + OBJ_MARKED, MARK_BIT); // born marked
-    } else {
-        writeU8(obj + OBJ_MARKED, 0); // born white (normal)
+pub fn dumpStats() void {
+    if (gc_log_open) {
+        gc_log.close();
+        gc_log_open = false;
     }
 }
-
-// ============================================================================
-// Hook management
-// ============================================================================
 
 const CollectFn = fn (u32) callconv(hook.cc.fastcall) void;
 var collect_hook: hook.Detour(CollectFn) = .{};
@@ -291,12 +239,34 @@ var collect_hook: hook.Detour(CollectFn) = .{};
 pub fn install() u32 {
     var installed: u32 = 0;
     if (collect_hook.attach(0x6F7340, &collectGarbageDetour) == .ok) installed += 1;
-    // if (link_hook.attach(0x6F7B20, &linkDetour) == .ok) installed += 1; // DEBUG: disabled to isolate crash
     return installed;
 }
 
 pub fn remove() void {
+    if (sweeping and saved_g != 0) {
+        // Reconnect: rootgc -> current + unsept + swept
+        const g = saved_g;
+        var tail = findTail(readU32(g + GS_ROOTGC));
+        if (unsept_rest != 0) {
+            if (tail != 0) {
+                writeU32(tail + OBJ_NEXT, unsept_rest);
+                tail = findTail(unsept_rest);
+            } else {
+                writeU32(g + GS_ROOTGC, unsept_rest);
+                tail = findTail(unsept_rest);
+            }
+        }
+        if (swept_head != 0) {
+            if (tail != 0) {
+                writeU32(tail + OBJ_NEXT, swept_head);
+            } else {
+                writeU32(g + GS_ROOTGC, swept_head);
+            }
+        }
+        setBirthMark(false);
+    }
     collect_hook.detach();
-    link_hook.detach();
-    phase = .idle;
+    sweeping = false;
+    swept_head = 0;
+    swept_tail = 0;
 }

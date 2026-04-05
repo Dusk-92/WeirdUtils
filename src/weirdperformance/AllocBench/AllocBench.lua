@@ -478,7 +478,7 @@ SlashCmdList["LUMPALOC"] = function(msg)
 
     local count_k = args[1] or 50
     lump_obj_size = args[2] or 80
-    lump_hold_secs = args[3] or 10
+    lump_hold_secs = args[3] or 5
 
     lump_target = count_k * 1000
     lump_heap = {}

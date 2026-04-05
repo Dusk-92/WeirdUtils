@@ -329,8 +329,8 @@ pub fn installHooks() void {
     // Lua slab allocator replacement
     // installed += luaalloc.install(); // disabled for testing
 
-    // Incremental GC -- disabled, needs more research
-    // installed += luagc.install();
+    // GC phase profiler
+    installed += luagc.install();
 }
 
 pub fn lateInit() void {
@@ -340,7 +340,8 @@ pub fn lateInit() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
-        luaalloc.dumpStats(); // dump size histogram before unhooking
+        luaalloc.dumpStats();
+        luagc.dumpStats();
         filecache.remove();
         inflate_hook.remove();
         transform_hook.detach();
