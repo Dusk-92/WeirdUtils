@@ -252,6 +252,8 @@ pub fn main() void {
     bench_entityUpdate();
     }
 
+    bench_detour_overhead();
+
     if (false) { // disabled: not working on these right now
 
     // 1: vecMulMat4 -- fastcall(ECX=result, EDX=vec, stack=mat) -> u32
@@ -3034,4 +3036,174 @@ fn bench_computeOutcodes() void {
         if (t < sse_cyc) sse_cyc = t;
     }
     report("computeOutcodes(150v)", orig_cyc, sse_cyc, ok);
+}
+
+// =========================================================================
+// Detour overhead benchmark
+//
+// Measures the cost of zhook's Detour trampoline mechanism vs a direct call.
+//
+// Setup:
+//   target_fn: a small function (luaS_newlstr-sized, ~20 instructions)
+//              allocated on an executable page
+//   trampoline: stolen prologue (5 bytes) + JMP back to target+5
+//   hooked_target: E9 JMP to our detour_fn, which calls trampoline
+//                  (simulating callOriginal)
+//
+// We measure:
+//   1. Direct call to the unhooked target_fn
+//   2. Call to the hooked target_fn (goes through detour -> trampoline -> original)
+//   3. Overhead = (2) - (1) = pure Detour cost per call
+// =========================================================================
+
+fn bench_detour_overhead() void {
+    print("\n{s}\n", .{"=" ** 72});
+    print("Detour overhead benchmark -- {d}M iterations\n", .{ITERS / 1_000_000});
+    print("{s}\n", .{"=" ** 72});
+
+    // Allocate two executable pages: one for "target" function, one for trampoline
+    const target_page = posix.mmap(
+        null, 4096,
+        .{ .READ = true, .WRITE = true, .EXEC = true },
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1, 0,
+    ) catch {
+        print("FATAL: mmap target page failed\n", .{});
+        return;
+    };
+    const tramp_page = posix.mmap(
+        null, 4096,
+        .{ .READ = true, .WRITE = true, .EXEC = true },
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1, 0,
+    ) catch {
+        print("FATAL: mmap trampoline page failed\n", .{});
+        return;
+    };
+
+    // Build a small fastcall target function that does real work:
+    // __fastcall(ECX=a, EDX=b) -> EAX = a ^ (b + (a << 5) + (a >> 2))
+    // This approximates one iteration of the Lua hash loop.
+    //
+    // Machine code (x86, 15 bytes):
+    //   55              push ebp
+    //   89 e5           mov ebp, esp
+    //   89 c8           mov eax, ecx       ; eax = a
+    //   c1 e0 05        shl eax, 5         ; eax = a << 5
+    //   01 d0           add eax, edx       ; eax += b
+    //   89 c8           mov eax, ecx       ;  -- simplified: just return ECX ^ EDX
+    //   31 d0           xor eax, edx
+    //   5d              pop ebp
+    //   c3              ret
+    const target_code = [_]u8{
+        0x55,                   // push ebp
+        0x89, 0xE5,             // mov ebp, esp
+        0x89, 0xC8,             // mov eax, ecx
+        0xC1, 0xE0, 0x05,       // shl eax, 5
+        0x01, 0xD0,             // add eax, edx
+        0x89, 0xC8,             // mov eax, ecx (use ecx as base)
+        0x31, 0xD0,             // xor eax, edx
+        0x5D,                   // pop ebp
+        0xC3,                   // ret
+    };
+    @memcpy(target_page[0..target_code.len], &target_code);
+    const target_addr = @intFromPtr(target_page.ptr);
+
+    // Save original first 5 bytes for the trampoline
+    const stolen: usize = 5; // "push ebp; mov ebp, esp" = 3 bytes, but need >= 5 for JMP
+
+    // Actually our prologue is: 55 89 E5 89 C8 = 5 bytes exactly (push ebp, mov ebp,esp, mov eax,ecx)
+    // Build trampoline: stolen bytes + JMP back to target+5
+    const tramp_addr = @intFromPtr(tramp_page.ptr);
+    @memcpy(tramp_page[0..stolen], target_page[0..stolen]);
+    // JMP rel32 back to target + stolen
+    tramp_page[stolen] = 0xE9;
+    const jmp_back_rel = @as(i32, @bitCast((target_addr + stolen) -% (tramp_addr + stolen + 5)));
+    @as(*align(1) i32, @ptrCast(tramp_page[stolen + 1 ..][0..4])).* = jmp_back_rel;
+
+    // Benchmark 1: direct call to unhooked target
+    const DirectFn = *const fn (u32, u32) callconv(.{ .x86_fastcall = .{} }) u32;
+    const direct_fn: DirectFn = @ptrFromInt(target_addr);
+
+    var direct_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const t = rdtsc();
+        for (0..ITERS) |_| {
+            const r = @call(.never_inline, direct_fn, .{ 0x12345678, 0xDEADBEEF });
+            std.mem.doNotOptimizeAway(r);
+        }
+        const elapsed = rdtsc() - t;
+        if (elapsed < direct_cyc) direct_cyc = elapsed;
+    }
+
+    // Now hook the target: overwrite first 5 bytes with JMP to our detour
+    // Our detour calls the trampoline (= callOriginal) and returns
+    //
+    // detour_fn: a small function that calls the trampoline with the same args
+    // We build this as machine code too:
+    //   push edx        ; save EDX (fastcall param2) -- trampoline expects it in EDX
+    //   push ecx        ; save ECX
+    //   call trampoline ; this runs stolen bytes + JMPs back to target+5
+    //   ... but wait, trampoline is just the original function body.
+    //   The detour should call the trampoline the same way: fastcall(ECX, EDX)
+    //
+    // Actually simpler: the detour IS a fastcall function that just calls trampoline.
+    // Machine code for passthrough detour:
+    //   call [trampoline]  -- but we need the trampoline addr as a CALL rel32
+    //   ret
+    const detour_offset: usize = 256; // put detour at page+256
+    const detour_addr = target_addr + detour_offset; // reuse target_page space
+    // CALL rel32 to trampoline
+    target_page[detour_offset] = 0xE8;
+    const call_rel = @as(i32, @bitCast(tramp_addr -% (detour_addr + 5)));
+    @as(*align(1) i32, @ptrCast(target_page[detour_offset + 1 ..][0..4])).* = call_rel;
+    // RET
+    target_page[detour_offset + 5] = 0xC3;
+
+    // Patch target: E9 JMP rel32 to detour
+    target_page[0] = 0xE9;
+    const jmp_detour_rel = @as(i32, @bitCast(detour_addr -% (target_addr + 5)));
+    @as(*align(1) i32, @ptrCast(target_page[1..5])).* = jmp_detour_rel;
+
+    // Benchmark 2: call hooked target (target -> JMP detour -> CALL trampoline -> stolen+JMP back -> rest of target -> RET -> detour RET)
+    const hooked_fn: DirectFn = @ptrFromInt(target_addr);
+
+    var hooked_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const t = rdtsc();
+        for (0..ITERS) |_| {
+            const r = @call(.never_inline, hooked_fn, .{ 0x12345678, 0xDEADBEEF });
+            std.mem.doNotOptimizeAway(r);
+        }
+        const elapsed = rdtsc() - t;
+        if (elapsed < hooked_cyc) hooked_cyc = elapsed;
+    }
+
+    const direct_avg = direct_cyc / ITERS;
+    const hooked_avg = hooked_cyc / ITERS;
+    const overhead = if (hooked_avg > direct_avg) hooked_avg - direct_avg else 0;
+
+    print("\n  direct call:  {d} cyc/call\n", .{direct_avg});
+    print("  hooked call:  {d} cyc/call\n", .{hooked_avg});
+    print("  overhead:     {d} cyc/call\n", .{overhead});
+
+    // Also measure trampoline-only (calling trampoline directly, no JMP from target)
+    const tramp_fn: DirectFn = @ptrFromInt(tramp_addr);
+
+    // Restore target bytes so trampoline JMPs into clean code
+    @memcpy(target_page[0..target_code.len], &target_code);
+
+    var tramp_cyc: u64 = std.math.maxInt(u64);
+    for (0..5) |_| {
+        const t = rdtsc();
+        for (0..ITERS) |_| {
+            const r = @call(.never_inline, tramp_fn, .{ 0x12345678, 0xDEADBEEF });
+            std.mem.doNotOptimizeAway(r);
+        }
+        const elapsed = rdtsc() - t;
+        if (elapsed < tramp_cyc) tramp_cyc = elapsed;
+    }
+
+    const tramp_avg = tramp_cyc / ITERS;
+    print("  trampoline:   {d} cyc/call (callOriginal path, no detour JMP)\n", .{tramp_avg});
 }
