@@ -36,6 +36,7 @@ const module_list = [_]ModuleDesc{
     .{ .name = "ssemaths", .version = "1.0", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
     .{ .name = "weirdperformance", .version = "1.1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
+    .{ .name = "luavm", .version = "0.1", .desc = "Enable Lua VM hotspot optimizations (hash, string intern, opcode SSE)", .default = false },
     .{ .name = "superweirdo", .version = "0.1", .desc = "Enable GO loot sparkle on interactable objects", .default = false },
 };
 
