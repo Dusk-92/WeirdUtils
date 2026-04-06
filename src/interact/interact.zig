@@ -300,8 +300,13 @@ fn processLootQueue() void {
     interactNextCorpse();
 }
 
-pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
+pub fn lootAllCorpses(L: *anyopaque) callconv(.c) u32 {
     if (!isInWorld()) return 0;
+
+    const max: usize = if (luaIsNumber(L, 1))
+        @intFromFloat(luaToNumber(L, 1))
+    else
+        MAX_LOOT_QUEUE;
 
     // Cancel any in-progress chain
     loot_queue_count = 0;
@@ -316,7 +321,7 @@ pub fn lootAllCorpses(_: *anyopaque) callconv(.c) u32 {
     const p_pos = getUnitPosition(player);
 
     while (current_object != 0 and (current_object & 1) == 0) {
-        if (loot_queue_count >= MAX_LOOT_QUEUE) break;
+        if (loot_queue_count >= max) break;
 
         const guid = hook.readMem(u64, current_object + 0x30);
         const pointer = getObjectPointer(guid);
