@@ -971,6 +971,11 @@ fn renderObjectBlipsDetour(thisptr: u32, _edx: u32, dn_info: u32) callconv(hook.
             drawMinimapBlip(blips[i].pos, blips[i].blip.scale);
         }
     }
+
+    // Clear texture binding so downstream renders don't use our stale texture.
+    // Silicon's d3d9 translation layer does not reset this between render passes.
+    const gxRsSet: *const fn (u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(ADDR.GxRsSet);
+    gxRsSet(23, 0);
 }
 
 // ClntObjMgrEnumVisibleObjects: __fastcall(callback ECX, context EDX)

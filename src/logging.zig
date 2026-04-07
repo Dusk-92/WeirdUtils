@@ -67,6 +67,9 @@ const win = if (debug) struct {
     const GENERIC_WRITE: u32 = 0x40000000;
     const FILE_SHARE_READ: u32 = 0x00000001;
     const CREATE_ALWAYS: u32 = 2;
+    const OPEN_ALWAYS: u32 = 4;
+    const FILE_END: u32 = 2;
+    extern "kernel32" fn SetFilePointer(hFile: *anyopaque, lDistanceToMove: i32, lpDistanceToMoveHigh: ?*i32, dwMoveMethod: u32) callconv(WINAPI) u32;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 
     var console_handle: ?*anyopaque = null;
@@ -100,6 +103,7 @@ pub fn deinit() void {
 // =============================================================================
 
 pub const Output = enum { console, file, both };
+pub const FileMode = enum { truncate, append };
 
 // =============================================================================
 // Logger
@@ -108,6 +112,7 @@ pub const Output = enum { console, file, both };
 pub const Logger = struct {
     file_handle: if (debug) ?*anyopaque else void = if (debug) null else {},
     default_dest: if (debug) Output else void = if (debug) .console else {},
+    file_mode: if (debug) FileMode else void = if (debug) .truncate else {},
     /// Module name for lazy file creation. Null = no file output.
     file_name: if (debug) ?[*:0]const u8 else void = if (debug) null else {},
     /// Auto-prefix: "[name] " prepended to every log line.
@@ -118,8 +123,16 @@ pub const Logger = struct {
     /// first write, so modules that never log to file produce no `.log` file.
     /// Pass null for no file (console-only even when dest is .both/.file).
     pub fn open(module_name: ?[*:0]const u8, default: Output) Logger {
+        return openWithMode(module_name, default, .truncate);
+    }
+
+    pub fn openAppend(module_name: ?[*:0]const u8, default: Output) Logger {
+        return openWithMode(module_name, default, .append);
+    }
+
+    pub fn openWithMode(module_name: ?[*:0]const u8, default: Output, mode: FileMode) Logger {
         if (debug) {
-            var l: Logger = .{ .default_dest = default, .file_name = module_name };
+            var l: Logger = .{ .default_dest = default, .file_name = module_name, .file_mode = mode };
             if (module_name) |name| {
                 const span = std.mem.span(name);
                 if (span.len + 3 <= l.prefix.len) {
@@ -217,17 +230,21 @@ pub const Logger = struct {
         @memcpy(buf[0..span.len], span);
         @memcpy(buf[span.len..][0..4], ".log");
         buf[span.len + 4] = 0;
+        const disposition = if (self.file_mode == .append) win.OPEN_ALWAYS else win.CREATE_ALWAYS;
         const fh = win.CreateFileA(
             @ptrCast(buf[0 .. span.len + 4 :0]),
             win.GENERIC_WRITE,
             win.FILE_SHARE_READ,
             null,
-            win.CREATE_ALWAYS,
+            disposition,
             win.FILE_ATTRIBUTE_NORMAL,
             null,
         );
         if (fh) |h| {
             if (@intFromPtr(h) != 0xFFFFFFFF) {
+                if (self.file_mode == .append) {
+                    _ = win.SetFilePointer(h, 0, null, win.FILE_END);
+                }
                 self.file_handle = h;
                 return h;
             }

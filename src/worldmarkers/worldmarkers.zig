@@ -11,12 +11,12 @@
 //!   WorldMarker(index)              - place marker at cursor terrain position
 //!   ClearWorldMarker(index)         - remove specific marker (1-5)
 //!   ClearWorldMarker()              - remove all markers
-//!   CanSetWorldMarkers()            - returns 1 if leader/assist, nil otherwise
+//!   GetWorldMarker(index)           - returns x, y, z, areaId or nil
+//!   CanSetWorldMarker()             - returns 1 if leader/assist, nil otherwise
 //!
 //! Lua API (WorldMarkers table - internal, used by addon):
-//!   WorldMarkers.SetMarkerDef(i, x, y, z, area, sender)
-//!   WorldMarkers.ClearMarkerDef([index,] sender)
-//!   WorldMarkers.GetMarkerDef(index) - returns x, y, z, areaId or nil
+//!   WorldMarkers.SetMarkerSync(i, x, y, z, area, sender)
+//!   WorldMarkers.ClearMarkerSync([index,] sender)
 
 const std = @import("std");
 const hook = @import("zhook");
@@ -388,7 +388,7 @@ fn spawnEntity(index: usize, pos: Vec3) bool {
 
 /// SetUnitPositionAndOrientation - __fastcall(ECX=positionData, EDX=pos), 1 stack param.
 fn setUnitPositionAndOrientation(entity: *anyopaque, pos: *[3]f32, facing: f32) void {
-    hook.call(fn (*anyopaque, *[3]f32, f32) callconv(hook.cc.fastcall) void, 0x698e20, .{ entity, pos, facing });
+    hook.call(fn (*anyopaque, *[3]f32, f32) callconv(hook.cc.fastcall) void, o.FN_SET_UNIT_POSITION, .{ entity, pos, facing });
 }
 
 /// Remove only the live entity for a marker slot (def untouched).
@@ -504,9 +504,7 @@ pub fn luaClearWorldMarker(L: lua.State) callconv(.c) u32 {
     }
 
     const nargs = lua.gettop(L);
-    const lua_type: *const fn (lua.State, i32) callconv(hook.cc.fastcall) i32 = @ptrFromInt(0x6F3400);
-
-    if (nargs == 0 or lua_type(L, 1) == 0) {
+    if (nargs == 0 or lua.typeOf(L, 1) == 0) {
         // No args or nil - clear all
         clearAllMarkers();
         lua.pushnumber(L, 1.0);

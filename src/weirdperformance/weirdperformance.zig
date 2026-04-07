@@ -327,7 +327,7 @@ pub fn installHooks() void {
     if (inflate_hook.install()) installed += 1;
 
     // Lua slab allocator replacement
-    // installed += luaalloc.install(); // disabled for testing
+    installed += luaalloc.install();
 
     // GC phase profiler
     installed += luagc.install();

@@ -100,3 +100,10 @@ pub const LEADER_GUID: usize = 0x00bc75f8;
 pub const RAID_ROSTER_ARRAY: usize = 0x00b712a8;
 pub const RAID_MEMBER_COUNT: usize = 0x00b713e0;
 pub const ROSTER_ENTRY_RANK: usize = 0x0C;
+
+// =============================================================================
+// Transform and position (additional)
+// =============================================================================
+
+/// SetUnitPositionAndOrientation - __fastcall(ECX=entity, EDX=pos), 1 stack param (facing).
+pub const FN_SET_UNIT_POSITION: usize = 0x00698e20;

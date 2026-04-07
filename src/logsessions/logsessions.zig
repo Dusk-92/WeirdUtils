@@ -1,12 +1,13 @@
 //! Log session rotation with per-character directories.
 //!
 //! Redirects combat log, raw combat log, and chat log to per-character
-//! directories: `Logs\<realm>\<character>\<Type>_<timestamp>_<PID>.txt`.
+//! directories: `Logs\<realm>\<character>\WoW<Type>Log_YYYY_MM_DD.txt`.
 //!
 //! Features:
 //! - Early path setup: hooks HandleCharacterSelection to resolve character/realm
 //!   from the select screen data before world loading begins
-//! - Session continuation: reuses files modified < 60 min ago
+//! - Daily rotation: one log file per character per day, no timestamps
+//! - Session continuation: appends to today's file on each login (same character)
 //! - Session marker: writes `COMBATLOG_SESSION: <char> <realm>` on first combat write
 //!
 //! All DLL-side - no Lua addon needed.
@@ -118,10 +119,6 @@ var g_raw_marker_written: bool = false;
 /// statically; SuperWoW passes it as handle_out.
 var g_raw_combat_handle_addr: u32 = 0;
 
-/// Saved original path pointers for restoration.
-var g_original_combat_path_ptr: u32 = 0;
-var g_original_chat_path_ptr: u32 = 0;
-
 // =============================================================================
 // Character / realm identity
 // =============================================================================
@@ -196,88 +193,60 @@ fn setupSessionDir(realm: []const u8, char_name: []const u8) bool {
 }
 
 // =============================================================================
-// Session continuation - find recent file to reuse
+// Daily log file lookup
 // =============================================================================
 
-/// Scan directory for files matching `<prefix>_*.txt`, return the newest if
-/// modified within 60 minutes. Writes full path into result_buf, returns length.
-fn findRecentFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
+/// Scan directory for today's daily log file matching `<prefix>_YYYY_MM_DD.txt`.
+/// Returns full path if found, null if not.
+fn findDailyFile(prefix: []const u8, result_buf: *[260]u8) ?usize {
     if (g_dir_path_len == 0) return null;
 
-    // Build search pattern: <dir><prefix>_*.txt
-    var search_buf: [300]u8 = undefined;
-    const pattern = std.fmt.bufPrint(&search_buf, "{s}{s}_*.txt", .{
-        g_dir_path[0..g_dir_path_len],
+    var st: SYSTEMTIME = undefined;
+    GetLocalTime(&st);
+
+    // Build exact filename: <dir><prefix>_YYYY_MM_DD.txt
+    var filename_buf: [260]u8 = undefined;
+    const filename = std.fmt.bufPrint(&filename_buf, "{s}_{d:0>4}_{d:0>2}_{d:0>2}.txt", .{
         prefix,
+        st.wYear,
+        st.wMonth,
+        st.wDay,
     }) catch return null;
-    search_buf[pattern.len] = 0;
 
+    // Build full path: <dir><filename>
+    const total_len = g_dir_path_len + filename.len;
+    if (total_len >= result_buf.len) return null;
+    @memcpy(result_buf[0..g_dir_path_len], g_dir_path[0..g_dir_path_len]);
+    @memcpy(result_buf[g_dir_path_len..total_len], filename);
+    result_buf[total_len] = 0;
+
+    // Check if file exists
     var find_data: WIN32_FIND_DATAA = undefined;
-    const find_handle = FindFirstFileA(@ptrCast(search_buf[0..pattern.len :0]), &find_data);
+    const find_handle = FindFirstFileA(@ptrCast(result_buf[0..total_len :0]), &find_data);
     if (find_handle == INVALID_HANDLE_VALUE) return null;
-    defer _ = FindClose(find_handle);
+    _ = FindClose(find_handle);
 
-    var newest_time: u64 = 0;
-    var newest_name: [260]u8 = undefined;
-    var newest_name_len: usize = 0;
-
-    // Iterate all matching files, track the newest by write time
-    var has_result: bool = true;
-    while (has_result) {
-        const ft: u64 = @bitCast(find_data.ftLastWriteTime);
-        if (ft > newest_time) {
-            newest_time = ft;
-            const name_len = std.mem.indexOfScalar(u8, &find_data.cFileName, 0) orelse 0;
-            if (name_len > 0) {
-                newest_name_len = name_len;
-                @memcpy(newest_name[0..name_len], find_data.cFileName[0..name_len]);
-            }
-        }
-        has_result = FindNextFileA(find_handle, &find_data) != 0;
-    }
-
-    if (newest_name_len == 0) return null;
-
-    // Compare against current time - both UTC FILETIME (100ns units)
-    var current_ft: FILETIME = undefined;
-    GetSystemTimeAsFileTime(&current_ft);
-    const current: u64 = @bitCast(current_ft);
-    const threshold: u64 = 60 * 60 * 10_000_000; // 60 minutes
-
-    if (current > newest_time and (current - newest_time) < threshold) {
-        // Build full path: dir + filename
-        const total_len = g_dir_path_len + newest_name_len;
-        if (total_len >= result_buf.len) return null;
-        @memcpy(result_buf[0..g_dir_path_len], g_dir_path[0..g_dir_path_len]);
-        @memcpy(result_buf[g_dir_path_len..total_len], newest_name[0..newest_name_len]);
-        result_buf[total_len] = 0;
-        return total_len;
-    }
-
-    return null;
+    return total_len;
 }
 
-/// Resolve a log file path: reuse recent file or generate new timestamped name.
-fn resolveLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
-    // Try to reuse a recent file (modified < 60 min ago)
-    if (findRecentFile(prefix, result_buf)) |len| {
+/// Resolve a log file path: reuse today's daily file or create new one.
+fn resolveDailyLogPath(prefix: []const u8, result_buf: *[260]u8) usize {
+    // Try to find today's daily file
+    if (findDailyFile(prefix, result_buf)) |len| {
         log.fmt("reusing: {s}\n", .{result_buf[0..len]});
         return len;
     }
 
-    // Generate new timestamped filename
+    // Generate new daily filename: <dir><prefix>_YYYY_MM_DD.txt
     var st: SYSTEMTIME = undefined;
     GetLocalTime(&st);
 
-    const path = std.fmt.bufPrint(result_buf, "{s}{s}_{d:0>4}{d:0>2}{d:0>2}_{d:0>2}{d:0>2}{d:0>2}.txt", .{
+    const path = std.fmt.bufPrint(result_buf, "{s}{s}_{d:0>4}_{d:0>2}_{d:0>2}.txt", .{
         g_dir_path[0..g_dir_path_len],
         prefix,
         st.wYear,
         st.wMonth,
         st.wDay,
-        st.wHour,
-        st.wMinute,
-        st.wSecond,
     }) catch return 0;
     result_buf[path.len] = 0;
     log.fmt("new: {s}\n", .{path});
@@ -310,22 +279,9 @@ fn configureSession(char_span: []const u8, realm_span: []const u8) void {
     }
 
     // Resolve paths for all three log types
-    g_combat_path_len = resolveLogPath("WoWCombatLog", &g_combat_path);
-    g_raw_combat_path_len = resolveLogPath("WoWRawCombatLog", &g_raw_combat_path);
-    g_chat_path_len = resolveLogPath("WoWChatLog", &g_chat_path);
-
-    // Belt-and-suspenders: overwrite path pointer table for game code paths
-    // that read the table directly before calling InitializeLogBuffer.
-    if (g_combat_path_len > 0) {
-        g_original_combat_path_ptr = hook.readMem(u32, o.COMBAT_LOG_PATH_PTR);
-        const ptr_bytes: [4]u8 = @bitCast(@intFromPtr(&g_combat_path));
-        hook.writeMem(o.COMBAT_LOG_PATH_PTR, &ptr_bytes);
-    }
-    if (g_chat_path_len > 0) {
-        g_original_chat_path_ptr = hook.readMem(u32, o.CHAT_LOG_PATH_PTR);
-        const ptr_bytes: [4]u8 = @bitCast(@intFromPtr(&g_chat_path));
-        hook.writeMem(o.CHAT_LOG_PATH_PTR, &ptr_bytes);
-    }
+    g_combat_path_len = resolveDailyLogPath("WoWCombatLog", &g_combat_path);
+    g_raw_combat_path_len = resolveDailyLogPath("WoWRawCombatLog", &g_raw_combat_path);
+    g_chat_path_len = resolveDailyLogPath("WoWChatLog", &g_chat_path);
 
     g_paths_configured = true;
 }
@@ -354,19 +310,6 @@ fn enterWorldDetour() callconv(hook.cc.stdcall) void {
     }
 
     enter_world_hook.callOriginal(.{});
-}
-
-fn restorePathPointers() void {
-    if (g_original_combat_path_ptr != 0) {
-        const ptr_bytes: [4]u8 = @bitCast(g_original_combat_path_ptr);
-        hook.writeMem(o.COMBAT_LOG_PATH_PTR, &ptr_bytes);
-        g_original_combat_path_ptr = 0;
-    }
-    if (g_original_chat_path_ptr != 0) {
-        const ptr_bytes: [4]u8 = @bitCast(g_original_chat_path_ptr);
-        hook.writeMem(o.CHAT_LOG_PATH_PTR, &ptr_bytes);
-        g_original_chat_path_ptr = 0;
-    }
 }
 
 // =============================================================================
@@ -473,14 +416,9 @@ pub fn onShutdown() void {
     g_chat_marker_written = false;
     g_raw_marker_written = false;
     g_raw_combat_handle_addr = 0;
-    g_combat_path_len = 0;
-    g_raw_combat_path_len = 0;
-    g_chat_path_len = 0;
-    g_dir_path_len = 0;
+    // Keep paths set so initLogDetour keeps redirecting on next login
     g_session_char_len = 0;
     g_session_realm_len = 0;
-    // Restore original path pointers so next session starts clean
-    restorePathPointers();
 }
 
 // =============================================================================
@@ -512,7 +450,6 @@ pub fn luaGetChatLogPath(L: lua.State) callconv(.c) u32 {
 // =============================================================================
 
 pub fn installHooks() void {
-
     const result = mod_mutex.acquire(module_name);
     g_mutex = result.handle;
     g_is_hook_owner = result.is_owner;
@@ -546,7 +483,6 @@ pub fn removeHooks() void {
         write_log_hook.detach();
         init_log_hook.detach();
         enter_world_hook.detach();
-        restorePathPointers();
         log.close();
         mod_mutex.release(&g_mutex);
     }
