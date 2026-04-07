@@ -604,10 +604,50 @@ fn installFileHooks() void {
     _ = cleanup_file_handle_hook.attach(0x648730, &cleanupFileHandleDetour);
     _ = model_load_hook.attach(0x71d4e0, &loadModelAsyncDetour);
     _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
+    // NOP two gates in File_FindInArchive that prevent CheckFileExistence
+    // from running. Without this, preloadFileWithFlags never reaches our
+    // hook and the game skips Bindings.xml for embedded addons.
+    // (customassets also does this for loose files; the patches are idempotent.)
+    nopFileExistenceGates();
     log.print("in-memory file hooks installed\n");
 }
 
+// File_FindInArchive (0x6549a0) has two conditional jumps that skip the
+// call to CheckFileExistence (0x654DD0). NOP them so our hook always runs.
+var old_gate1: [2]u8 = undefined;
+var gate1_patched: bool = false;
+var old_gate2: [2]u8 = undefined;
+var gate2_patched: bool = false;
+
+fn nopFileExistenceGates() void {
+    const nops = [2]u8{ 0x90, 0x90 };
+    // Gate 1: JZ at 0x654b5c (74 25) -- skips CheckFileExistence
+    if (hook.readMem(u8, 0x654b5c) == 0x74 and hook.readMem(u8, 0x654b5d) == 0x25) {
+        old_gate1 = .{ 0x74, 0x25 };
+        hook.writeProtected(0x654b5c, &nops);
+        gate1_patched = true;
+    }
+    // Gate 2: JNZ at 0x654b6a (75 17) -- skips CheckFileExistence
+    if (hook.readMem(u8, 0x654b6a) == 0x75 and hook.readMem(u8, 0x654b6b) == 0x17) {
+        old_gate2 = .{ 0x75, 0x17 };
+        hook.writeProtected(0x654b6a, &nops);
+        gate2_patched = true;
+    }
+}
+
+fn revertFileExistenceGates() void {
+    if (gate1_patched) {
+        hook.writeProtected(0x654b5c, &old_gate1);
+        gate1_patched = false;
+    }
+    if (gate2_patched) {
+        hook.writeProtected(0x654b6a, &old_gate2);
+        gate2_patched = false;
+    }
+}
+
 fn removeFileHooks() void {
+    revertFileExistenceGates();
     cfe_hook.detach();
     model_load_hook.detach();
     process_async_hook.detach();

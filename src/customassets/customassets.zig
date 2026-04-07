@@ -2,11 +2,12 @@
 // customassets - Loose file loading & permissive patch glob
 // =============================================================================
 //
-// 1. Patches patch-?.MPQ → patch-*.MPQ so multi-char patch names work
-// 2. NOPs two gates in File_FindInArchive so CheckFileExistence runs for
-//    all files, not just Interface/AddOns
-// 3. Indexes loose Data/ files into an O(1) hash set; main.zig's
+// 1. Patches patch-?.MPQ -> patch-*.MPQ so multi-char patch names work
+// 2. Indexes loose Data/ files into an O(1) hash set; main.zig's
 //    CheckFileExistence hook calls looseFilesLookup() to serve them
+//
+// Note: File_FindInArchive gate NOPs (for CheckFileExistence) moved to
+// main.zig core file hooks so all builds with embedded addons get them.
 //
 // =============================================================================
 
@@ -212,44 +213,6 @@ fn revertGlobPatch() void {
 }
 
 // =============================================================================
-// Patches 2 & 3: NOP loose file gates in File_FindInArchive
-// =============================================================================
-
-var old_jz: [2]u8 = undefined;
-var jz_patched: bool = false;
-var old_jnz: [2]u8 = undefined;
-var jnz_patched: bool = false;
-
-fn applyLooseFilePatches() void {
-    const nops = [2]u8{ 0x90, 0x90 };
-
-    // Gate 1: JZ at 0x654b5c (74 25)
-    if (hook.readMem(u8, 0x654b5c) == 0x74 and hook.readMem(u8, 0x654b5d) == 0x25) {
-        old_jz = .{ 0x74, 0x25 };
-        hook.writeProtected(0x654b5c, &nops);
-        jz_patched = true;
-    }
-
-    // Gate 2: JNZ at 0x654b6a (75 17)
-    if (hook.readMem(u8, 0x654b6a) == 0x75 and hook.readMem(u8, 0x654b6b) == 0x17) {
-        old_jnz = .{ 0x75, 0x17 };
-        hook.writeProtected(0x654b6a, &nops);
-        jnz_patched = true;
-    }
-}
-
-fn revertLooseFilePatches() void {
-    if (jz_patched) {
-        hook.writeProtected(0x654b5c, &old_jz);
-        jz_patched = false;
-    }
-    if (jnz_patched) {
-        hook.writeProtected(0x654b6a, &old_jnz);
-        jnz_patched = false;
-    }
-}
-
-// =============================================================================
 // Init / Cleanup
 // =============================================================================
 
@@ -276,14 +239,15 @@ pub fn installHooks() void {
     log = logging.Logger.open(module_name, .console);
 
     applyGlobPatch();
-    applyLooseFilePatches();
+    // Gate NOPs for CheckFileExistence are now in main.zig (core file hooks)
+    // so all builds with embedded addons get them. No need to apply here.
     looseFilesInit();
     installed = true;
 }
 
 pub fn removeHooks() void {
     if (g_is_hook_owner and installed) {
-        revertLooseFilePatches();
+        // Gate reverts are now in main.zig removeFileHooks()
         revertGlobPatch();
         looseFilesCleanup();
         installed = false;
