@@ -1,19 +1,30 @@
-//! Incremental GC for Lua 5.0.
+//! Generational incremental GC for Lua 5.0.
 //!
 //! The original stop-the-world GC freezes the game for up to 5 seconds.
-//! This module splits the rootgc sweep across multiple GC triggers.
+//! This module layers two optimizations on top:
 //!
-//! Strategy:
-//!   1. Mark + udata sweep + string sweep run atomically (mark is fast)
-//!   2. Rootgc is split into chunks. Each chunk is swept by the original
-//!      lua_gc_remove_objects. After sweeping, surviving objects are moved
-//!      to a separate "swept" list so they can't be re-swept.
-//!   3. After all chunks are processed, the swept list is reconnected.
+//!   1. Incremental rootgc sweep: the rootgc list is swept in chunks across
+//!      multiple GC triggers. The 5s pause becomes ~9ms chunks.
+//!
+//!   2. Generational tracking: surviving rootgc objects are marked "old" in
+//!      an external age bitmap (managed by luaalloc). Writes to old tables
+//!      are captured by a write barrier (tableSetBarrier) and added to a
+//!      touched set, which will be re-traversed by future minor mark
+//!      implementations.
+//!
+//! Current minor/major distinction is only in the machinery: both cycles
+//! still run the full lua_gc_full_collection (full mark). The minor path
+//! preserves old objects in the age bitmap; the major path clears the
+//! bitmap and touched set so the full cycle starts from scratch.
+//!
+//! A custom minor mark phase that avoids traversing untouched old objects
+//! is the next optimization layer on top of this machinery.
 //!
 //! Birth-mark: binary patch in luaC_link makes new objects born marked=1
 //! during sweep so they survive until the next GC cycle.
 
 const hook = @import("zhook");
+const luaalloc = @import("luaalloc.zig");
 
 const GS_ROOTGC = 0x10;
 const GS_ROOTUDATA = 0x14;
@@ -32,6 +43,86 @@ const lua_gc_remove_objects: *const fn (u32, u32, u32) callconv(hook.cc.fastcall
 
 var sweeping: bool = false;
 var in_gc: bool = false;
+
+// ============================================================================
+// Generational cycle tracking
+// ============================================================================
+//
+// is_major: true if the current collection is a major (full) cycle. Set at
+//   the start of a collection based on cycle_count / touched overflow.
+// cycle_count: number of minor cycles since the last major. Reset to 0 at
+//   the end of a major.
+// MINORS_PER_MAJOR: force a major every N minor cycles to bound the amount
+//   of dead-old garbage that accumulates.
+// first_collection: flag to force the very first collection to be a major
+//   so we can populate the age bitmap from a clean slate.
+//
+var is_major: bool = false;
+var cycle_count: u32 = 0;
+const MINORS_PER_MAJOR: u32 = 32;
+var first_collection: bool = true;
+
+/// Decide minor vs major for this cycle. Called once at the start.
+fn selectCycleMode() void {
+    if (first_collection or touched_overflow or cycle_count >= MINORS_PER_MAJOR) {
+        is_major = true;
+    } else {
+        is_major = false;
+    }
+}
+
+/// Called at the start of a collection: clear the touched set (writes from
+/// the previous cycle). For a major cycle, also clear the entire age bitmap
+/// so survivors can be re-aged from zero.
+fn cycleStart() void {
+    if (is_major) {
+        luaalloc.clearAllAges();
+    }
+    touched_count = 0;
+    touched_overflow = false;
+}
+
+/// Called at the end of a completed collection. Repopulates the age bitmap
+/// (all survivors are now old) and advances cycle_count / first_collection.
+fn cycleFinish(g: u32) void {
+    markAllOld(g);
+    if (is_major) {
+        cycle_count = 0;
+    } else {
+        cycle_count += 1;
+    }
+    first_collection = false;
+}
+
+// ============================================================================
+// Write barrier for generational GC
+// Hooks lua_table_set_value to detect writes to old tables.
+// __fastcall(ECX=L, EDX=table, stack=key_TValue_ptr) -> u32 (value slot ptr), RET 0x4
+// ============================================================================
+
+const MAX_TOUCHED = 4096;
+var touched_set: [MAX_TOUCHED]u32 = .{0} ** MAX_TOUCHED;
+var touched_count: u32 = 0;
+var touched_overflow: bool = false;
+
+fn addTouched(table: u32) void {
+    if (touched_count >= MAX_TOUCHED) {
+        touched_overflow = true;
+        return;
+    }
+    touched_set[touched_count] = table;
+    touched_count += 1;
+}
+
+const TableSetFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
+var table_set_hook: hook.Detour(TableSetFn) = .{};
+
+fn tableSetBarrier(L: u32, table: u32, key: u32) callconv(hook.cc.fastcall) u32 {
+    if (luaalloc.isOld(table)) {
+        addTouched(table);
+    }
+    return table_set_hook.callOriginal(.{ L, table, key });
+}
 
 // The "already swept" list: objects that survived sweep, detached from rootgc.
 // swept_head -> first swept survivor, swept_tail -> last (for O(1) append).
@@ -83,6 +174,15 @@ fn writeU32(addr: u32, val: u32) void {
 
 fn getGlobalState(L: u32) u32 {
     return @as(*const u32, @ptrFromInt(L + 0x10)).*;
+}
+
+/// Walk rootgc and mark all objects as old in the external age bitmap.
+fn markAllOld(g: u32) void {
+    var obj = readU32(g + GS_ROOTGC);
+    while (obj != 0) {
+        luaalloc.setOld(obj);
+        obj = readU32(obj + OBJ_NEXT);
+    }
 }
 
 /// Walk the list from a head pointer, find the Nth object.
@@ -137,6 +237,10 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
     const g = getGlobalState(L);
 
     if (!sweeping) {
+        // === Start of a new cycle: decide minor vs major ===
+        selectCycleMode();
+        cycleStart();
+
         // === Atomic: mark + udata sweep + string sweep ===
         const t0 = rdtsc();
         lua_gc_full_collection(L);
@@ -159,6 +263,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
             _ = lua_gc_remove_objects(L, g + GS_ROOTGC, 0);
             lua_gc_shrink_memory(L);
             luaCallUserDataGC(L);
+            cycleFinish(g);
             return;
         }
 
@@ -211,6 +316,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
 
         lua_gc_shrink_memory(L);
         luaCallUserDataGC(L);
+        cycleFinish(g);
         return;
     }
 
@@ -239,6 +345,8 @@ var collect_hook: hook.Detour(CollectFn) = .{};
 pub fn install() u32 {
     var installed: u32 = 0;
     if (collect_hook.attach(0x6F7340, &collectGarbageDetour) == .ok) installed += 1;
+    // Generational write barrier
+    if (table_set_hook.attach(0x6FA840, &tableSetBarrier) == .ok) installed += 1;
     return installed;
 }
 
@@ -266,7 +374,10 @@ pub fn remove() void {
         setBirthMark(false);
     }
     collect_hook.detach();
+    table_set_hook.detach();
     sweeping = false;
     swept_head = 0;
     swept_tail = 0;
+    touched_count = 0;
+    touched_overflow = false;
 }

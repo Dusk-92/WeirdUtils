@@ -98,6 +98,62 @@ inline fn classFromPtr(ptr: u32) u8 {
 
 var free_lists: [NUM_CLASSES]u32 = .{0} ** NUM_CLASSES;
 
+// ============================================================================
+// Age bitmaps for generational GC
+//
+// One bit per slot: 0 = young, 1 = old.
+// Indexed by segment number (ptr >> 16). Each slab page gets a 512-byte
+// bitmap (enough for 4096 slots at the smallest 16-byte class).
+// Bitmaps are allocated alongside pages via VirtualAlloc.
+// ============================================================================
+
+const BITMAP_SIZE = 512; // 4096 bits = covers max slots per page
+var age_bitmaps: [65536]?[*]u8 = .{null} ** 65536;
+
+fn slotIndex(ptr: u32, class_idx: usize) u32 {
+    const page_base = ptr & ~@as(u32, PAGE_SIZE - 1);
+    return (ptr - page_base) / class_sizes[class_idx];
+}
+
+/// Check if an object is old. Returns false for non-slab pointers.
+pub fn isOld(ptr: u32) bool {
+    const seg = ptr >> SEGMENT_SHIFT;
+    const seg_val = segment_table[seg];
+    if (seg_val == 0 or seg_val == LARGE_CLASS) return false;
+    const bitmap = age_bitmaps[seg] orelse return false;
+    const idx = slotIndex(ptr, seg_val - 1);
+    return (bitmap[idx >> 3] & (@as(u8, 1) << @intCast(idx & 7))) != 0;
+}
+
+/// Mark an object as old.
+pub fn setOld(ptr: u32) void {
+    const seg = ptr >> SEGMENT_SHIFT;
+    const seg_val = segment_table[seg];
+    if (seg_val == 0 or seg_val == LARGE_CLASS) return;
+    const bitmap = age_bitmaps[seg] orelse return;
+    const idx = slotIndex(ptr, seg_val - 1);
+    bitmap[idx >> 3] |= @as(u8, 1) << @intCast(idx & 7);
+}
+
+/// Mark an object as young (clear old bit).
+pub fn setYoung(ptr: u32) void {
+    const seg = ptr >> SEGMENT_SHIFT;
+    const seg_val = segment_table[seg];
+    if (seg_val == 0 or seg_val == LARGE_CLASS) return;
+    const bitmap = age_bitmaps[seg] orelse return;
+    const idx = slotIndex(ptr, seg_val - 1);
+    bitmap[idx >> 3] &= ~(@as(u8, 1) << @intCast(idx & 7));
+}
+
+/// Clear all age bits for all pages (used before major collection).
+pub fn clearAllAges() void {
+    for (age_bitmaps) |bm_opt| {
+        if (bm_opt) |bm| {
+            @memset(bm[0..BITMAP_SIZE], 0);
+        }
+    }
+}
+
 /// Allocate a new 64KB page for the given class, register in segment table,
 /// and link all slots into the free list.
 fn refillClass(class_idx: usize) bool {
@@ -108,7 +164,15 @@ fn refillClass(class_idx: usize) bool {
 
     // Register this page in the segment table (class indices are 0-based,
     // store as idx+1 so 0 remains "unowned")
-    segment_table[base >> SEGMENT_SHIFT] = @intCast(class_idx + 1);
+    const seg = base >> SEGMENT_SHIFT;
+    segment_table[seg] = @intCast(class_idx + 1);
+
+    // Allocate age bitmap for this page (all zeros = all young)
+    if (age_bitmaps[seg] == null) {
+        if (VirtualAlloc(null, BITMAP_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)) |bm| {
+            age_bitmaps[seg] = bm;
+        }
+    }
 
     // Carve page into slots, chain from last to first
     const slots_per_page = PAGE_SIZE / slot_size;
