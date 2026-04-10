@@ -239,19 +239,19 @@ const native_shrink_memory: native_checkSizes_fn = @ptrFromInt(offsets.lua_gc_sh
 // =============================================================================
 
 inline fn readU32(addr: u32) u32 {
-    return @as(*const u32, @ptrFromInt(addr)).*;
+    return @as(*const volatile u32, @ptrFromInt(addr)).*;
 }
 
 inline fn writeU32(addr: u32, val: u32) void {
-    @as(*u32, @ptrFromInt(addr)).* = val;
+    @as(*volatile u32, @ptrFromInt(addr)).* = val;
 }
 
 inline fn readU8(addr: u32) u8 {
-    return @as(*const u8, @ptrFromInt(addr)).*;
+    return @as(*const volatile u8, @ptrFromInt(addr)).*;
 }
 
 inline fn writeU8(addr: u32, val: u8) void {
-    @as(*u8, @ptrFromInt(addr)).* = val;
+    @as(*volatile u8, @ptrFromInt(addr)).* = val;
 }
 
 fn getGlobalState(L: u32) u32 {
@@ -600,16 +600,22 @@ fn traverseClosure(cl: u32) void {
             if (upv == 0) continue;
 
             // Make upvalue non-white (gray) so it survives sweep.
-            // Also serves as "processed" flag (native TEST AL,AL sees non-zero).
             if (isWhite(upv)) {
                 white2gray(upv);
             }
 
-            // Mark the upvalue's held value
-            const val_tt = readU8(upv + offsets.UPVAL_value_tt);
-            if (val_tt >= offsets.LUA_TSTRING) {
-                const val_gc = readU32(upv + offsets.UPVAL_value_gcptr);
-                if (val_gc != 0) _ = markObject(val_gc);
+            // Mark the upvalue's held value. Must dereference upval->v (+0x08)
+            // which points to the ACTUAL value location:
+            //   - Open upvalues: v points into the Lua stack
+            //   - Closed upvalues: v points to the inline copy at upval+0x10
+            // Reading upval+0x10 directly is WRONG for open upvalues (stale data).
+            const v_ptr = readU32(upv + 0x08); // upval->v
+            if (v_ptr != 0) {
+                const val_tt = readU8(v_ptr + offsets.TVALUE_tt);
+                if (val_tt >= offsets.LUA_TSTRING) {
+                    const val_gc = readU32(v_ptr + offsets.TVALUE_gcptr);
+                    if (val_gc != 0) _ = markObject(val_gc);
+                }
             }
         }
     }
