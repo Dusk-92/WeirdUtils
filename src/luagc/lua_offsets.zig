@@ -48,6 +48,23 @@ pub const lua_setfenv: usize = 0x6F40D0;
 /// OP_SETUPVAL patch point: right after TValue copy, EDX=uv->v.
 pub const vm_setupval_patch: usize = 0x6F8A97;
 
+/// luaS_newlstr: __fastcall(ECX=L, EDX=str_ptr, stack=len). Returns TString*.
+/// Does the intern lookup (may return existing dead string) then calls
+/// lua_create_string_object (0x6F9D90) for new strings.
+/// Must hook for dead string resurrection during sweep.
+pub const luaS_newlstr: usize = 0x6F9D00;
+
+/// lua_create_string_object (inner, creates NEW strings only): 0x6F9D90.
+pub const lua_create_string_object: usize = 0x6F9D90;
+
+/// lua_create_open_upvalue (luaF_findupval): __fastcall(ECX=L, EDX=level).
+/// Returns UpVal*. Must hook for dead upvalue resurrection during sweep.
+pub const lua_create_open_upvalue: usize = 0x6F9F10;
+
+/// Birth mark byte in lua_create_open_upvalue: `MOV byte [EAX+5], 0x01`
+/// Encoding: C6 40 05 01 at 0x6F9F47. The immediate 0x01 is at +3 = 0x6F9F4A.
+pub const birth_mark_upvalue: usize = 0x6F9F4A;
+
 /// lua_setgcthreshold: __fastcall(ECX=L, EDX=newthreshold).
 /// Writes (newthreshold << 10) to g->gcthreshold, then calls luaC_checkGC.
 /// WoW calls this on screen transitions with threshold=256 (=262144 bytes).

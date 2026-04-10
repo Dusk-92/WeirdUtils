@@ -82,9 +82,8 @@ var phase: Phase = .idle;
 var saved_L: u32 = 0;
 var saved_g: u32 = 0;
 
-/// Objects to process per step. High value = atomic (working). Lower for
-/// incremental once the multi-step crash is resolved.
-const CHUNK_SIZE: u32 = 1000000;
+/// Objects to process per step. ~5000 = ~2ms target per step.
+const CHUNK_SIZE: u32 = 5000;
 
 // =============================================================================
 // Gray Stack
@@ -167,9 +166,13 @@ var needs_bootstrap: bool = true;
 /// Update the string creation birth mark byte to match currentwhite.
 /// Strings bypass luaC_link and have their own `MOV byte [EBX+5], 0x00`
 /// at 0x6F9DC1. We patch this immediate to currentwhite.
-fn syncStringBirthMark() void {
+/// Sync birth mark patches for objects that bypass luaC_link.
+/// Strings: lua_create_string_object writes marked at 0x6F9DC1.
+/// Upvalues: lua_create_open_upvalue writes marked at 0x6F9F48.
+fn syncBirthMarks() void {
     var patch = [1]u8{currentwhite};
     hook.writeProtected(offsets.birth_mark_string, &patch);
+    hook.writeProtected(offsets.birth_mark_upvalue, &patch);
 }
 
 fn bootstrapWhite(g: u32) void {
@@ -854,7 +857,7 @@ fn atomicPhase(L: u32, g: u32) void {
     // (8) Flip current white. New objects born after this point get the
     // NEW currentwhite. Sweep will free objects with the OLD white.
     currentwhite = otherwhite();
-    syncStringBirthMark(); // update string creation to use new white
+    syncBirthMarks(); // update string creation to use new white
 
     weak_table_count = 0;
     grayagain_count = 0;
@@ -1414,7 +1417,7 @@ fn luaCloseDetour(L: u32) callconv(hook.cc.fastcall) void {
     in_gc = false;
     currentwhite = 0x01;
     needs_bootstrap = true;
-    syncStringBirthMark();
+    syncBirthMarks();
 
     lua_close_hook.callOriginal(.{L});
 }
@@ -1562,6 +1565,53 @@ fn resolveStackIndex(L: u32, idx: u32) u32 {
         if (top == 0) return 0;
         return @as(u32, @intCast(@as(i32, @intCast(top)) + idx_i * @as(i32, offsets.TVALUE_size)));
     }
+}
+
+// =============================================================================
+// String resurrection (5.1 lstring.c:88)
+// =============================================================================
+//
+// During incremental sweep, the string intern table can return a dead string
+// (one with otherwhite, not yet swept). Lua 5.1 handles this in luaS_newlstr:
+//   if (isdead(G(L), o)) changewhite(o);  /* resurrect */
+// WoW's Lua 5.0 has no such check. We hook lua_create_string_object and
+// resurrect dead strings after the native returns them.
+
+const StringCreateFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
+var string_create_hook: hook.Detour(StringCreateFn) = .{};
+
+fn stringCreateDetour(L: u32, str_ptr: u32, len: u32) callconv(hook.cc.fastcall) u32 {
+    const result = string_create_hook.callOriginal(.{ L, str_ptr, len });
+    // If the returned string is dead (has otherwhite), resurrect it
+    if (result != 0) {
+        const marked = readU8(result + offsets.OBJ_marked);
+        if ((marked & otherwhite() & offsets.WHITEBITS) != 0) {
+            // changewhite: flip white bits (dead white → alive white)
+            writeU8(result + offsets.OBJ_marked, marked ^ offsets.WHITEBITS);
+        }
+    }
+    return result;
+}
+
+// =============================================================================
+// Upvalue resurrection (5.1 lfunc.c:61-62)
+// =============================================================================
+//
+// Same pattern as strings: luaF_findupval can return a dead open upvalue
+// during incremental sweep. Resurrect it.
+
+const UpvalCreateFn = fn (u32, u32) callconv(hook.cc.fastcall) u32;
+var upval_create_hook: hook.Detour(UpvalCreateFn) = .{};
+
+fn upvalCreateDetour(L: u32, level: u32) callconv(hook.cc.fastcall) u32 {
+    const result = upval_create_hook.callOriginal(.{ L, level });
+    if (result != 0) {
+        const marked = readU8(result + offsets.OBJ_marked);
+        if ((marked & otherwhite() & offsets.WHITEBITS) != 0) {
+            writeU8(result + offsets.OBJ_marked, marked ^ offsets.WHITEBITS);
+        }
+    }
+    return result;
 }
 
 // =============================================================================
@@ -1717,6 +1767,14 @@ pub fn installHooks() void {
         installed += 1;
         log.print("hooked luaC_link\n");
     }
+    // Resurrection hooks (5.1 lstring.c:88, lfunc.c:61-62)
+    if (string_create_hook.attach(offsets.luaS_newlstr, &stringCreateDetour) == .ok) {
+        installed += 1;
+    }
+    if (upval_create_hook.attach(offsets.lua_create_open_upvalue, &upvalCreateDetour) == .ok) {
+        installed += 1;
+    }
+
     // Forward barriers (5.1 luaC_barrierf equivalents)
     if (setmeta_hook.attach(offsets.lua_setmetatable, &setmetaDetour) == .ok) {
         installed += 1;
@@ -1731,7 +1789,7 @@ pub fn installHooks() void {
     installSetupvalPatch();
     log.print("installed forward barriers\n");
 
-    syncStringBirthMark();
+    syncBirthMarks();
 
     var buf: [64]u8 = undefined;
     log.print(fmt(&buf, "installed {d} hooks\n", .{installed}));
@@ -1741,9 +1799,11 @@ pub fn removeHooks() void {
     if (!g_is_hook_owner) return;
 
     // If mid-cycle, restore birth mark
-    // Reset string birth mark to 0 (native default)
-    var patch = [1]u8{0x00};
-    hook.writeProtected(offsets.birth_mark_string, &patch);
+    // Reset birth marks to native defaults
+    var patch0 = [1]u8{0x00};
+    hook.writeProtected(offsets.birth_mark_string, &patch0);
+    var patch1 = [1]u8{0x01};
+    hook.writeProtected(offsets.birth_mark_upvalue, &patch1);
 
     collect_hook.detach();
     table_set_hook.detach();
@@ -1751,6 +1811,8 @@ pub fn removeHooks() void {
     setgcthreshold_hook.detach();
     lua_close_hook.detach();
     luac_link_hook.detach();
+    string_create_hook.detach();
+    upval_create_hook.detach();
     setmeta_hook.detach();
     setupval_hook.detach();
     setfenv_hook.detach();
