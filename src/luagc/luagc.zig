@@ -83,7 +83,7 @@ var saved_L: u32 = 0;
 var saved_g: u32 = 0;
 
 /// Objects to process per step. ~5000 = ~2ms target per step.
-const CHUNK_SIZE: u32 = 1000000;
+const CHUNK_SIZE: u32 = 5000;
 
 // =============================================================================
 // Gray Stack
@@ -105,6 +105,27 @@ fn grayStackPop() u32 {
     if (gray_count == 0) return 0;
     gray_count -= 1;
     return gray_stack[gray_count];
+}
+
+// =============================================================================
+// Gray-Again List (barrier back)
+// =============================================================================
+//
+// During incremental mark, the write barrier does NOT push tables back to the
+// main gray stack (that causes livelock under heavy allocation). Instead,
+// written-to BLACK tables go on the grayagain list. They're re-traversed once
+// during the atomic phase, catching all mutations since their last traversal.
+// This matches Lua 5.1's luaC_barrierback / grayagain pattern.
+
+const GRAYAGAIN_SIZE: u32 = 65536;
+var grayagain_list: [GRAYAGAIN_SIZE]u32 = undefined;
+var grayagain_count: u32 = 0;
+
+fn grayagainAdd(table: u32) void {
+    if (grayagain_count < GRAYAGAIN_SIZE) {
+        grayagain_list[grayagain_count] = table;
+        grayagain_count += 1;
+    }
 }
 
 // =============================================================================
@@ -690,6 +711,38 @@ fn markStep() bool {
 //   5. cleartablekeys(wk, wkv) + any newly weak tables
 
 fn atomicPhase(L: u32, g: u32) void {
+    // (0) Re-traverse threads and grayagain tables.
+    // Lua 5.1 atomic: re-mark running thread, re-traverse grayagain.
+    // This catches new stack values and table mutations from between mark steps.
+    const mt = readU32(g + offsets.GS_mainthread);
+    if (isMarked(mt)) {
+        grayStackPush(mt);
+    }
+    if (saved_L != 0 and saved_L != mt) {
+        if (isMarked(saved_L)) {
+            grayStackPush(saved_L);
+        }
+    }
+
+    var gi: u32 = 0;
+    while (gi < grayagain_count) : (gi += 1) {
+        const tbl = grayagain_list[gi];
+        if (isMarked(tbl)) {
+            // Re-traverse: clear mark, re-mark, push to gray
+            clearMarked(tbl);
+            setMarked(tbl);
+            grayStackPush(tbl);
+        }
+    }
+    grayagain_count = 0;
+
+    // Drain gray stack fully (all grayagain + thread re-traversals)
+    while (gray_count > 0) {
+        const obj = grayStackPop();
+        if (obj == 0) break;
+        traverseAndPushChildren(obj);
+    }
+
     // (1) Clear weak table VALUES
     atomicClearWeakTables();
 
@@ -706,8 +759,10 @@ fn atomicPhase(L: u32, g: u32) void {
         traverseAndPushChildren(obj);
     }
 
-    // Weak table count was cleared in atomicClearWeakTables, no more to do.
     weak_table_count = 0;
+    // Clear any grayagain entries added during atomic traversals (threads
+    // re-add themselves). These don't need processing -- atomic caught everything.
+    grayagain_count = 0;
 }
 
 /// Walk tmudata and re-mark each entry so references survive sweep.
@@ -958,6 +1013,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
     defer in_gc = false;
 
     const g = getGlobalState(L);
+
     saved_L = L;
     saved_g = g;
 
@@ -1052,6 +1108,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
             // Start a new GC cycle
             gray_count = 0;
             weak_table_count = 0;
+            grayagain_count = 0;
             cur_mark_steps = 0;
             cur_sweep_steps = 0;
             cur_dead_freed = 0;
@@ -1207,15 +1264,17 @@ var table_set_hook: hook.Detour(TableSetFn) = .{};
 var table_set_int_hook: hook.Detour(TableSetFn) = .{};
 
 fn tableSetBarrier(L: u32, table: u32, key: u32) callconv(hook.cc.fastcall) u32 {
+    // Barrier back: BLACK table got a write during incremental mark.
+    // Add to grayagain for re-traversal in the atomic phase.
     if (phase == .marking and isMarked(table)) {
-        grayStackPush(table);
+        grayagainAdd(table);
     }
     return table_set_hook.callOriginal(.{ L, table, key });
 }
 
 fn tableSetIntBarrier(L: u32, table: u32, int_key: u32) callconv(hook.cc.fastcall) u32 {
     if (phase == .marking and isMarked(table)) {
-        grayStackPush(table);
+        grayagainAdd(table);
     }
     return table_set_int_hook.callOriginal(.{ L, table, int_key });
 }
@@ -1247,6 +1306,31 @@ fn setgcthresholdDetour(L: u32, newthreshold: u32) callconv(hook.cc.fastcall) vo
     if (thr > tb) return;
     // Otherwise trigger a GC by calling our detour path
     collectGarbageDetour(L);
+}
+
+// =============================================================================
+// lua_close hook
+// =============================================================================
+//
+// lua_close (0x6F6EF0) calls luaC_sweep(L,1) directly, bypassing our
+// collectgarbage detour. If we're mid-cycle, our gray stack and sweep
+// cursors hold pointers to objects that luaC_sweep is about to free.
+// Reset our state to idle before the native close proceeds.
+
+const LuaCloseFn = fn (u32) callconv(hook.cc.fastcall) void;
+var lua_close_hook: hook.Detour(LuaCloseFn) = .{};
+
+fn luaCloseDetour(L: u32) callconv(hook.cc.fastcall) void {
+    // Abandon any in-progress cycle
+    phase = .idle;
+    gray_count = 0;
+    grayagain_count = 0;
+    weak_table_count = 0;
+    setBirthMark(false);
+    in_gc = false;
+
+    // Let the native lua_close proceed
+    lua_close_hook.callOriginal(.{L});
 }
 
 // =============================================================================
@@ -1303,6 +1387,10 @@ pub fn installHooks() void {
         installed += 1;
         log.print("hooked lua_setgcthreshold\n");
     }
+    if (lua_close_hook.attach(offsets.lua_close, &luaCloseDetour) == .ok) {
+        installed += 1;
+        log.print("hooked lua_close\n");
+    }
 
     var buf: [64]u8 = undefined;
     log.print(fmt(&buf, "installed {d} hooks\n", .{installed}));
@@ -1320,6 +1408,7 @@ pub fn removeHooks() void {
     table_set_hook.detach();
     table_set_int_hook.detach();
     setgcthreshold_hook.detach();
+    lua_close_hook.detach();
     luaalloc.remove();
 
     phase = .idle;

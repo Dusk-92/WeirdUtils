@@ -45,6 +45,11 @@ pub const lua_string_hash_resize: usize = 0x6F9C50;
 /// WoW calls this on screen transitions with threshold=256 (=262144 bytes).
 pub const lua_setgcthreshold: usize = 0x6F4400;
 
+/// lua_close (luaCloseState): __fastcall(ECX=L).
+/// Calls luaF_close, luaC_sweep(L,1), frees g and L.
+/// Must hook to reset incremental GC state before teardown.
+pub const lua_close: usize = 0x6F6EF0;
+
 /// Mark functions (for reference; zluagen reimplements these to support
 /// incremental chunking).
 pub const markroot: usize = 0x6F7AB0;
