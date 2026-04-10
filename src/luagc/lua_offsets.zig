@@ -40,6 +40,14 @@ pub const cleartablekeys: usize = 0x6F7970;
 /// Resize string hash table. __fastcall(ECX=L, EDX=new_size).
 pub const lua_string_hash_resize: usize = 0x6F9C50;
 
+/// Forward barrier hook targets (Lua C API functions that create cross-object refs).
+pub const lua_setmetatable: usize = 0x6F4020;
+pub const lua_setupvalue: usize = 0x6F47B0;
+pub const lua_pushcclosure: usize = 0x6F3920;
+pub const lua_setfenv: usize = 0x6F40D0;
+/// OP_SETUPVAL patch point: right after TValue copy, EDX=uv->v.
+pub const vm_setupval_patch: usize = 0x6F8A97;
+
 /// lua_setgcthreshold: __fastcall(ECX=L, EDX=newthreshold).
 /// Writes (newthreshold << 10) to g->gcthreshold, then calls luaC_checkGC.
 /// WoW calls this on screen transitions with threshold=256 (=262144 bytes).
@@ -67,8 +75,11 @@ pub const lua_table_set_int_key: usize = 0x6FAD80;
 // Birth mark patch addresses
 /// ---------------------------------------------------------------------------
 
-/// `MOV byte [EDX+0x05], 0x00` inside luaC_link. Patch immediate to 0x01
-/// to make new allocations born marked-alive during chunked sweep.
+/// luaC_link: __fastcall(ECX=L, EDX=obj, stack=tt). RET 0x4.
+/// Links object to rootgc, sets marked and tt. Hooked for two-white birth.
+pub const luaC_link: usize = 0x6F7B20;
+
+/// `MOV byte [EDX+0x05], 0x00` inside luaC_link. Birth mark patch address.
 pub const birth_mark_luaC_link: usize = 0x6F7B37;
 
 /// `MOV byte [EBX+0x05], 0x00` inside lua_create_string_object. Same idea.
@@ -100,25 +111,41 @@ pub const GS_mainthread: u32 = 0x50;    // main lua_State*
 pub const OBJ_next: u32 = 0x00;   // linked list next pointer
 pub const OBJ_tt: u32 = 0x04;     // type tag (u8)
 
-/// GC mark byte. Layout:
-///   bit 0: mark flag (1 = reachable / traversed)
-///   bit 1: KEYWEAK (tables with __mode 'k')
-///   bit 2: VALUEWEAK (tables with __mode 'v')
-///   bit 3: FINALIZED (userdata __gc already run)
-///   bit 4: propagation flag (used with bit 0 via TEST 0x11)
-///   bits 5-7: UNUSED — do NOT use for age tracking!
+/// GC mark byte. Lua 5.1-style tri-color layout (ported from lgc.h):
+///
+///   bit 0: WHITE0 (white color type 0)
+///   bit 1: WHITE1 (white color type 1)
+///   bit 2: BLACK  (fully traversed)
+///   bit 3: KEYWEAK (tables with __mode 'k') / FINALIZED (userdata)
+///   bit 4: FIXED  (luaS_fix -- reserved words, tmnames; native writes this)
+///   bit 5: VALUEWEAK (tables with __mode 'v')
+///   bits 6-7: unused
+///
+/// Colors: WHITE = either white bit set. GRAY = no white, no black.
+///         BLACK = bit 2 set. Dead = has "other white" (opposite of current).
 ///
 /// CRITICAL: upvalues in Lua closures use the WHOLE BYTE as a "processed"
-/// flag. Any non-zero value causes mark_closure to skip the upvalue entirely
-/// (see TEST AL, AL at 0x6F7828). Don't write any bits into an upvalue's
-/// marked byte except 0 or 1.
+/// flag (TEST AL, AL at 0x6F7828). During mark, we set upval marked = 1
+/// (which is WHITE0). The native check sees non-zero and skips. This is
+/// compatible because we only need the skip behavior during a single cycle.
 pub const OBJ_marked: u32 = 0x05;
 
-/// Bits 0 + 4 used by TEST 0x11 at mark_table child references.
-pub const MARK_MASK: u8 = 0x11;
+// Tri-color bit positions (matching Lua 5.1 lgc.h)
+pub const WHITE0BIT: u3 = 0;
+pub const WHITE1BIT: u3 = 1;
+pub const BLACKBIT: u3 = 2;
+pub const KEYWEAKBIT: u3 = 3;
+pub const FINALIZEDBIT: u3 = 3; // shared with KEYWEAK (different types)
+pub const FIXEDBIT: u3 = 4;
+pub const VALUEWEAKBIT: u3 = 5;
 
-/// AND mask to clear mark bit 0 while preserving other bits.
-pub const CLEAR_MARK: u8 = 0xFE;
+pub const WHITEBITS: u8 = (1 << WHITE0BIT) | (1 << WHITE1BIT); // 0x03
+pub const KEYWEAK: u8 = 1 << KEYWEAKBIT; // 0x08
+pub const VALUEWEAK: u8 = 1 << VALUEWEAKBIT; // 0x20
+
+/// Mask to clear color bits (WHITE0|WHITE1|BLACK) while preserving flags.
+/// Used by makewhite: marked = (marked & MASKMARKS) | currentwhite
+pub const MASKMARKS: u8 = ~@as(u8, WHITEBITS | (1 << BLACKBIT)); // ~0x07 = 0xF8
 
 /// ---------------------------------------------------------------------------
 // Type tags (from propagate dispatch at 0x6F7510 + standard Lua 5.0)

@@ -82,8 +82,9 @@ var phase: Phase = .idle;
 var saved_L: u32 = 0;
 var saved_g: u32 = 0;
 
-/// Objects to process per step. ~5000 = ~2ms target per step.
-const CHUNK_SIZE: u32 = 5000;
+/// Objects to process per step. High value = atomic (working). Lower for
+/// incremental once the multi-step crash is resolved.
+const CHUNK_SIZE: u32 = 1000000;
 
 // =============================================================================
 // Gray Stack
@@ -155,18 +156,56 @@ fn weakTableListAdd(table: u32) void {
 }
 
 // =============================================================================
-// Birth Mark
+// Bootstrap
 // =============================================================================
 
-var birth_mark_active: bool = false;
+/// First cycle flag: existing objects from native GC have marked=0 (neither
+/// white). On the first cycle, walk all objects and set them to currentwhite
+/// so our mark can find them.
+var needs_bootstrap: bool = true;
 
-fn setBirthMark(active: bool) void {
-    const val: u8 = if (active) 0x01 else 0x00;
-    var patch1 = [1]u8{val};
-    hook.writeProtected(offsets.birth_mark_luaC_link, &patch1);
-    var patch2 = [1]u8{val};
-    hook.writeProtected(offsets.birth_mark_string, &patch2);
-    birth_mark_active = active;
+/// Update the string creation birth mark byte to match currentwhite.
+/// Strings bypass luaC_link and have their own `MOV byte [EBX+5], 0x00`
+/// at 0x6F9DC1. We patch this immediate to currentwhite.
+fn syncStringBirthMark() void {
+    var patch = [1]u8{currentwhite};
+    hook.writeProtected(offsets.birth_mark_string, &patch);
+}
+
+fn bootstrapWhite(g: u32) void {
+    // Walk rootgc and set all objects to currentwhite
+    var obj = readU32(g + offsets.GS_rootgc);
+    while (obj != 0) {
+        writeU8(obj + offsets.OBJ_marked, currentwhite);
+        obj = readU32(obj + offsets.OBJ_next);
+    }
+    // Walk rootudata
+    obj = readU32(g + offsets.GS_rootudata);
+    while (obj != 0) {
+        writeU8(obj + offsets.OBJ_marked, currentwhite);
+        obj = readU32(obj + offsets.OBJ_next);
+    }
+    // Walk string hash table
+    const hash_array = readU32(g + offsets.GS_strt_hash);
+    const bucket_count = readU32(g + offsets.GS_strt_size);
+    if (hash_array != 0) {
+        var bi: u32 = 0;
+        while (bi < bucket_count) : (bi += 1) {
+            var s = readU32(hash_array + bi * 4);
+            while (s != 0) {
+                // Preserve FIXED bit (bit 4), set currentwhite
+                const old = readU8(s + offsets.OBJ_marked);
+                writeU8(s + offsets.OBJ_marked, (old & (1 << offsets.FIXEDBIT)) | currentwhite);
+                s = readU32(s + offsets.OBJ_next);
+            }
+        }
+    }
+    // Mainthread (not in rootgc in WoW)
+    const mt = readU32(g + offsets.GS_mainthread);
+    if (mt != 0) writeU8(mt + offsets.OBJ_marked, currentwhite);
+
+    needs_bootstrap = false;
+    log.print("bootstrap: set all objects to currentwhite\n");
 }
 
 // =============================================================================
@@ -223,28 +262,106 @@ inline fn objType(obj: u32) u8 {
     return readU8(obj + offsets.OBJ_tt);
 }
 
-/// Check if object has been marked by our traversal OR is fixed (bit 4).
-/// Matches Lua 5.0's ismarked: `marked & ((1<<4)|1)`.
-/// Used during mark to avoid re-pushing already-processed objects.
-inline fn isMarked(obj: u32) bool {
-    return (readU8(obj + offsets.OBJ_marked) & 0x11) != 0;
+// =============================================================================
+// Tri-color system (Lua 5.1 lgc.h port)
+// =============================================================================
+//
+// Colors:
+//   WHITE = has a white bit set (WHITE0 or WHITE1). Unprocessed / new.
+//   GRAY  = no white bits, no black bit. Found but children not yet processed.
+//   BLACK = bit 2 set. Fully traversed.
+//
+// Two whites: currentwhite alternates between WHITE0 (0x01) and WHITE1 (0x02)
+// each cycle. New objects are born with currentwhite. Sweep kills objects
+// with "otherwhite" (the previous cycle's white). Objects with currentwhite
+// (born during this cycle) or BLACK survive.
+//
+// This eliminates birth mark entirely: objects born during sweep have
+// currentwhite which is NOT otherwhite, so they survive automatically.
+
+/// Current white color bit. Alternates between 0x01 (WHITE0) and 0x02 (WHITE1).
+var currentwhite: u8 = 0x01;
+
+/// The dead color for sweep: whichever white ISN'T current.
+inline fn otherwhite() u8 {
+    return currentwhite ^ offsets.WHITEBITS;
 }
 
-/// Check if object should survive sweep. Matches WoW binary's sweeplist at
-/// 0x6F7222: `CMP marked, limit; JLE free` with limit=0.
-/// The binary does NOT mask with ~(KEYWEAK|VALUEWEAK) despite the Lua 5.0
-/// source saying so. ANY non-zero marked byte keeps the object alive.
-inline fn isAlive(obj: u32) bool {
-    return readU8(obj + offsets.OBJ_marked) != 0;
+/// Is the object white (has either white bit set)?
+inline fn isWhite(obj: u32) bool {
+    return (readU8(obj + offsets.OBJ_marked) & offsets.WHITEBITS) != 0;
 }
 
-inline fn setMarked(obj: u32) void {
-    writeU8(obj + offsets.OBJ_marked, readU8(obj + offsets.OBJ_marked) | 0x01);
+/// Is the object black (bit 2 set)?
+inline fn isBlack(obj: u32) bool {
+    return (readU8(obj + offsets.OBJ_marked) & (1 << offsets.BLACKBIT)) != 0;
 }
 
-/// Clear mark bit 0 only. Preserves fixed (bit 4) and all other flags.
-inline fn clearMarked(obj: u32) void {
-    writeU8(obj + offsets.OBJ_marked, readU8(obj + offsets.OBJ_marked) & offsets.CLEAR_MARK);
+/// Is the object dead? Has otherwhite set AND is not fixed.
+/// Base check from 5.1: `(marked & otherwhite(g) & WHITEBITS)`.
+/// WoW extension: FIXED objects (bit 4, luaS_fix) are never dead -- they
+/// aren't traversed as roots but must survive (reserved words, tmnames).
+inline fn isDead(obj: u32) bool {
+    const marked = readU8(obj + offsets.OBJ_marked);
+    if ((marked & (1 << offsets.FIXEDBIT)) != 0) return false;
+    return (marked & otherwhite() & offsets.WHITEBITS) != 0;
+}
+
+/// WHITE -> GRAY: clear both white bits. Object is now gray (pending traversal).
+inline fn white2gray(obj: u32) void {
+    writeU8(obj + offsets.OBJ_marked, readU8(obj + offsets.OBJ_marked) & ~offsets.WHITEBITS);
+}
+
+/// GRAY -> BLACK: set the black bit.
+inline fn gray2black(obj: u32) void {
+    writeU8(obj + offsets.OBJ_marked, readU8(obj + offsets.OBJ_marked) | (1 << offsets.BLACKBIT));
+}
+
+/// BLACK -> GRAY: clear the black bit. Used for barrier-back (table written to).
+inline fn black2gray(obj: u32) void {
+    writeU8(obj + offsets.OBJ_marked, readU8(obj + offsets.OBJ_marked) & ~@as(u8, 1 << offsets.BLACKBIT));
+}
+
+/// Set object to current white, clearing all color bits first.
+/// Preserves non-color flags (KEYWEAK, VALUEWEAK, FIXED, FINALIZED).
+/// Used by sweep on surviving objects.
+inline fn makewhite(obj: u32) void {
+    writeU8(obj + offsets.OBJ_marked, (readU8(obj + offsets.OBJ_marked) & offsets.MASKMARKS) | currentwhite);
+}
+
+/// Mark an object: matches Lua 5.1 reallymarkobject (lgc.c:69-112).
+/// Strings just get stringmarked (no gray). Userdata go black immediately.
+/// Tables, closures, threads, protos go to gray stack.
+fn markObject(obj: u32) bool {
+    if (!isWhite(obj)) return false;
+    const tt = objType(obj);
+    switch (tt) {
+        offsets.LUA_TSTRING => {
+            // Strings: just clear white bits, don't go to gray (no children)
+            stringmark(obj);
+            return true;
+        },
+        offsets.LUA_TUSERDATA => {
+            // Userdata: go black immediately, mark metatable inline
+            white2gray(obj);
+            gray2black(obj);
+            const mt = readU32(obj + offsets.UDATA_metatable);
+            if (mt != 0) _ = markObject(mt);
+            return true;
+        },
+        else => {
+            // Tables, closures, threads, protos: go to gray stack
+            white2gray(obj);
+            grayStackPush(obj);
+            return true;
+        },
+    }
+}
+
+/// For strings: mark by clearing white bits (stringmark). Strings don't
+/// go to gray (no children to traverse).
+inline fn stringmark(s: u32) void {
+    writeU8(s + offsets.OBJ_marked, readU8(s + offsets.OBJ_marked) & ~offsets.WHITEBITS);
 }
 
 fn fmt(buf: []u8, comptime f: []const u8, args: anytype) []const u8 {
@@ -263,37 +380,43 @@ var dbg_proto_count: u32 = 0;
 var dbg_udata_count: u32 = 0;
 var dbg_other_count: u32 = 0;
 
-fn traverseAndPushChildren(obj: u32) void {
+/// Pop a gray object, turn it black, and traverse its children.
+/// Matches Lua 5.1 propagatemark (lgc.c:277-320).
+/// THREADS: never go black. They go to grayagain and stay gray.
+/// WEAK TABLES: go back to gray after traversal (black2gray).
+fn propagatemark(obj: u32) void {
     const tt = objType(obj);
     switch (tt) {
         offsets.LUA_TTABLE => {
             dbg_table_count += 1;
-            traverseTable(obj);
+            gray2black(obj);
+            const is_weak = traverseTable(obj);
+            if (is_weak) black2gray(obj); // weak tables stay gray
         },
         offsets.LUA_TFUNCTION => {
             dbg_closure_count += 1;
+            gray2black(obj);
             traverseClosure(obj);
         },
         offsets.LUA_TTHREAD => {
+            // Lua 5.1: threads NEVER go black. After traversal, add to
+            // grayagain so the atomic phase re-traverses the stack.
             dbg_thread_count += 1;
             traverseThread(obj);
+            grayagainAdd(obj); // stays gray, re-traversed in atomic
         },
         offsets.LUA_TPROTO => {
             dbg_proto_count += 1;
+            gray2black(obj);
             traverseProto(obj);
         },
         offsets.LUA_TUSERDATA => {
-            // Userdata: mark metatable (at udata+0x08).
-            // Lua 5.0 reallymarkobject does: markvalue(st, gcotou(o)->uv.metatable)
+            // Should not reach here -- userdata goes black in markObject.
+            // But handle gracefully.
             dbg_udata_count += 1;
-            const mt = readU32(obj + offsets.UDATA_metatable);
-            if (mt != 0 and !isMarked(mt)) {
-                setMarked(mt);
-                grayStackPush(mt);
-            }
+            gray2black(obj);
         },
         else => {
-            // Strings: no children. Just count.
             dbg_other_count += 1;
         },
     }
@@ -348,7 +471,7 @@ fn detectAndSetWeakFlags(table: u32, mt: u32) void {
 
     // Clear old weak bits, then set based on __mode string content
     var marked = readU8(table + offsets.OBJ_marked);
-    marked &= ~@as(u8, 0x06); // clear KEYWEAK|VALUEWEAK
+    marked &= ~(offsets.KEYWEAK | offsets.VALUEWEAK);
 
     if (mode_str != 0) {
         const mode_len = readU32(mode_str + 0x0C);
@@ -360,35 +483,33 @@ fn detectAndSetWeakFlags(table: u32, mt: u32) void {
             if (mode_data[mi] == 'k') weakkey = true;
             if (mode_data[mi] == 'v') weakvalue = true;
         }
-        if (weakkey) marked |= 0x02; // KEYWEAK
-        if (weakvalue) marked |= 0x04; // VALUEWEAK
+        if (weakkey) marked |= offsets.KEYWEAK;
+        if (weakvalue) marked |= offsets.VALUEWEAK;
     }
 
     writeU8(table + offsets.OBJ_marked, marked);
 }
 
-/// Traverse a table's children (metatable, array slots, hash nodes).
-/// Weak tables are deferred to atomicClearWeakTables.
-fn traverseTable(table: u32) void {
+/// Traverse a table's children. Returns true if the table is weak.
+/// Matches Lua 5.1 traversetable (lgc.c:158-196).
+fn traverseTable(table: u32) bool {
     const mt = readU32(table + offsets.TABLE_metatable);
-    if (mt != 0 and !isMarked(mt)) {
-        setMarked(mt);
-        grayStackPush(mt);
-    }
+    if (mt != 0) _ = markObject(mt);
 
-    // Detect weak mode from metatable, matching native traversetable behavior.
-    // The native GC checks gfasttm(g, metatable, TM_MODE) and sets weak bits
-    // in marked. We replicate this so new tables get weak flags set.
-    if (mt != 0) {
-        detectAndSetWeakFlags(table, mt);
-    }
+    if (mt != 0) detectAndSetWeakFlags(table, mt);
 
     const marked = readU8(table + offsets.OBJ_marked);
-    const weakkey = (marked & 0x02) != 0;   // KEYWEAK
-    const weakvalue = (marked & 0x04) != 0; // VALUEWEAK
+    const weakkey = (marked & offsets.KEYWEAK) != 0;
+    const weakvalue = (marked & offsets.VALUEWEAK) != 0;
     const is_weak = weakkey or weakvalue;
 
-    // Array section: skip only if value-weak (matches native: `if (!weakvalue)`)
+    // 5.1: if both-weak, return early (only metatable marked)
+    if (weakkey and weakvalue) {
+        if (is_weak) weakTableListAdd(table);
+        return true;
+    }
+
+    // Array: skip if value-weak
     if (!weakvalue) {
         const array_ptr = readU32(table + offsets.TABLE_array);
         const sizearray = readU32(table + offsets.TABLE_sizearray);
@@ -399,21 +520,17 @@ fn traverseTable(table: u32) void {
                 const tt = readU8(tv + offsets.TVALUE_tt);
                 if (tt >= offsets.LUA_TSTRING) {
                     const gc = readU32(tv + offsets.TVALUE_gcptr);
-                    if (gc != 0 and !isMarked(gc)) {
-                        setMarked(gc);
-                        grayStackPush(gc);
-                    }
+                    if (gc != 0) _ = markObject(gc);
                 }
             }
         }
     }
 
-    // Hash section: mark the STRONG dimension, skip the weak dimension.
-    // Native: condmarkobject(key, !weakkey); condmarkobject(value, !weakvalue)
+    // Hash: condmarkobject(key, !weakkey); condmarkobject(value, !weakvalue)
     const node_ptr = readU32(table + offsets.TABLE_node);
     if (node_ptr == 0) {
         if (is_weak) weakTableListAdd(table);
-        return;
+        return is_weak;
     }
     const lsizenode = readU8(table + offsets.TABLE_lsizenode);
     const sizenode: u32 = @as(u32, 1) << @as(u5, @intCast(lsizenode));
@@ -422,36 +539,36 @@ fn traverseTable(table: u32) void {
     while (ni < sizenode) : (ni += 1) {
         const node = node_ptr + ni * offsets.NODE_size;
         const val_tt = readU8(node + offsets.NODE_value_tt);
-        if (val_tt == 0) continue; // dead node (nil value)
+        if (val_tt == 0) {
+            // 5.1: remove dead entries during traversal (removeentry)
+            const key_tt = readU8(node + offsets.NODE_key_tt);
+            if (key_tt >= offsets.LUA_TSTRING) {
+                writeU8(node + offsets.NODE_key_tt, offsets.LUA_TNONE);
+            }
+            continue;
+        }
 
-        // Mark key if collectable AND not key-weak
         if (!weakkey) {
             const key_tt = readU8(node + offsets.NODE_key_tt);
             if (key_tt >= offsets.LUA_TSTRING) {
                 const key_gc = readU32(node + offsets.NODE_key_gcptr);
-                if (key_gc != 0 and !isMarked(key_gc)) {
-                    setMarked(key_gc);
-                    grayStackPush(key_gc);
-                }
+                if (key_gc != 0) _ = markObject(key_gc);
             }
         }
 
-        // Mark value if collectable AND not value-weak
         if (!weakvalue) {
             if (val_tt >= offsets.LUA_TSTRING) {
                 const val_gc = readU32(node + offsets.NODE_value_gcptr);
-                if (val_gc != 0 and !isMarked(val_gc)) {
-                    setMarked(val_gc);
-                    grayStackPush(val_gc);
-                }
+                if (val_gc != 0) _ = markObject(val_gc);
             }
         }
     }
 
     if (is_weak) weakTableListAdd(table);
+    return is_weak;
 }
 
-/// Traverse closure children (C upvalues or Lua env+proto+upvals).
+/// Traverse closure children. Matches Lua 5.1 traverseclosure (lgc.c:224-238).
 fn traverseClosure(cl: u32) void {
     const isC = readU8(cl + offsets.CLOSURE_isC);
     const nups = readU8(cl + offsets.CLOSURE_nupvalues);
@@ -463,47 +580,37 @@ fn traverseClosure(cl: u32) void {
             const tt = readU8(tv + offsets.TVALUE_tt);
             if (tt >= offsets.LUA_TSTRING) {
                 const gc = readU32(tv + offsets.TVALUE_gcptr);
-                if (gc != 0 and !isMarked(gc)) {
-                    setMarked(gc);
-                    grayStackPush(gc);
-                }
+                if (gc != 0) _ = markObject(gc);
             }
         }
     } else {
-        // Lua closure: mark two header pointers (env table + proto)
+        // Lua closure: mark env table + proto
         const m1 = readU32(cl + offsets.CLOSURE_lua_mark1);
-        if (m1 != 0 and !isMarked(m1)) {
-            setMarked(m1);
-            grayStackPush(m1);
-        }
+        if (m1 != 0) _ = markObject(m1);
         const m2 = readU32(cl + offsets.CLOSURE_lua_mark2);
-        if (m2 != 0 and !isMarked(m2)) {
-            setMarked(m2);
-            grayStackPush(m2);
-        }
+        if (m2 != 0) _ = markObject(m2);
 
-        // UpVal pointer array at cl+0x20, stride 4.
-        // Always process every upvalue -- do NOT skip based on marked byte.
-        // Open upvalues (pointing into the stack) are not in rootgc, so our
-        // sweep never clears their marked byte. Skipping "already processed"
-        // upvalues would cause their values to go unmarked in cycle 2+.
-        // The isMarked check on the held value prevents redundant gray pushes
-        // when multiple closures share the same upvalue.
+        // Upvalues: 5.1 reallymarkobject for LUA_TUPVAL (lgc.c:83-88):
+        //   white2gray(o), markvalue(g, uv->v), if closed: gray2black(o)
+        // We must make the upvalue itself non-white so sweep doesn't free it.
+        // Don't push to gray stack (upvals have no children to traverse).
         var i: u32 = 0;
         while (i < nups) : (i += 1) {
             const upv = readU32(cl + offsets.CLOSURE_lua_upval_ptrs + i * 4);
             if (upv == 0) continue;
 
+            // Make upvalue non-white (gray) so it survives sweep.
+            // Also serves as "processed" flag (native TEST AL,AL sees non-zero).
+            if (isWhite(upv)) {
+                white2gray(upv);
+            }
+
+            // Mark the upvalue's held value
             const val_tt = readU8(upv + offsets.UPVAL_value_tt);
             if (val_tt >= offsets.LUA_TSTRING) {
                 const val_gc = readU32(upv + offsets.UPVAL_value_gcptr);
-                if (val_gc != 0 and !isMarked(val_gc)) {
-                    setMarked(val_gc);
-                    grayStackPush(val_gc);
-                }
+                if (val_gc != 0) _ = markObject(val_gc);
             }
-
-            writeU8(upv + offsets.UPVAL_marked, 0x01);
         }
     }
 }
@@ -514,10 +621,7 @@ fn traverseThread(th: u32) void {
     const gt_tt = readU8(th + offsets.THREAD_gt_tt);
     if (gt_tt >= offsets.LUA_TSTRING) {
         const gt_gc = readU32(th + offsets.THREAD_gt_gcptr);
-        if (gt_gc != 0 and !isMarked(gt_gc)) {
-            setMarked(gt_gc);
-            grayStackPush(gt_gc);
-        }
+        if (gt_gc != 0) _ = markObject(gt_gc);
     }
 
     // lim = max(L->top, all ci->top)
@@ -537,16 +641,12 @@ fn traverseThread(th: u32) void {
     if (stack_base == 0 or top == 0 or stack_base >= top) return;
 
     // Mark active stack slots: [stack, top)
-    // Matches native: `for (o = L1->stack; o < L1->top; o++) markobject(st, o);`
     var sp: u32 = stack_base;
     while (sp < top) : (sp += offsets.TVALUE_size) {
         const tt = readU8(sp + offsets.TVALUE_tt);
         if (tt >= offsets.LUA_TSTRING) {
             const gc = readU32(sp + offsets.TVALUE_gcptr);
-            if (gc != 0 and !isMarked(gc)) {
-                setMarked(gc);
-                grayStackPush(gc);
-            }
+            if (gc != 0) _ = markObject(gc);
         }
     }
 
@@ -564,65 +664,54 @@ fn traverseThread(th: u32) void {
 
 /// Traverse proto: source, constants, nested protos, upvalue names, locvars.
 fn traverseProto(proto: u32) void {
-    // source (TString*) -- stringmark
     const source = readU32(proto + offsets.PROTO_source);
-    if (source != 0) {
-        writeU8(source + offsets.OBJ_marked, readU8(source + offsets.OBJ_marked) | 0x01);
-    }
+    if (source != 0) stringmark(source);
 
-    // Constants: only string constants
+    // Constants: mark strings, mark non-string collectables
     const k_ptr = readU32(proto + offsets.PROTO_k);
     const sizek = readU32(proto + offsets.PROTO_sizek);
     if (k_ptr != 0) {
         var i: u32 = 0;
         while (i < sizek) : (i += 1) {
             const tv = k_ptr + i * offsets.TVALUE_size;
-            if (readU8(tv + offsets.TVALUE_tt) == offsets.LUA_TSTRING) {
+            const tt = readU8(tv + offsets.TVALUE_tt);
+            if (tt == offsets.LUA_TSTRING) {
                 const s = readU32(tv + offsets.TVALUE_gcptr);
-                if (s != 0) {
-                    writeU8(s + offsets.OBJ_marked, readU8(s + offsets.OBJ_marked) | 0x01);
-                }
+                if (s != 0) stringmark(s);
+            } else if (tt >= offsets.LUA_TSTRING) {
+                const gc = readU32(tv + offsets.TVALUE_gcptr);
+                if (gc != 0) _ = markObject(gc);
             }
         }
     }
 
-    // Upvalue names (TString**)
     const upv_ptr = readU32(proto + offsets.PROTO_upvalues);
     const sizeup = readU32(proto + offsets.PROTO_sizeupvalues);
     if (upv_ptr != 0) {
         var i: u32 = 0;
         while (i < sizeup) : (i += 1) {
             const s = readU32(upv_ptr + i * 4);
-            if (s != 0) {
-                writeU8(s + offsets.OBJ_marked, readU8(s + offsets.OBJ_marked) | 0x01);
-            }
+            if (s != 0) stringmark(s);
         }
     }
 
-    // Nested protos
     const p_ptr = readU32(proto + offsets.PROTO_p);
     const sizep = readU32(proto + offsets.PROTO_sizep);
     if (p_ptr != 0) {
         var i: u32 = 0;
         while (i < sizep) : (i += 1) {
             const sub = readU32(p_ptr + i * 4);
-            if (sub != 0 and !isMarked(sub)) {
-                setMarked(sub);
-                grayStackPush(sub);
-            }
+            if (sub != 0) _ = markObject(sub);
         }
     }
 
-    // LocVar names (12 bytes each, TString* at first field)
     const lv_ptr = readU32(proto + offsets.PROTO_locvars);
     const sizelv = readU32(proto + offsets.PROTO_sizelocvars);
     if (lv_ptr != 0) {
         var i: u32 = 0;
         while (i < sizelv) : (i += 1) {
             const s = readU32(lv_ptr + i * offsets.LOCVAR_size);
-            if (s != 0) {
-                writeU8(s + offsets.OBJ_marked, readU8(s + offsets.OBJ_marked) | 0x01);
-            }
+            if (s != 0) stringmark(s);
         }
     }
 }
@@ -631,51 +720,42 @@ fn traverseProto(proto: u32) void {
 // Root Mark
 // =============================================================================
 
-fn pushAllRoots(g: u32) void {
-    const before = gray_count;
+/// Mark root set. Matches Lua 5.1 markroot (lgc.c:501-512).
+fn markroot(g: u32) void {
+    gray_count = 0;
+    grayagain_count = 0;
+    weak_table_count = 0;
 
-    // defaultmeta (TValue at g+0x40/+0x48)
+    // Bootstrap: on first cycle, existing objects from native GC have marked=0.
+    // Set them to currentwhite so our mark can find them.
+    if (needs_bootstrap) bootstrapWhite(g);
+
+    // defaultmeta
     if (readU8(g + 0x40) >= offsets.LUA_TTABLE) {
         const dm = readU32(g + offsets.GS_defaultmeta);
-        if (dm != 0 and !isMarked(dm)) {
-            setMarked(dm);
-            grayStackPush(dm);
-        }
+        if (dm != 0) _ = markObject(dm);
     }
 
-    // registry (TValue at g+0x30/+0x38)
+    // registry
     if (readU8(g + 0x30) >= offsets.LUA_TTABLE) {
         const reg = readU32(g + offsets.GS_registry);
-        if (reg != 0 and !isMarked(reg)) {
-            setMarked(reg);
-            grayStackPush(reg);
-        }
+        if (reg != 0) _ = markObject(reg);
     }
 
     // mainthread
     const mt = readU32(g + offsets.GS_mainthread);
-    const mt_marked_before = readU8(mt + offsets.OBJ_marked);
-    const mt_tt = readU8(mt + offsets.OBJ_tt);
-    if (!isMarked(mt)) {
-        setMarked(mt);
-        grayStackPush(mt);
+    _ = markObject(mt);
+
+    // Make global table be traversed before main stack (5.1 line 508)
+    const gt_tt = readU8(mt + offsets.THREAD_gt_tt);
+    if (gt_tt >= offsets.LUA_TSTRING) {
+        const gt_gc = readU32(mt + offsets.THREAD_gt_gcptr);
+        if (gt_gc != 0) _ = markObject(gt_gc);
     }
 
     // current L if different
     if (saved_L != 0 and saved_L != mt) {
-        if (!isMarked(saved_L)) {
-            setMarked(saved_L);
-            grayStackPush(saved_L);
-        }
-    }
-
-    // Diagnostic: log root push details for first 15 cycles
-    if (stats.cycles_total < 15) {
-        var buf: [200]u8 = undefined;
-        log.print(fmt(&buf, "  pushRoots cycle {d}: mt=0x{x} tt={d} marked=0x{x} pushed={d} gray={d}\n", .{
-            stats.cycles_total + 1, mt,         mt_tt, mt_marked_before,
-            gray_count - before,    gray_count,
-        }));
+        _ = markObject(saved_L);
     }
 }
 
@@ -692,11 +772,20 @@ fn markStep() bool {
     while (gray_count > 0 and processed < CHUNK_SIZE) {
         const obj = grayStackPop();
         if (obj == 0) break;
-        traverseAndPushChildren(obj);
+        propagatemark(obj);
         processed += 1;
     }
 
     return gray_count == 0;
+}
+
+/// Drain the entire gray stack (used in atomic phase).
+fn propagateall() void {
+    while (gray_count > 0) {
+        const obj = grayStackPop();
+        if (obj == 0) break;
+        propagatemark(obj);
+    }
 }
 
 // =============================================================================
@@ -710,58 +799,58 @@ fn markStep() bool {
 //   4. propagatemarks (drain gray stack from resurrected udata)
 //   5. cleartablekeys(wk, wkv) + any newly weak tables
 
+/// Atomic phase. Matches Lua 5.1 atomic() (lgc.c:525-553).
+/// This runs to completion in a single call -- no yielding.
 fn atomicPhase(L: u32, g: u32) void {
-    // (0) Re-traverse threads and grayagain tables.
-    // Lua 5.1 atomic: re-mark running thread, re-traverse grayagain.
-    // This catches new stack values and table mutations from between mark steps.
-    const mt = readU32(g + offsets.GS_mainthread);
-    if (isMarked(mt)) {
-        grayStackPush(mt);
-    }
-    if (saved_L != 0 and saved_L != mt) {
-        if (isMarked(saved_L)) {
-            grayStackPush(saved_L);
-        }
-    }
+    // (1) Propagate any remaining gray objects
+    propagateall();
 
+    // (2) Re-traverse weak tables (push to gray, propagate)
+    // In 5.1 this uses g->weak. We use our weak_table_list.
+    // Weak tables need re-traversal because they were kept gray.
+    var wi: u32 = 0;
+    while (wi < weak_table_count) : (wi += 1) {
+        const tbl = weak_table_list[wi];
+        grayStackPush(tbl);
+    }
+    propagateall();
+
+    // (3) Mark running thread + metatables (5.1 lines 536-537)
+    _ = markObject(saved_L);
+    // Mark defaultmeta again
+    if (readU8(g + 0x40) >= offsets.LUA_TTABLE) {
+        const dm = readU32(g + offsets.GS_defaultmeta);
+        if (dm != 0) _ = markObject(dm);
+    }
+    propagateall();
+
+    // (4) Re-traverse grayagain: barrier-back tables + threads
+    // 5.1 lines 539-542: g->gray = g->grayagain; propagateall
     var gi: u32 = 0;
     while (gi < grayagain_count) : (gi += 1) {
-        const tbl = grayagain_list[gi];
-        if (isMarked(tbl)) {
-            // Re-traverse: clear mark, re-mark, push to gray
-            clearMarked(tbl);
-            setMarked(tbl);
-            grayStackPush(tbl);
-        }
+        const obj = grayagain_list[gi];
+        // Push back to gray for re-traversal
+        grayStackPush(obj);
     }
     grayagain_count = 0;
+    propagateall();
 
-    // Drain gray stack fully (all grayagain + thread re-traversals)
-    while (gray_count > 0) {
-        const obj = grayStackPop();
-        if (obj == 0) break;
-        traverseAndPushChildren(obj);
-    }
-
-    // (1) Clear weak table VALUES
-    atomicClearWeakTables();
-
-    // (2) Separate dead userdata with __gc into tmudata
+    // (5) Separate dead userdata with __gc into tmudata
     native_separateudata(L);
 
-    // (3) Re-mark tmudata so their refs survive sweep
+    // (6) Re-mark tmudata so their refs survive sweep
     marktmuImpl(g);
+    propagateall();
 
-    // (4) Drain gray stack (bounded by tmudata size, typically small)
-    while (gray_count > 0) {
-        const obj = grayStackPop();
-        if (obj == 0) break;
-        traverseAndPushChildren(obj);
-    }
+    // (7) Clear weak tables
+    atomicClearWeakTables();
+
+    // (8) Flip current white. New objects born after this point get the
+    // NEW currentwhite. Sweep will free objects with the OLD white.
+    currentwhite = otherwhite();
+    syncStringBirthMark(); // update string creation to use new white
 
     weak_table_count = 0;
-    // Clear any grayagain entries added during atomic traversals (threads
-    // re-add themselves). These don't need processing -- atomic caught everything.
     grayagain_count = 0;
 }
 
@@ -769,9 +858,9 @@ fn atomicPhase(L: u32, g: u32) void {
 fn marktmuImpl(g: u32) void {
     var obj = readU32(g + offsets.GS_tmudata);
     while (obj != 0) {
-        clearMarked(obj);
-        setMarked(obj);
-        grayStackPush(obj);
+        // Make white then re-mark (5.1 marktmu: makewhite + reallymarkobject)
+        makewhite(obj);
+        _ = markObject(obj); // white2gray + push to gray
         obj = readU32(obj + offsets.OBJ_next);
     }
 }
@@ -782,8 +871,8 @@ fn atomicClearWeakTables() void {
     while (i < weak_table_count) : (i += 1) {
         const table = weak_table_list[i];
         const marked = readU8(table + offsets.OBJ_marked);
-        if ((marked & 0x04) != 0) clearWeakValues(table); // VALUEWEAK
-        if ((marked & 0x02) != 0) clearWeakKeys(table); // KEYWEAK
+        if ((marked & offsets.VALUEWEAK) != 0) clearWeakValues(table);
+        if ((marked & offsets.KEYWEAK) != 0) clearWeakKeys(table);
     }
 }
 
@@ -800,7 +889,7 @@ fn clearWeakValues(table: u32) void {
             const tt = readU8(tv + offsets.TVALUE_tt);
             if (tt >= offsets.LUA_TSTRING) {
                 const gc = readU32(tv + offsets.TVALUE_gcptr);
-                if (gc != 0 and !isMarked(gc)) {
+                if (gc != 0 and isWhite(gc)) {
                     writeU8(tv + offsets.TVALUE_tt, offsets.LUA_TNIL);
                     writeU32(tv + offsets.TVALUE_gcptr, 0);
                 }
@@ -821,7 +910,7 @@ fn clearWeakValues(table: u32) void {
         if (val_tt < offsets.LUA_TSTRING) continue;
         const val_gc = readU32(node + offsets.NODE_value_gcptr);
         if (val_gc == 0) continue;
-        if (!isMarked(val_gc)) {
+        if (isWhite(val_gc)) {
             // removekey: nil value
             writeU8(node + offsets.NODE_value_tt, offsets.LUA_TNIL);
             writeU32(node + offsets.NODE_value_gcptr, 0);
@@ -849,7 +938,7 @@ fn clearWeakKeys(table: u32) void {
         if (key_tt < offsets.LUA_TSTRING) continue;
         const key_gc = readU32(node + offsets.NODE_key_gcptr);
         if (key_gc == 0) continue;
-        if (!isMarked(key_gc)) {
+        if (isWhite(key_gc)) {
             // removekey: nil value
             writeU8(node + offsets.NODE_value_tt, offsets.LUA_TNIL);
             writeU32(node + offsets.NODE_value_gcptr, 0);
@@ -878,10 +967,10 @@ fn sweepRootgcStep(L: u32) bool {
         const obj = readU32(sweep_prev_next);
         if (obj == 0) return true; // end of list, sweep done
 
-        if (isAlive(obj)) {
-            // Alive: clear mark bit for next cycle, advance.
-            // Preserves fixed (bit 4) and other flags.
-            clearMarked(obj);
+        if (!isDead(obj)) {
+            // Alive: set to current white for next cycle.
+            // Preserves non-color flags (KEYWEAK, VALUEWEAK, FIXED).
+            makewhite(obj);
             sweep_prev_next = obj + offsets.OBJ_next;
         } else {
             // Dead: unlink and free
@@ -907,8 +996,8 @@ fn sweepRootudata(L: u32, g: u32) void {
     while (true) {
         const obj = readU32(prev_next);
         if (obj == 0) break;
-        if (isAlive(obj)) {
-            clearMarked(obj);
+        if (!isDead(obj)) {
+            makewhite(obj);
             prev_next = obj + offsets.OBJ_next;
         } else {
             const next = readU32(obj + offsets.OBJ_next);
@@ -941,13 +1030,12 @@ fn sweepStringsStep(L: u32, g: u32) bool {
         while (true) {
             const obj = readU32(prev_next);
             if (obj == 0) break;
-            if (isAlive(obj)) {
-                clearMarked(obj);
+            if (!isDead(obj)) {
+                makewhite(obj);
                 prev_next = obj + offsets.OBJ_next;
             } else {
                 const next = readU32(obj + offsets.OBJ_next);
                 writeU32(prev_next, next);
-                // Decrement strt.nuse
                 const nuse = readU32(g + offsets.GS_strt_nuse);
                 if (nuse > 0) writeU32(g + offsets.GS_strt_nuse, nuse - 1);
                 native_free_object(L, obj);
@@ -1028,9 +1116,9 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         sweep_string_bucket = 0;
         done = false;
         while (!done) done = sweepStringsStep(L, g);
-        setBirthMark(false);
+        // (birth mark removed -- two-white handles this)
         const mt = readU32(g + offsets.GS_mainthread);
-        clearMarked(mt);
+        makewhite(mt);
         maybeShrinkStringTable(L, g);
         setFinalThreshold(g);
         native_callGCTM(L);
@@ -1042,11 +1130,11 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         // Our mark + atomic
         gray_count = 0;
         weak_table_count = 0;
-        pushAllRoots(g);
+        markroot(g);
         while (gray_count > 0) {
             const obj = grayStackPop();
             if (obj == 0) break;
-            traverseAndPushChildren(obj);
+            propagatemark(obj);
         }
         atomicPhase(L, g);
         // Native sweep + checkSizes + callGCTM
@@ -1060,7 +1148,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         native_sweepstrings(L, 0);
         _ = native_sweeplist(L, g + offsets.GS_rootgc, 0);
         const mt = readU32(g + offsets.GS_mainthread);
-        clearMarked(mt);
+        makewhite(mt);
         native_shrink_memory(L);
         native_callGCTM(L);
         return;
@@ -1071,11 +1159,11 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
     if (DIAG_MODE == 4) {
         gray_count = 0;
         weak_table_count = 0;
-        pushAllRoots(g);
+        markroot(g);
         while (gray_count > 0) {
             const obj = grayStackPop();
             if (obj == 0) break;
-            traverseAndPushChildren(obj);
+            propagatemark(obj);
         }
         atomicPhase(L, g);
         sweep_prev_next = g + offsets.GS_rootgc;
@@ -1085,10 +1173,10 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         sweep_string_bucket = 0;
         done = false;
         while (!done) done = sweepStringsStep(L, g);
-        setBirthMark(false);
+        // (birth mark removed -- two-white handles this)
         const mt = readU32(g + offsets.GS_mainthread);
-        clearMarked(mt);
-        if (saved_L != 0 and saved_L != mt) clearMarked(saved_L);
+        makewhite(mt);
+        if (saved_L != 0 and saved_L != mt) makewhite(saved_L);
         maybeShrinkStringTable(L, g);
         setFinalThreshold(g);
         native_callGCTM(L);
@@ -1125,7 +1213,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
             // objects prepend to the head (behind our forward cursor) and are
             // safe. Birth mark is only needed during string sweep where new
             // strings can land in unswept hash buckets ahead of the cursor.
-            pushAllRoots(g);
+            markroot(g);
             phase = .marking;
 
             // Do one mark step immediately
@@ -1154,8 +1242,6 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
 
         .sweep_strings => {
             if (sweepStringsStep(L, g)) {
-                // Strings done, turn off birth mark before rootgc sweep
-                setBirthMark(false);
                 sweep_prev_next = g + offsets.GS_rootgc;
                 phase = .sweeping;
                 if (sweepRootgcStep(L)) {
@@ -1184,25 +1270,20 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
 ///
 /// Birth mark is ON only during string sweep: new strings can hash into
 /// unswept buckets ahead of the cursor and would be incorrectly freed.
-/// For rootgc, new objects prepend to the head (behind the forward cursor)
-/// so birth mark is unnecessary and harmful (causes next cycle to skip
-/// traversal of born-marked objects).
+/// Start sweep after atomic phase.
+/// Two-white eliminates birth mark: new objects born with currentwhite
+/// (already flipped in atomic), which is NOT otherwhite, so they survive.
 fn runAtomicAndStartSweep(L: u32, g: u32) void {
     atomicPhase(L, g);
 
     // Sweep rootudata atomically (small list, fast)
     sweepRootudata(L, g);
 
-    // String sweep needs birth mark: new strings can land in unswept buckets
-    setBirthMark(true);
+    // Start chunked string sweep
     sweep_string_bucket = 0;
     phase = .sweep_strings;
 
-    // Do one string step immediately
     if (sweepStringsStep(L, g)) {
-        // Strings done, birth mark no longer needed
-        setBirthMark(false);
-        // Start rootgc sweep (no birth mark needed)
         sweep_prev_next = g + offsets.GS_rootgc;
         phase = .sweeping;
         if (sweepRootgcStep(L)) {
@@ -1214,15 +1295,11 @@ fn runAtomicAndStartSweep(L: u32, g: u32) void {
 
 /// Final cleanup: shrink string table, set threshold, run finalizers.
 fn finalizeCycle(L: u32, g: u32) void {
-    setBirthMark(false);
-
-    // The mainthread is always a root but may not be in rootgc (WoW manages
-    // it separately). Clear its mark so pushAllRoots can push it next cycle.
-    // Also clear the current L if different.
+    // Mainthread is not in rootgc (WoW-specific). Make it white for next cycle.
     const mt = readU32(g + offsets.GS_mainthread);
-    clearMarked(mt);
+    makewhite(mt);
     if (saved_L != 0 and saved_L != mt) {
-        clearMarked(saved_L);
+        makewhite(saved_L);
     }
 
     maybeShrinkStringTable(L, g);
@@ -1264,16 +1341,18 @@ var table_set_hook: hook.Detour(TableSetFn) = .{};
 var table_set_int_hook: hook.Detour(TableSetFn) = .{};
 
 fn tableSetBarrier(L: u32, table: u32, key: u32) callconv(hook.cc.fastcall) u32 {
-    // Barrier back: BLACK table got a write during incremental mark.
-    // Add to grayagain for re-traversal in the atomic phase.
-    if (phase == .marking and isMarked(table)) {
+    // Barrier back (5.1 luaC_barrierback): if table is BLACK during propagate,
+    // make it gray again and add to grayagain list.
+    if (phase == .marking and isBlack(table)) {
+        black2gray(table);
         grayagainAdd(table);
     }
     return table_set_hook.callOriginal(.{ L, table, key });
 }
 
 fn tableSetIntBarrier(L: u32, table: u32, int_key: u32) callconv(hook.cc.fastcall) u32 {
-    if (phase == .marking and isMarked(table)) {
+    if (phase == .marking and isBlack(table)) {
+        black2gray(table);
         grayagainAdd(table);
     }
     return table_set_int_hook.callOriginal(.{ L, table, int_key });
@@ -1326,11 +1405,248 @@ fn luaCloseDetour(L: u32) callconv(hook.cc.fastcall) void {
     gray_count = 0;
     grayagain_count = 0;
     weak_table_count = 0;
-    setBirthMark(false);
     in_gc = false;
+    currentwhite = 0x01;
+    needs_bootstrap = true;
+    syncStringBirthMark();
 
-    // Let the native lua_close proceed
     lua_close_hook.callOriginal(.{L});
+}
+
+// =============================================================================
+// luaC_link hook (two-white birth system)
+// =============================================================================
+//
+// New objects must be born with currentwhite so they're alive in the current
+// cycle. The native luaC_link sets marked=0 which in our two-white system
+// means "gray" (invisible to mark). We hook it to set marked=currentwhite.
+
+const LuaCLinkFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
+var luac_link_hook: hook.Detour(LuaCLinkFn) = .{};
+
+fn luaCLinkDetour(L: u32, obj: u32, tt: u32) callconv(hook.cc.fastcall) void {
+    const g = getGlobalState(L);
+    writeU32(obj + offsets.OBJ_next, readU32(g + offsets.GS_rootgc));
+    writeU32(g + offsets.GS_rootgc, obj);
+    writeU8(obj + offsets.OBJ_marked, currentwhite);
+    writeU8(obj + offsets.OBJ_tt, @intCast(tt));
+}
+
+// =============================================================================
+// Forward barriers (luaC_barrierf equivalent)
+// =============================================================================
+//
+// Lua 5.1 has luaC_barrierf at every write site that creates a cross-object
+// reference (besides table writes which use barrierback). WoW's Lua 5.0 has
+// no barriers at all. We hook each function that needs one.
+//
+// The barrier: if we're in marking phase, and the written value is a WHITE
+// collectable GC object, mark it immediately so it survives sweep.
+// This prevents BLACK→WHITE edges from going unnoticed.
+
+/// Forward barrier: if a white collectable was written somewhere during
+/// marking, mark it now. Reads a TValue at the given address.
+fn barrierForward(tv_addr: u32) void {
+    if (phase != .marking) return;
+    const tt = readU8(tv_addr + offsets.TVALUE_tt);
+    if (tt < offsets.LUA_TSTRING) return; // not collectable
+    const gc = readU32(tv_addr + offsets.TVALUE_gcptr);
+    if (gc == 0) return;
+    if (isWhite(gc)) _ = markObject(gc);
+}
+
+// --- lua_setmetatable (0x6F4020) ---
+// __fastcall(ECX=L, EDX=objindex). Sets metatable on stack object.
+// 5.1 barriers: luaC_objbarriert for tables, luaC_objbarrier for userdata.
+const SetMetaFn = fn (u32, u32) callconv(hook.cc.fastcall) u32;
+var setmeta_hook: hook.Detour(SetMetaFn) = .{};
+fn setmetaDetour(L: u32, objindex: u32) callconv(hook.cc.fastcall) u32 {
+    const result = setmeta_hook.callOriginal(.{ L, objindex });
+    // After the native sets the metatable, barrier the new metatable.
+    // The metatable was just pushed on the stack (L->top - 1) before the call,
+    // then popped by the native. We can't easily get the metatable pointer
+    // after the call. Instead, just re-mark the object's metatable field.
+    // The object is at the given stack index. Read it, get its metatable.
+    if (phase == .marking) {
+        // Resolve stack index to object pointer
+        const obj_tv = resolveStackIndex(L, objindex);
+        if (obj_tv != 0) {
+            const obj_tt = readU8(obj_tv + offsets.TVALUE_tt);
+            if (obj_tt == offsets.LUA_TTABLE or obj_tt == offsets.LUA_TUSERDATA) {
+                const obj_gc = readU32(obj_tv + offsets.TVALUE_gcptr);
+                if (obj_gc != 0) {
+                    const mt = readU32(obj_gc + offsets.TABLE_metatable);
+                    if (mt != 0 and isWhite(mt)) _ = markObject(mt);
+                }
+            }
+        }
+    }
+    return result;
+}
+
+// --- lua_setupvalue (0x6F47B0) ---
+// __fastcall(ECX=L, EDX=funcindex, stack=n). Sets upvalue by index.
+const SetUpvalFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
+var setupval_hook: hook.Detour(SetUpvalFn) = .{};
+fn setupvalDetour(L: u32, funcindex: u32, n: u32) callconv(hook.cc.fastcall) u32 {
+    const result = setupval_hook.callOriginal(.{ L, funcindex, n });
+    // After the native sets the upvalue, the value was popped from stack.
+    // The upvalue now holds the new value. We can't easily get which upvalue
+    // was written without re-deriving it. But the native already did the write.
+    // For safety: if we're marking, re-traverse the closure.
+    if (phase == .marking and result != 0) {
+        const obj_tv = resolveStackIndex(L, funcindex);
+        if (obj_tv != 0 and readU8(obj_tv + offsets.TVALUE_tt) == offsets.LUA_TFUNCTION) {
+            const cl = readU32(obj_tv + offsets.TVALUE_gcptr);
+            if (cl != 0 and isBlack(cl)) {
+                black2gray(cl);
+                grayagainAdd(cl);
+            }
+        }
+    }
+    return result;
+}
+
+// --- lua_pushcclosure (0x6F3920) ---
+// __fastcall(ECX=L, EDX=fn_ptr, stack=n_upvals). Creates C closure with upvalues.
+const PushCClosureFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
+var pushcclosure_hook: hook.Detour(PushCClosureFn) = .{};
+fn pushcclosureDetour(L: u32, fn_ptr: u32, n: u32) callconv(hook.cc.fastcall) void {
+    pushcclosure_hook.callOriginal(.{ L, fn_ptr, n });
+    // The new closure is at L->top - 1. It was just created (WHITE).
+    // Its upvalues were set from the stack. The closure is WHITE, so
+    // no BLACK→WHITE edge (barrier only matters if container is BLACK).
+    // New closure is currentwhite → no barrier needed.
+}
+
+// --- lua_setfenv (0x6F40D0) ---
+// __fastcall(ECX=L, EDX=idx). Sets environment table on stack object.
+const SetFenvFn = fn (u32, u32) callconv(hook.cc.fastcall) u32;
+var setfenv_hook: hook.Detour(SetFenvFn) = .{};
+fn setfenvDetour(L: u32, idx: u32) callconv(hook.cc.fastcall) u32 {
+    const result = setfenv_hook.callOriginal(.{ L, idx });
+    if (phase == .marking and result != 0) {
+        const obj_tv = resolveStackIndex(L, idx);
+        if (obj_tv != 0) {
+            const obj_gc = readU32(obj_tv + offsets.TVALUE_gcptr);
+            if (obj_gc != 0 and isBlack(obj_gc)) {
+                black2gray(obj_gc);
+                grayagainAdd(obj_gc);
+            }
+        }
+    }
+    return result;
+}
+
+/// Resolve a Lua stack index to the TValue address.
+/// Positive = from base, negative = from top, pseudo-indices = special.
+fn resolveStackIndex(L: u32, idx: u32) u32 {
+    const idx_i: i32 = @bitCast(idx);
+    if (idx_i > 0) {
+        // Positive: base + (idx-1) * 16
+        const base = readU32(L + 0x0C); // L->base (ci->base typically at L+0x0C)
+        if (base == 0) return 0;
+        return base + @as(u32, @intCast(idx_i - 1)) * offsets.TVALUE_size;
+    } else if (idx_i < -10000) {
+        // Pseudo-index (globals, registry, upvalues) -- skip
+        return 0;
+    } else {
+        // Negative: top + idx * 16
+        const top = readU32(L + offsets.THREAD_top);
+        if (top == 0) return 0;
+        return @as(u32, @intCast(@as(i32, @intCast(top)) + idx_i * @as(i32, offsets.TVALUE_size)));
+    }
+}
+
+// =============================================================================
+// OP_SETUPVAL VM patch (forward barrier)
+// =============================================================================
+//
+// At 0x6F8A97, right after the 16-byte TValue copy in OP_SETUPVAL handler,
+// EDX holds uv->v (the destination pointer -- the TValue just written).
+// We patch 5 bytes at 0x6F8A97 with CALL to our barrier trampoline.
+// The trampoline checks if the written value is WHITE and marks it.
+//
+// Original bytes at 0x6F8A97: 8B 7F 04 85 FF (MOV EDI,[EDI+4]; TEST EDI,EDI)
+// These are debug hook code, not critical to SETUPVAL functionality.
+// We overwrite with: E8 XX XX XX XX (CALL rel32 to our function)
+// Our function does the barrier check then executes the overwritten instructions.
+
+var setupval_patch_installed: bool = false;
+var setupval_original_bytes: [5]u8 = undefined;
+
+fn installSetupvalPatch() void {
+    // Read original bytes
+    const src: [*]const u8 = @ptrFromInt(0x6F8A97);
+    @memcpy(&setupval_original_bytes, src[0..5]);
+
+    // Write CALL rel32 to our barrier
+    const target = @intFromPtr(&setupvalBarrierTrampoline);
+    const rel: i32 = @intCast(@as(i64, target) - (0x6F8A97 + 5));
+    var patch: [5]u8 = undefined;
+    patch[0] = 0xE8; // CALL rel32
+    patch[1..5].* = @bitCast(rel);
+    hook.writeProtected(0x6F8A97, &patch);
+    setupval_patch_installed = true;
+}
+
+fn removeSetupvalPatch() void {
+    if (setupval_patch_installed) {
+        hook.writeProtected(0x6F8A97, &setupval_original_bytes);
+        setupval_patch_installed = false;
+    }
+}
+
+/// Called from the VM after OP_SETUPVAL's TValue copy.
+/// EDX = uv->v (the TValue that was just written to).
+/// Must preserve all registers and flags, execute the overwritten instructions,
+/// then return.
+fn setupvalBarrierTrampoline() callconv(.naked) void {
+    // Called from VM after OP_SETUPVAL TValue copy. EDX = uv->v.
+    // Check if written value is a white collectable during mark, mark it if so.
+    // Must preserve all registers and execute overwritten instructions before ret.
+    asm volatile (
+        \\ pushf
+        \\ push %%eax
+        \\ push %%ecx
+        // Check phase == .marking (1)
+        \\ movl %[phase_ptr], %%eax
+        \\ cmpb $1, (%%eax)
+        \\ jne 1f
+        // EDX = uv->v. Check tt >= LUA_TSTRING (4)
+        \\ movzbl (%%edx), %%eax
+        \\ cmpl $4, %%eax
+        \\ jb 1f
+        // Read gcptr at [EDX+8]
+        \\ movl 8(%%edx), %%eax
+        \\ testl %%eax, %%eax
+        \\ jz 1f
+        // Check if white (marked & 0x03)
+        \\ testb $0x03, 5(%%eax)
+        \\ jz 1f
+        // White collectable during mark -> call markObject via indirect
+        \\ push %%edx
+        \\ push %%eax
+        \\ movl %[mark_fn], %%ecx
+        \\ call *%%ecx
+        \\ addl $4, %%esp
+        \\ pop %%edx
+        \\1:
+        \\ pop %%ecx
+        \\ pop %%eax
+        \\ popf
+        // Execute overwritten: MOV EDI,[EDI+4]; TEST EDI,EDI
+        \\ movl 4(%%edi), %%edi
+        \\ testl %%edi, %%edi
+        \\ ret
+        :
+        : [phase_ptr] "i" (&phase),
+          [mark_fn] "i" (&markObjectCdecl),
+    );
+}
+
+fn markObjectCdecl(obj: u32) callconv(.c) void {
+    _ = markObject(obj);
 }
 
 // =============================================================================
@@ -1391,6 +1707,25 @@ pub fn installHooks() void {
         installed += 1;
         log.print("hooked lua_close\n");
     }
+    if (luac_link_hook.attach(offsets.luaC_link, &luaCLinkDetour) == .ok) {
+        installed += 1;
+        log.print("hooked luaC_link\n");
+    }
+    // Forward barriers (5.1 luaC_barrierf equivalents)
+    if (setmeta_hook.attach(offsets.lua_setmetatable, &setmetaDetour) == .ok) {
+        installed += 1;
+    }
+    if (setupval_hook.attach(offsets.lua_setupvalue, &setupvalDetour) == .ok) {
+        installed += 1;
+    }
+    if (setfenv_hook.attach(offsets.lua_setfenv, &setfenvDetour) == .ok) {
+        installed += 1;
+    }
+    // Note: lua_pushcclosure doesn't need a barrier (new closures are WHITE)
+    installSetupvalPatch();
+    log.print("installed forward barriers\n");
+
+    syncStringBirthMark();
 
     var buf: [64]u8 = undefined;
     log.print(fmt(&buf, "installed {d} hooks\n", .{installed}));
@@ -1400,15 +1735,20 @@ pub fn removeHooks() void {
     if (!g_is_hook_owner) return;
 
     // If mid-cycle, restore birth mark
-    if (birth_mark_active) {
-        setBirthMark(false);
-    }
+    // Reset string birth mark to 0 (native default)
+    var patch = [1]u8{0x00};
+    hook.writeProtected(offsets.birth_mark_string, &patch);
 
     collect_hook.detach();
     table_set_hook.detach();
     table_set_int_hook.detach();
     setgcthreshold_hook.detach();
     lua_close_hook.detach();
+    luac_link_hook.detach();
+    setmeta_hook.detach();
+    setupval_hook.detach();
+    setfenv_hook.detach();
+    removeSetupvalPatch();
     luaalloc.remove();
 
     phase = .idle;
