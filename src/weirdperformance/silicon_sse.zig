@@ -577,9 +577,12 @@ pub fn si_frustumCullBBox(bbox: u32, flags: u32, radius_bits: u32) callconv(FC) 
     // z=0, so skip col2 term
     const extent = @mulAdd(V4, rv, loadV4(m2 + 16), @mulAdd(V4, rv, loadV4(m2), loadV4(m2 + 48)));
 
-    // Behind-camera check (unless flags & 8)
+    // Behind-camera check (unless flags & 8). Use the bounding sphere, not
+    // just the center: an object whose center is behind the camera can still
+    // have its front extent in frame. Cull only if the entire sphere is
+    // behind the camera (closest point still has z < 0).
     if ((flags & 0x8) == 0) {
-        if (center[2] < 0.0) return 2;
+        if (center[2] + @abs(radius) < 0.0) return 2;
         if (center[2] < @as(*align(1) const f32, @ptrFromInt(0x80FED4)).*) return 0;
     }
 
