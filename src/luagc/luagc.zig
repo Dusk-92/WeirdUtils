@@ -103,8 +103,20 @@ var phase: Phase = .idle;
 var saved_L: u32 = 0;
 var saved_g: u32 = 0;
 
-/// Objects to process per step. ~5000 = ~2ms target per step.
-const CHUNK_SIZE: u32 = 5000;
+/// Step size in bytes -- matches 5.1 GCSTEPSIZE (default 1024).
+/// Controls how often GC triggers between steps: threshold = totalbytes + stepsize.
+var gcstepsize: u32 = 1024;
+
+/// Step multiplier -- matches 5.1 gcstepmul (default 200).
+/// Budget per trigger = (stepsize / 100) * stepmul bytes of work.
+var gcstepmul: u32 = 200;
+
+/// Pause factor -- matches 5.1 gcpause (default 200 = 2x).
+/// Between cycles: threshold = (totalbytes / 100) * gcpause.
+var gcpause: u32 = 200;
+
+/// Max objects to sweep per singlestep (5.1 GCSWEEPMAX = 40).
+const GCSWEEPMAX: u32 = 40;
 
 // =============================================================================
 // Gray Stack
@@ -361,6 +373,15 @@ inline fn makewhite(obj: u32) void {
 fn markObject(obj: u32) bool {
     if (!isWhite(obj)) return false;
     const tt = objType(obj);
+    if (tt > 10) {
+        // Invalid type tag -- this is garbage, not a GC object.
+        // Log and skip to prevent crash from following garbage pointers.
+        var buf: [160]u8 = undefined;
+        log.print(fmt(&buf, "BUG markObject(0x{x}) tt={d} marked=0x{x} caller=0x{x}\n", .{
+            obj, tt, readU8(obj + offsets.OBJ_marked), @returnAddress(),
+        }));
+        return false;
+    }
     switch (tt) {
         offsets.LUA_TSTRING => {
             // Strings: just clear white bits, don't go to gray (no children)
@@ -822,26 +843,115 @@ fn markroot(g: u32) void {
 }
 
 // =============================================================================
-// Incremental Mark Step
+// Single Step (matches 5.1 singlestep lgc.c:556-607)
 // =============================================================================
+//
+// Process one unit of GC work. Returns estimated memory cost.
+// Called in a budget loop by collectGarbageDetour.
 
-/// Process up to CHUNK_SIZE objects from the gray stack.
-/// Returns true when gray stack is drained (mark complete).
-fn markStep() bool {
-    const t0 = rdtsc();
-    cur_mark_steps += 1;
-    var processed: u32 = 0;
+const GCSWEEPCOST: u32 = 10;
+const GCFINALIZECOST: u32 = 100;
 
-    while (gray_count > 0 and processed < CHUNK_SIZE) {
-        const obj = grayStackPop();
-        if (obj == 0) break;
-        propagatemark(obj);
-        processed += 1;
+fn singlestep(L: u32, g: u32) u32 {
+    switch (phase) {
+        .idle => {
+            // Start new cycle
+            cur_mark_steps = 0;
+            cur_sweep_steps = 0;
+            cur_dead_freed = 0;
+            cur_strings_freed = 0;
+            cur_max_step_cycles = 0;
+            cur_atomic_cycles = 0;
+            dbg_table_count = 0;
+            dbg_closure_count = 0;
+            dbg_thread_count = 0;
+            dbg_proto_count = 0;
+            dbg_udata_count = 0;
+            dbg_other_count = 0;
+
+            markroot(g);
+            phase = .marking;
+            return 0;
+        },
+        .marking => {
+            if (gray_count > 0) {
+                cur_mark_steps += 1;
+                const obj = grayStackPop();
+                if (obj != 0) propagatemark(obj);
+                // Return estimated cost (rough, like 5.1 propagatemark)
+                return 100;
+            } else {
+                // Gray stack drained -- run atomic phase
+                phase = .atomic;
+                runAtomicAndStartSweep(L, g);
+                return 0;
+            }
+        },
+        .atomic => {
+            // Should not be called (atomic runs to completion in runAtomicAndStartSweep)
+            runAtomicAndStartSweep(L, g);
+            return 0;
+        },
+        .sweep_strings => {
+            cur_sweep_steps += 1;
+            const hash_array = readU32(g + offsets.GS_strt_hash);
+            const bucket_count = readU32(g + offsets.GS_strt_size);
+            if (hash_array == 0 or bucket_count == 0 or sweep_string_bucket >= bucket_count) {
+                // Strings done, start rootgc sweep
+                sweep_prev_next = g + offsets.GS_rootgc;
+                phase = .sweeping;
+                return GCSWEEPCOST;
+            }
+            // Sweep one bucket
+            var prev_next: u32 = hash_array + sweep_string_bucket * 4;
+            while (true) {
+                const obj = readU32(prev_next);
+                if (obj == 0) break;
+                if (!isDead(obj)) {
+                    makewhite(obj);
+                    prev_next = obj + offsets.OBJ_next;
+                } else {
+                    const next = readU32(obj + offsets.OBJ_next);
+                    writeU32(prev_next, next);
+                    const nuse = readU32(g + offsets.GS_strt_nuse);
+                    if (nuse > 0) writeU32(g + offsets.GS_strt_nuse, nuse - 1);
+                    native_free_object(L, obj);
+                    cur_strings_freed += 1;
+                }
+            }
+            sweep_string_bucket += 1;
+            return GCSWEEPCOST;
+        },
+        .sweeping => {
+            // Sweep up to GCSWEEPMAX objects from rootgc
+            cur_sweep_steps += 1;
+            var count: u32 = 0;
+            while (count < GCSWEEPMAX) {
+                const obj = readU32(sweep_prev_next);
+                if (obj == 0) {
+                    // rootgc sweep done
+                    phase = .finalize;
+                    finalizeCycle(L, g);
+                    return 0;
+                }
+                if (!isDead(obj)) {
+                    makewhite(obj);
+                    sweep_prev_next = obj + offsets.OBJ_next;
+                } else {
+                    const next = readU32(obj + offsets.OBJ_next);
+                    writeU32(sweep_prev_next, next);
+                    native_free_object(L, obj);
+                    cur_dead_freed += 1;
+                }
+                count += 1;
+            }
+            return GCSWEEPMAX * GCSWEEPCOST;
+        },
+        .finalize => {
+            finalizeCycle(L, g);
+            return GCFINALIZECOST;
+        },
     }
-
-    const elapsed = rdtsc() - t0;
-    if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
-    return gray_count == 0;
 }
 
 /// Drain the entire gray stack (used in atomic phase).
@@ -1018,12 +1128,13 @@ fn isCleared(tv_tt: u8, tv_gc: u32) bool {
 // No list splitting. sweep_prev_next points to the address of the "next"
 // field that leads to the current object (initially &g->rootgc).
 
+/// Legacy chunked sweep for DIAG_MODE only.
 fn sweepRootgcStep(L: u32) bool {
     const t0 = rdtsc();
     cur_sweep_steps += 1;
     var processed: u32 = 0;
 
-    while (processed < CHUNK_SIZE) {
+    while (processed < 1000000) {
         const obj = readU32(sweep_prev_next);
         if (obj == 0) {
             const elapsed = rdtsc() - t0;
@@ -1048,7 +1159,7 @@ fn sweepRootgcStep(L: u32) bool {
 
     const elapsed = rdtsc() - t0;
     if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
-    bumpThresholdHeadroom(saved_g);
+    // threshold managed by budget loop
     return false;
 }
 
@@ -1082,9 +1193,11 @@ fn sweepRootudata(L: u32, g: u32) void {
 //   Decrement strt.nuse for each freed string.
 // Chunks by processing N buckets per call.
 
+/// Legacy chunked string sweep for DIAG_MODE only.
 fn sweepStringsStep(L: u32, g: u32) bool {
     const t0 = rdtsc();
     cur_sweep_steps += 1;
+    const CHUNK_SIZE = 1000000;
     const hash_array = readU32(g + offsets.GS_strt_hash);
     const bucket_count = readU32(g + offsets.GS_strt_size);
 
@@ -1117,7 +1230,7 @@ fn sweepStringsStep(L: u32, g: u32) bool {
 
     if (sweep_string_bucket >= bucket_count) return true;
 
-    bumpThresholdHeadroom(g);
+    // threshold managed by budget loop
     return false;
 }
 
@@ -1125,19 +1238,15 @@ fn sweepStringsStep(L: u32, g: u32) bool {
 // Threshold Management
 // =============================================================================
 
-/// After sweep: threshold = 2 * totalbytes (matches Lua 5.0 checkSizes).
-/// The native formula is `2 * nblocks - deadmem` but deadmem (size of
-/// finalized udata) is typically negligible, so 2x is close enough.
+/// After sweep: threshold = (totalbytes / 100) * gcpause.
+/// Matches 5.1 setthreshold. Default gcpause=200 means 2x.
 fn setFinalThreshold(g: u32) void {
-    const totalbytes = readU32(g + offsets.GS_totalbytes);
-    writeU32(g + offsets.GS_gcthreshold, totalbytes *| 2);
+    const totalbytes: u64 = readU32(g + offsets.GS_totalbytes);
+    const threshold = (totalbytes / 100) * gcpause;
+    writeU32(g + offsets.GS_gcthreshold, @intCast(@min(threshold, 0xFFFFFFFF)));
 }
 
-/// Between incremental steps: bump threshold just enough to not retrigger.
-fn bumpThresholdHeadroom(g: u32) void {
-    const totalbytes = readU32(g + offsets.GS_totalbytes);
-    writeU32(g + offsets.GS_gcthreshold, totalbytes + offsets.BATCH_HEADROOM);
-}
+// bumpThresholdHeadroom removed -- threshold managed by 5.1-style budget loop.
 
 /// Shrink string table if load factor is low (nuse < size/4).
 fn maybeShrinkStringTable(L: u32, g: u32) void {
@@ -1252,87 +1361,25 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         return;
     }
 
-    // Log entry state for first 20 cycles
-    if (stats.cycles_total < 20 and phase == .idle) {
-        const tb = readU32(g + offsets.GS_totalbytes);
-        const thr = readU32(g + offsets.GS_gcthreshold);
-        var buf: [128]u8 = undefined;
-        log.print(fmt(&buf, "  trigger: totalbytes={d} threshold={d}\n", .{ tb, thr }));
+    // 5.1-style budget loop (luaC_step, lgc.c:610-632).
+    // Each trigger processes (stepsize/100)*stepmul bytes of work.
+    const t0 = rdtsc();
+    var lim: i32 = @intCast((gcstepsize / 100) * gcstepmul);
+    if (lim == 0) lim = @as(i32, @intCast((@as(u32, 0x7FFFFFFF)))); // no limit
+
+    while (lim > 0) {
+        const cost = singlestep(L, g);
+        lim -= @as(i32, @intCast(cost));
+        if (phase == .idle) break;
     }
 
-    switch (phase) {
-        .idle => {
-            // Start a new GC cycle
-            gray_count = 0;
-            weak_table_count = 0;
-            grayagain_count = 0;
-            cur_mark_steps = 0;
-            cur_sweep_steps = 0;
-            cur_dead_freed = 0;
-            cur_strings_freed = 0;
-            cur_max_step_cycles = 0;
-            cur_atomic_cycles = 0;
-            dbg_table_count = 0;
-            dbg_closure_count = 0;
-            dbg_thread_count = 0;
-            dbg_proto_count = 0;
-            dbg_udata_count = 0;
-            dbg_other_count = 0;
+    const elapsed = rdtsc() - t0;
+    if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
 
-            // Push roots and start marking.
-            // Birth mark stays OFF during mark and rootgc sweep. New rootgc
-            // objects prepend to the head (behind our forward cursor) and are
-            // safe. Birth mark is only needed during string sweep where new
-            // strings can land in unswept hash buckets ahead of the cursor.
-            markroot(g);
-            phase = .marking;
-
-            // Do one mark step immediately
-            if (markStep()) {
-                phase = .atomic;
-                runAtomicAndStartSweep(L, g);
-            } else {
-                bumpThresholdHeadroom(g);
-            }
-        },
-
-        .marking => {
-            if (markStep()) {
-                phase = .atomic;
-                runAtomicAndStartSweep(L, g);
-            } else {
-                bumpThresholdHeadroom(g);
-            }
-        },
-
-        .atomic => {
-            // Should not be called in this phase (atomic runs to completion)
-            // but handle gracefully
-            runAtomicAndStartSweep(L, g);
-        },
-
-        .sweep_strings => {
-            if (sweepStringsStep(L, g)) {
-                sweep_prev_next = g + offsets.GS_rootgc;
-                phase = .sweeping;
-                if (sweepRootgcStep(L)) {
-                    phase = .finalize;
-                    finalizeCycle(L, g);
-                }
-            }
-        },
-
-        .sweeping => {
-            if (sweepRootgcStep(L)) {
-                phase = .finalize;
-                finalizeCycle(L, g);
-            }
-        },
-
-        .finalize => {
-            // Should not happen (finalize runs to completion), handle gracefully
-            finalizeCycle(L, g);
-        },
+    if (phase != .idle) {
+        // Mid-cycle: set threshold for next trigger
+        const totalbytes = readU32(g + offsets.GS_totalbytes);
+        writeU32(g + offsets.GS_gcthreshold, totalbytes + gcstepsize);
     }
 }
 
@@ -1350,18 +1397,10 @@ fn runAtomicAndStartSweep(L: u32, g: u32) void {
     // Sweep rootudata atomically (small list, fast)
     sweepRootudata(L, g);
 
-    // Start chunked string sweep
+    // Initialize sweep cursors, transition to string sweep.
+    // Actual sweep work is done by singlestep in the budget loop.
     sweep_string_bucket = 0;
     phase = .sweep_strings;
-
-    if (sweepStringsStep(L, g)) {
-        sweep_prev_next = g + offsets.GS_rootgc;
-        phase = .sweeping;
-        if (sweepRootgcStep(L)) {
-            phase = .finalize;
-            finalizeCycle(L, g);
-        }
-    }
 }
 
 /// Final cleanup: shrink string table, set threshold, run finalizers.
@@ -1546,6 +1585,17 @@ fn luaCLinkDetour(L: u32, obj: u32, tt: u32) callconv(hook.cc.fastcall) void {
 }
 
 // =============================================================================
+// Pre-allocation GC check (5.1 luaC_checkGC pattern)
+// =============================================================================
+//
+// 5.1 calls luaC_checkGC at the START of API functions that allocate objects,
+// BEFORE the allocation. This ensures pending GC work completes before any
+// half-initialized object is linked to rootgc. WoW's 5.0 triggers checkGC
+// DURING allocation (inside luaM_realloc), after luaC_link but before the
+// caller finishes initialization. We hook the API functions to do the
+// pre-check, matching 5.1's order.
+
+// =============================================================================
 // Forward barriers (luaC_barrierf equivalent)
 // =============================================================================
 //
@@ -1620,16 +1670,100 @@ fn setupvalDetour(L: u32, funcindex: u32, n: u32) callconv(hook.cc.fastcall) u32
     return result;
 }
 
-// --- lua_pushcclosure (0x6F3920) ---
-// __fastcall(ECX=L, EDX=fn_ptr, stack=n_upvals). Creates C closure with upvalues.
-const PushCClosureFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
-var pushcclosure_hook: hook.Detour(PushCClosureFn) = .{};
-fn pushcclosureDetour(L: u32, fn_ptr: u32, n: u32) callconv(hook.cc.fastcall) void {
-    pushcclosure_hook.callOriginal(.{ L, fn_ptr, n });
-    // The new closure is at L->top - 1. It was just created (WHITE).
-    // Its upvalues were set from the stack. The closure is WHITE, so
-    // no BLACK→WHITE edge (barrier only matters if container is BLACK).
-    // New closure is currentwhite → no barrier needed.
+// =============================================================================
+// Pre-allocation GC hooks (5.1 luaC_checkGC at API entry)
+// =============================================================================
+//
+// 5.1 calls luaC_checkGC at the start of every API function that allocates,
+// BEFORE any allocation. This ensures pending GC work completes before
+// half-initialized objects exist in rootgc. WoW's 5.0 lacks these checks.
+// We hook all 8 allocating API functions.
+
+/// Run pending GC work if threshold is exceeded. Called at API entry.
+fn preAllocCheck(L: u32) void {
+    if (phase == .idle) return;
+    if (in_gc) return;
+    const g = getGlobalState(L);
+    const tb = readU32(g + offsets.GS_totalbytes);
+    const thr = readU32(g + offsets.GS_gcthreshold);
+    if (tb >= thr) {
+        collectGarbageDetour(L);
+    }
+}
+
+// Generic detour types for different API signatures
+const ApiFn1 = fn (u32, u32, u32) callconv(hook.cc.fastcall) void; // pushcclosure, pushlstring
+const ApiFn0 = fn (u32) callconv(hook.cc.fastcall) void; // concat-like (1 arg)
+const ApiFn0r = fn (u32) callconv(hook.cc.fastcall) u32; // newuserdata-like (returns ptr)
+const ApiFn2 = fn (u32, u32) callconv(hook.cc.fastcall) void; // newtable-like
+const ApiFn2r = fn (u32, u32) callconv(hook.cc.fastcall) u32; // pushstring-like (returns ptr)
+
+var prealloc_pushcclosure: hook.Detour(ApiFn1) = .{};
+var prealloc_pushlstring: hook.Detour(ApiFn1) = .{};
+var prealloc_createtable: hook.Detour(ApiFn1) = .{};
+var prealloc_pushvfstring: hook.Detour(ApiFn1) = .{};
+// pushfstring is cdecl (variadic), not fastcall -- cannot use standard Detour.
+// var prealloc_pushfstring: hook.Detour(ApiFn1) = .{};
+var prealloc_pushstring: hook.Detour(ApiFn2) = .{};
+var prealloc_concat: hook.Detour(ApiFn2) = .{};
+var prealloc_newuserdata: hook.Detour(ApiFn2r) = .{};
+var prealloc_newthread: hook.Detour(ApiFn0r) = .{};
+
+fn prealloc_pushcclosure_fn(L: u32, a: u32, b: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_pushcclosure.callOriginal(.{ L, a, b });
+}
+fn prealloc_pushlstring_fn(L: u32, a: u32, b: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_pushlstring.callOriginal(.{ L, a, b });
+}
+fn prealloc_createtable_fn(L: u32, a: u32, b: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_createtable.callOriginal(.{ L, a, b });
+}
+fn prealloc_pushvfstring_fn(L: u32, a: u32, b: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_pushvfstring.callOriginal(.{ L, a, b });
+}
+// pushfstring detour removed -- cdecl variadic, not fastcall
+fn prealloc_pushstring_fn(L: u32, a: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_pushstring.callOriginal(.{ L, a });
+}
+fn prealloc_concat_fn(L: u32, a: u32) callconv(hook.cc.fastcall) void {
+    preAllocCheck(L);
+    prealloc_concat.callOriginal(.{ L, a });
+}
+fn prealloc_newuserdata_fn(L: u32, a: u32) callconv(hook.cc.fastcall) u32 {
+    preAllocCheck(L);
+    return prealloc_newuserdata.callOriginal(.{ L, a });
+}
+fn prealloc_newthread_fn(L: u32) callconv(hook.cc.fastcall) u32 {
+    preAllocCheck(L);
+    return prealloc_newthread.callOriginal(.{L});
+}
+
+fn installPreAllocHooks() void {
+    // Disabled for diagnosis -- re-enable one at a time
+    _ = prealloc_pushcclosure.attach(0x6F3920, &prealloc_pushcclosure_fn);
+    //_ = prealloc_pushlstring.attach(0x6F3840, &prealloc_pushlstring_fn);
+    //_ = prealloc_createtable.attach(0x6F3C90, &prealloc_createtable_fn);
+    //_ = prealloc_pushvfstring.attach(0x6F38C0, &prealloc_pushvfstring_fn);
+    //_ = prealloc_concat.attach(0x6F44E0, &prealloc_concat_fn);
+    //_ = prealloc_newuserdata.attach(0x6F4560, &prealloc_newuserdata_fn);
+    //_ = prealloc_newthread.attach(0x6F6B10, &prealloc_newthread_fn);
+}
+
+fn removePreAllocHooks() void {
+    prealloc_pushcclosure.detach();
+    prealloc_pushlstring.detach();
+    prealloc_createtable.detach();
+    prealloc_pushvfstring.detach();
+    // prealloc_pushfstring not installed
+    prealloc_pushstring.detach();
+    prealloc_concat.detach();
+    prealloc_newuserdata.detach();
+    prealloc_newthread.detach();
 }
 
 // --- lua_setfenv (0x6F40D0) ---
@@ -1913,6 +2047,35 @@ pub fn luaZGCStats(L: lua.State) callconv(hook.cc.fastcall) i32 {
     return 9;
 }
 
+/// ZGCTune(stepsize, stepmul, pause) -- set GC tuning parameters.
+/// stepsize: bytes between incremental steps (default 1024, 5.1 GCSTEPSIZE)
+/// stepmul: work multiplier per step (default 200, 5.1 gcstepmul)
+/// pause: cycle threshold factor (default 200 = 2x, 5.1 gcpause)
+/// Returns previous values.
+pub fn luaZGCTune(L: lua.State) callconv(hook.cc.fastcall) i32 {
+    // Return old values
+    lua.pushnumber(L, @floatFromInt(gcstepsize));
+    lua.pushnumber(L, @floatFromInt(gcstepmul));
+    lua.pushnumber(L, @floatFromInt(gcpause));
+
+    // Set new values if provided
+    const top = lua.gettop(L);
+    if (top >= 1) {
+        const v = lua.tonumber(L, 1);
+        if (v > 0) gcstepsize = @intFromFloat(v);
+    }
+    if (top >= 2) {
+        const v = lua.tonumber(L, 2);
+        if (v > 0) gcstepmul = @intFromFloat(v);
+    }
+    if (top >= 3) {
+        const v = lua.tonumber(L, 3);
+        if (v > 0) gcpause = @intFromFloat(v);
+    }
+
+    return 3;
+}
+
 // =============================================================================
 // Installation
 // =============================================================================
@@ -1984,6 +2147,10 @@ pub fn installHooks() void {
         installed += 1;
     }
     // Note: lua_pushcclosure doesn't need a barrier (new closures are WHITE)
+    // Pre-allocation GC check (5.1 pattern: luaC_checkGC before allocation).
+    // Ensures pending GC work completes before half-initialized objects exist.
+    installPreAllocHooks();
+
     // Compiler barriers: covered by proto grayagain in propagatemark.
     // Direct hooks removed -- proto is re-traversed in atomic phase instead.
     installSetupvalPatch();
@@ -2012,6 +2179,7 @@ pub fn removeHooks() void {
     lua_close_hook.detach();
     luac_link_hook.detach();
     lua_replace_hook.detach();
+    removePreAllocHooks();
     string_create_hook.detach();
     upval_create_hook.detach();
     setmeta_hook.detach();

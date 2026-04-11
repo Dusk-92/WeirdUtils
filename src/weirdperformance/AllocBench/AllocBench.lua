@@ -185,7 +185,382 @@ SlashCmdList["GCCOMPARE"] = function(args)
 end
 
 -- =========================================================================
--- zluagen stats frame — visible by default, center screen, movable
+-- /gclife [duration]: mixed-age residency stress test
+-- Simulates realistic addon memory patterns:
+--   - Long-lived config tables (persist entire test)
+--   - Medium-lived frame data (replaced every few seconds)
+--   - Short-lived closures and strings (created/discarded each frame)
+--   - Weak table caches (entries die and get cleared)
+--   - Nested tables with upvalue captures
+-- Runs per-frame for [duration] seconds (default 20), reports timing.
+-- =========================================================================
+
+local gclife_frame = CreateFrame("Frame")
+local gclife_running = false
+local gclife_end_time = 0
+local gclife_frame_times = {}
+local gclife_frame_count = 0
+local gclife_last_time = 0
+
+-- Long-lived: addon config tables (never replaced during test)
+local gclife_config = {}
+-- Medium-lived: frame data (replaced every ~2 seconds)
+local gclife_frames = {}
+local gclife_frames_age = 0
+-- Weak cache: entries die when not referenced elsewhere
+local gclife_weak_cache = setmetatable({}, { __mode = "v" })
+-- Closure registry: closures with upvalue captures
+local gclife_closures = {}
+
+local function gclife_build_config()
+    -- 2000 addon configs with 20 callbacks each = 40k closures + 2k tables
+    for i = 1, 2000 do
+        gclife_config["addon_" .. i] = {
+            enabled = true,
+            settings = { scale = 1.0, alpha = 0.8, x = i, y = i * 2 },
+            history = {},
+            callbacks = {},
+            data = {},
+        }
+        local cfg = gclife_config["addon_" .. i]
+        -- Deep nested data (3 levels)
+        for j = 1, 10 do
+            cfg.data[j] = {
+                entries = {},
+                meta = { created = i * 1000 + j, tag = "d" .. j },
+            }
+            for k = 1, 5 do
+                cfg.data[j].entries[k] = { id = k, val = "item_" .. i .. "_" .. j .. "_" .. k }
+            end
+        end
+        -- 20 callback closures capturing different upvalues
+        for j = 1, 20 do
+            local slot = j
+            local data = cfg.data[math.mod(j, 10) + 1]
+            cfg.callbacks[j] = function() return cfg.settings.scale * slot + data.meta.created end
+        end
+    end
+end
+
+local function gclife_rebuild_frames()
+    -- 800 frames with 20 children each = 16k tables + 1600 closures
+    gclife_frames = {}
+    for i = 1, 800 do
+        gclife_frames[i] = {
+            name = "Frame" .. i,
+            children = {},
+            scripts = {},
+            visible = math.mod(i, 3) ~= 0,
+            textures = {},
+        }
+        for j = 1, 20 do
+            gclife_frames[i].children[j] = {
+                parent = gclife_frames[i],
+                id = i * 100 + j,
+                text = string.format("child_%d_%d", i, j),
+                tooltip = "Tooltip for " .. i .. ":" .. j,
+            }
+        end
+        -- Texture references (string heavy)
+        for j = 1, 5 do
+            gclife_frames[i].textures[j] = "Interface\\Icons\\Icon_" .. (i * 5 + j)
+        end
+        local f = gclife_frames[i]
+        f.scripts.OnUpdate = function() return f.name end
+        f.scripts.OnClick = function() f.visible = not f.visible end
+    end
+    gclife_frames_age = 0
+end
+
+local function gclife_per_frame()
+    -- Heavy short-lived: 500 event tables + strings each frame
+    local temps = {}
+    for i = 1, 500 do
+        local msg = "event_" .. math.random(10000) .. "_" .. GetTime()
+        temps[i] = {
+            type = "CHAT",
+            msg = msg,
+            time = GetTime(),
+            source = "Player" .. math.random(40),
+            args = { math.random(100), "spell_" .. math.random(500), math.random() > 0.5 },
+        }
+    end
+
+    -- 200 short-lived closures (simulates addon callbacks, iterators)
+    for i = 1, 200 do
+        local val = math.random(1000)
+        local name = "cb_" .. i
+        local fn = function() return val * 2 + string.len(name) end
+        fn()
+    end
+
+    -- Heavy weak cache churn: 100 entries, some pinned
+    for i = 1, 100 do
+        local key = "cache_" .. math.random(2000)
+        local entry = {
+            data = math.random(),
+            ts = GetTime(),
+            payload = { math.random(), "str_" .. math.random(1000) },
+        }
+        gclife_weak_cache[key] = entry
+        if math.mod(i, 10) == 0 then
+            local cfg_key = "addon_" .. math.random(2000)
+            if gclife_config[cfg_key] then
+                table.insert(gclife_config[cfg_key].history, entry)
+                if table.getn(gclife_config[cfg_key].history) > 20 then
+                    table.remove(gclife_config[cfg_key].history, 1)
+                end
+            end
+        end
+    end
+
+    -- 50 upvalue mutations on existing closures
+    for i = 1, 50 do
+        local idx = math.random(2000)
+        local cfg = gclife_config["addon_" .. idx]
+        if cfg then
+            cfg.settings.scale = math.random() * 2
+            cfg.settings.alpha = math.random()
+        end
+    end
+
+    -- String interning pressure: lookup existing + create new
+    for i = 1, 200 do
+        local _ = "addon_" .. math.random(2000)  -- hits intern table
+        local _ = string.format("fmt_%d_%d_%s", i, math.random(100), GetTime())
+    end
+
+    -- Medium-lived replacement every ~2 seconds
+    gclife_frames_age = gclife_frames_age + 1
+    if gclife_frames_age > 120 then
+        gclife_rebuild_frames()
+    end
+
+    temps = nil
+end
+
+local function gclife_start(args)
+    local duration = tonumber(args) or 20
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff00GC Life|r: building mixed-age heap, running %d seconds...", duration))
+
+    -- Build long-lived structures
+    gclife_config = {}
+    gclife_build_config()
+    gclife_rebuild_frames()
+    gclife_weak_cache = setmetatable({}, { __mode = "v" })
+
+    -- Reset counters
+    gclife_frame_times = {}
+    gclife_frame_count = 0
+    gclife_last_time = debugprofilestop and 0 or GetTime()
+    gclife_end_time = GetTime() + duration
+    gclife_running = true
+
+    debugprofilestart()
+    gclife_frame:SetScript("OnUpdate", function()
+        if not gclife_running then return end
+        if GetTime() >= gclife_end_time then
+            gclife_running = false
+            gclife_frame:SetScript("OnUpdate", nil)
+
+            -- Report results
+            local n = gclife_frame_count
+            if n == 0 then return end
+            table.sort(gclife_frame_times)
+            local p50 = gclife_frame_times[math.floor(n * 0.5)] or 0
+            local p95 = gclife_frame_times[math.floor(n * 0.95)] or 0
+            local p99 = gclife_frame_times[math.floor(n * 0.99)] or 0
+            local max_t = gclife_frame_times[n] or 0
+
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "|cff00ff00GC Life|r: %d frames over %ds", n, duration))
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "  p50=|cffffd700%.1f ms|r  p95=|cffffd700%.1f ms|r  p99=|cffffd700%.1f ms|r  max=|cffff0000%.1f ms|r",
+                p50, p95, p99, max_t))
+
+            if type(ZGCStats) == "function" then
+                local total, mark, sweep, gray, freed, fstr, ph, stepus, atomicus = ZGCStats()
+                DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                    "  GC: step_max=%dus  atomic=%dus  last_mark=%d  last_sweep=%d",
+                    stepus, atomicus, mark, sweep))
+            end
+
+            -- Cleanup
+            gclife_config = {}
+            gclife_frames = {}
+            gclife_closures = {}
+            gclife_weak_cache = nil
+            collectgarbage()
+            return
+        end
+
+        debugprofilestart()
+        gclife_per_frame()
+        local elapsed = debugprofilestop()
+        gclife_frame_count = gclife_frame_count + 1
+        table.insert(gclife_frame_times, elapsed)
+    end)
+end
+
+SLASH_GCLIFE1 = "/gclife"
+SlashCmdList["GCLIFE"] = gclife_start
+
+-- =========================================================================
+-- /gcsweep [seconds_per_combo]: auto-tune GC parameters
+-- Runs /gclife workload with many (stepsize, stepmul, pause) combinations,
+-- reports p99 frame time for each. Finds the empirical best defaults.
+-- =========================================================================
+
+local gcsweep_combos = {
+    -- { stepsize, stepmul, pause, label }
+    -- Vary stepsize
+    { 256,  200, 200, "step=256" },
+    { 512,  200, 200, "step=512" },
+    { 1024, 200, 200, "step=1024 (5.1 default)" },
+    { 2048, 200, 200, "step=2048" },
+    { 4096, 200, 200, "step=4096" },
+    { 8192, 200, 200, "step=8192" },
+    -- Vary stepmul
+    { 1024, 100, 200, "mul=100" },
+    { 1024, 200, 200, "mul=200 (5.1 default)" },
+    { 1024, 400, 200, "mul=400" },
+    { 1024, 800, 200, "mul=800" },
+    -- Vary pause
+    { 1024, 200, 150, "pause=150 (1.5x)" },
+    { 1024, 200, 200, "pause=200 (2x, default)" },
+    { 1024, 200, 300, "pause=300 (3x)" },
+    { 1024, 200, 400, "pause=400 (4x)" },
+    -- Promising combos
+    { 2048, 400, 200, "step=2k mul=400" },
+    { 4096, 400, 200, "step=4k mul=400" },
+    { 2048, 200, 150, "step=2k pause=1.5x" },
+    { 512,  100, 150, "small+aggressive" },
+    { 4096, 800, 300, "big+lazy" },
+}
+
+local gcsweep_running = false
+local gcsweep_combo_idx = 0
+local gcsweep_seconds = 0
+local gcsweep_results = {}
+local gcsweep_frame = CreateFrame("Frame")
+
+-- Reuse gclife's per-frame workload
+local gcsweep_end_time = 0
+local gcsweep_frame_times = {}
+local gcsweep_frame_count = 0
+
+local function gcsweep_run_next()
+    gcsweep_combo_idx = gcsweep_combo_idx + 1
+    if gcsweep_combo_idx > table.getn(gcsweep_combos) then
+        -- All done, report results
+        gcsweep_running = false
+        gcsweep_frame:SetScript("OnUpdate", nil)
+
+        -- Restore defaults
+        ZGCTune(1024, 200, 200)
+
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00GC Sweep|r: results (sorted by p99):")
+        table.sort(gcsweep_results, function(a, b) return a.p99 < b.p99 end)
+        for _, r in ipairs(gcsweep_results) do
+            local color = "|cff00ff00"
+            if r.p99 > 2.0 then color = "|cffff0000"
+            elseif r.p99 > 1.0 then color = "|cffffff00"
+            end
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "  %sp50=%.1f p95=%.1f p99=%.1f max=%.1f|r  %s",
+                color, r.p50, r.p95, r.p99, r.max, r.label))
+        end
+        local best = gcsweep_results[1]
+        if best then
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "|cff00ff00BEST|r: %s (p99=%.1f ms)", best.label, best.p99))
+        end
+
+        -- Cleanup
+        gclife_config = {}
+        gclife_frames = {}
+        gclife_closures = {}
+        gclife_weak_cache = nil
+        collectgarbage()
+        return
+    end
+
+    local combo = gcsweep_combos[gcsweep_combo_idx]
+    ZGCTune(combo[1], combo[2], combo[3])
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff00GC Sweep|r [%d/%d]: %s ...",
+        gcsweep_combo_idx, table.getn(gcsweep_combos), combo[4]))
+
+    -- Rebuild heap fresh for each combo
+    gclife_config = {}
+    gclife_build_config()
+    gclife_rebuild_frames()
+    gclife_weak_cache = setmetatable({}, { __mode = "v" })
+    collectgarbage()
+
+    gcsweep_frame_times = {}
+    gcsweep_frame_count = 0
+    gcsweep_end_time = GetTime() + gcsweep_seconds
+
+    gcsweep_frame:SetScript("OnUpdate", function()
+        if not gcsweep_running then return end
+
+        if GetTime() >= gcsweep_end_time then
+            -- Collect results for this combo
+            local n = gcsweep_frame_count
+            if n > 0 then
+                table.sort(gcsweep_frame_times)
+                local combo = gcsweep_combos[gcsweep_combo_idx]
+                table.insert(gcsweep_results, {
+                    label = combo[4],
+                    p50 = gcsweep_frame_times[math.floor(n * 0.5)] or 0,
+                    p95 = gcsweep_frame_times[math.floor(n * 0.95)] or 0,
+                    p99 = gcsweep_frame_times[math.floor(n * 0.99)] or 0,
+                    max = gcsweep_frame_times[n] or 0,
+                })
+            end
+            -- Next combo
+            gcsweep_run_next()
+            return
+        end
+
+        debugprofilestart()
+        gclife_per_frame()
+        local elapsed = debugprofilestop()
+        gcsweep_frame_count = gcsweep_frame_count + 1
+        table.insert(gcsweep_frame_times, elapsed)
+    end)
+end
+
+SLASH_GCSWEEP1 = "/gcsweep"
+SlashCmdList["GCSWEEP"] = function(args)
+    if gcsweep_running then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000GC Sweep already running|r")
+        return
+    end
+    if type(ZGCTune) ~= "function" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000ZGCTune not available|r")
+        return
+    end
+
+    gcsweep_seconds = tonumber(args) or 5
+    gcsweep_combo_idx = 0
+    gcsweep_results = {}
+    gcsweep_running = true
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff00GC Sweep|r: testing %d combos, %ds each (%ds total)...",
+        table.getn(gcsweep_combos), gcsweep_seconds,
+        table.getn(gcsweep_combos) * gcsweep_seconds))
+
+    gcsweep_run_next()
+end
+
+-- =========================================================================
+-- zluagen stats frame -- visible by default, center screen, movable
 -- ZGCStats() is registered by zluagen on its first GC tick.
 -- Returns: cycles_total, cycles_major, cycles_minor,
 --          mark_steps_last, sweep_steps_last,

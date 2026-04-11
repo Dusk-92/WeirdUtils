@@ -44,6 +44,8 @@ const cull_sse = @import("cull_sse.zig");
 const silicon_sse = @import("silicon_sse.zig");
 const luaalloc = @import("luaalloc.zig");
 const luagc = @import("luagc.zig");
+const luastr = @import("luastr.zig");
+const luavm = @import("luavm.zig");
 
 const renderParticleSprites_SSE = particle_sse.renderParticleSprites_SSE;
 const resetParticleCache = particle_sse.resetParticleCache;
@@ -326,9 +328,14 @@ pub fn installHooks() void {
     // libdeflate inflate replacement
     if (inflate_hook.install()) installed += 1;
 
-    // Lua slab allocator + GC: owned by luagc module.
-    // installed += luaalloc.install();
-    // installed += luagc.install();
+    // Lua slab allocator replacement
+    installed += luaalloc.install();
+
+    installed += luagc.install();
+
+    installed += luastr.install();
+
+    installed += luavm.install();
 }
 
 pub fn lateInit() void {
@@ -338,6 +345,8 @@ pub fn lateInit() void {
 
 pub fn removeHooks() void {
     if (g_is_hook_owner) {
+        luavm.remove();
+        luastr.remove();
         luaalloc.dumpStats();
         luagc.dumpStats();
         filecache.remove();

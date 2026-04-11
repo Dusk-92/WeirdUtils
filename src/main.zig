@@ -24,7 +24,7 @@ const build_opts = struct {
     const silicon = @import("build_options").enable_silicon;
     const weirdperformance = @import("build_options").enable_weirdperformance;
     const superweirdo = @import("build_options").enable_superweirdo;
-    const luavm = @import("build_options").enable_luavm;
+    const luagc = @import("build_options").enable_luagc;
 };
 
 // Conditional module imports
@@ -47,7 +47,7 @@ const ssemaths = if (build_opts.ssemaths) @import("ssemaths/ssemaths.zig") else 
 const silicon = if (build_opts.silicon) @import("silicon/silicon.zig") else struct {};
 const weirdperformance = if (build_opts.weirdperformance) @import("weirdperformance/weirdperformance.zig") else struct {};
 const superweirdo = if (build_opts.superweirdo) @import("superweirdo/superweirdo.zig") else struct {};
-const luavm = if (build_opts.luavm) @import("luavm/luavm.zig") else struct {};
+const luagc_mod = if (build_opts.luagc) @import("luagc/luagc.zig") else struct {};
 
 const module_active = @import("module_active.zig");
 
@@ -126,6 +126,10 @@ fn registerLuaFunctions() void {
         registerFunction("UpdateAddOnCPUUsage", @intFromPtr(&addonperf.luaUpdateAddOnCPUUsage));
         registerFunction("ResetAddOnCPUUsage", @intFromPtr(&addonperf.luaResetAddOnCPUUsage));
         registerFunction("GetScriptCPUUsage", @intFromPtr(&addonperf.luaGetScriptCPUUsage));
+    }
+    if (build_opts.luagc and luagc_mod.isActive()) {
+        registerFunction("ZGCStats", @intFromPtr(&luagc_mod.luaZGCStats));
+        registerFunction("ZGCTune", @intFromPtr(&luagc_mod.luaZGCTune));
     }
     if (build_opts.worldmarkers and markers.isActive()) {
         // User-facing functions stay global
@@ -788,7 +792,7 @@ const modules = [_]ModuleHooks{
     if (build_opts.silicon) .{ .name = silicon.module_name, .install = silicon.installHooks, .remove = silicon.removeHooks, .is_active = silicon.isActive } else .{},
     if (build_opts.weirdperformance) .{ .name = weirdperformance.module_name, .install = weirdperformance.installHooks, .remove = weirdperformance.removeHooks, .is_active = weirdperformance.isActive, .remove_on_shutdown = true } else .{},
     if (build_opts.superweirdo) .{ .name = superweirdo.module_name, .install = superweirdo.installHooks, .remove = superweirdo.removeHooks, .is_active = superweirdo.isActive } else .{},
-    if (build_opts.luavm) .{ .name = luavm.module_name, .install = luavm.installHooks, .remove = luavm.removeHooks, .is_active = luavm.isActive } else .{},
+    if (build_opts.luagc) .{ .name = luagc_mod.module_name, .install = luagc_mod.installHooks, .remove = luagc_mod.removeHooks, .is_active = luagc_mod.isActive } else .{},
 };
 
 fn shutdownDetour() callconv(hook.cc.stdcall) void {
