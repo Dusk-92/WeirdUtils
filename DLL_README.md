@@ -234,7 +234,7 @@ This value is saved to the `cursorScale` CVar in tenths: `/script SetCVar("curso
 
 Lua API for addon developers:
 
-- `SetCursorScale(n)` -- set scale factor (1.0–4.0), takes effect on next cursor change
+- `SetCursorScale(n)` -- set scale factor (1.0-4.0), takes effect on next cursor change
 - `GetCursorScale()` -- returns current scale factor
 
 **DLL:** `bigcursor.dll`
@@ -245,12 +245,13 @@ Lua API for addon developers:
 
 Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression.
 
-- **SIMD Math** — replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
-- **Data Decompression** — swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
-- **MPQ File Cache** — caches archive file lookups so repeat file opens skip the archive chain walk. Saving 50-160ms every 15 seconds during heavy gameplay
-- **Timer Calibration** — recalibrates the OS performance counter for accurate animation timing. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
+- **SIMD Math** -- replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
+- **Data Decompression** -- swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
+- **MPQ File Cache** -- caches archive file lookups so repeat file opens skip the archive chain walk. Saving 50-160ms every 15 seconds during heavy gameplay
+- **Timer Calibration** -- recalibrates the OS performance counter for accurate animation timing. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
+- **Lua Runtime** -- custom slab allocator (O(1) free/realloc), incremental/generational GC (turns the ~5s stop-the-world freeze into ~9ms chunks), faster string interning (~40% on `luaS_newlstr`), and a literal prefilter on `string.find`/`gfind`/`gsub` that kills the O(n²) backtracking addon combat log parsers inflict on every chat message
 
-Most noticeable in cities, raids, and during zone transitions.
+Most noticeable in cities, raids, during zone transitions, and in addon-heavy setups.
 
 **DLL:** `weirdperformance.dll`
 

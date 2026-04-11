@@ -35,9 +35,9 @@ const module_list = [_]ModuleDesc{
     .{ .name = "addonperf", .version = "1.0", .desc = "Enable addon memory/CPU profiling API", .default = false },
     .{ .name = "ssemaths", .version = "1.0", .desc = "Enable UnitXP x87 math polyfill replacements (SSE)", .default = false },
     .{ .name = "silicon", .version = "1.0", .desc = "Enable SSE2 math replacements (ported from libSiliconPatch)", .default = false },
-    .{ .name = "weirdperformance", .version = "1.1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer)", .default = true },
-    .{ .name = "luavm", .version = "0.1", .desc = "Enable Lua VM hotspot optimizations (hash, string intern, opcode SSE)", .default = false },
+    .{ .name = "weirdperformance", .version = "1.1.1", .desc = "Enable production performance optimizations (SSE, inflate, filecache, timer, luastr, luavm)", .default = true },
     .{ .name = "superweirdo", .version = "0.1", .desc = "Enable GO loot sparkle on interactable objects", .default = false },
+    .{ .name = "luagc", .version = "0.1", .desc = "Enable incremental Lua GC (replaces stop-the-world mark+sweep)", .default = false },
 };
 
 pub fn build(b: *std.Build) void {
