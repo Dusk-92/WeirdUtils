@@ -326,11 +326,9 @@ pub fn installHooks() void {
     // libdeflate inflate replacement
     if (inflate_hook.install()) installed += 1;
 
-    // Lua slab allocator replacement
-    installed += luaalloc.install();
-
-    // GC phase profiler
-    installed += luagc.install();
+    // Lua slab allocator + GC: owned by luagc module.
+    // installed += luaalloc.install();
+    // installed += luagc.install();
 }
 
 pub fn lateInit() void {

@@ -40,6 +40,7 @@ const lua_gc_shrink_memory: *const fn (u32) callconv(hook.cc.fastcall) void = @p
 const luaCallUserDataGC: *const fn (u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F7080);
 const lua_gc_sweep_all_lists: *const fn (u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F72F0);
 const lua_gc_remove_objects: *const fn (u32, u32, u32) callconv(hook.cc.fastcall) u32 = @ptrFromInt(0x6F7210);
+const lua_gc_free_object: *const fn (u32, u32) callconv(hook.cc.fastcall) void = @ptrFromInt(0x6F7260);
 
 var sweeping: bool = false;
 var in_gc: bool = false;
@@ -124,6 +125,17 @@ fn tableSetBarrier(L: u32, table: u32, key: u32) callconv(hook.cc.fastcall) u32 
     return table_set_hook.callOriginal(.{ L, table, key });
 }
 
+// lua_table_set_int_key (0x6FAD80) bypasses lua_table_set_value and calls
+// lua_table_new_key directly. Same fastcall signature.
+var table_set_int_hook: hook.Detour(TableSetFn) = .{};
+
+fn tableSetIntBarrier(L: u32, table: u32, int_key: u32) callconv(hook.cc.fastcall) u32 {
+    if (luaalloc.isOld(table)) {
+        addTouched(table);
+    }
+    return table_set_int_hook.callOriginal(.{ L, table, int_key });
+}
+
 // The "already swept" list: objects that survived sweep, detached from rootgc.
 // swept_head -> first swept survivor, swept_tail -> last (for O(1) append).
 var swept_head: u32 = 0;
@@ -185,6 +197,101 @@ fn markAllOld(g: u32) void {
     }
 }
 
+/// Check if an object is in the touched set (linear scan, small set).
+fn isTouched(obj: u32) bool {
+    var i: u32 = 0;
+    while (i < touched_count) : (i += 1) {
+        if (touched_set[i] == obj) return true;
+    }
+    return false;
+}
+
+/// Pre-mark step for minor collections.
+///
+/// Walks rootgc and sets bit 0 of the marked byte on old TABLES that are
+/// NOT in the touched set. This causes lua_gc_mark_table's `TEST 0x11`
+/// check at child references to skip these tables -- their subtrees are
+/// not re-traversed by the mark phase.
+///
+/// Only tables (type 5) are pre-marked:
+///   - closures (type 6): their upvals' values can change via setupvalue,
+///     which isn't write-barriered. Must be walked each cycle.
+///   - threads (type 8): stack contents change constantly. Must be walked.
+///   - protos (type 9): constants change on proto load only; safe to walk.
+///   - userdata (type 7): no traversal in propagate anyway.
+///
+/// This is safe IF every old-to-young reference in a table goes through
+/// our write barriers (tableSetBarrier / tableSetIntBarrier). Any write
+/// adds the table to touched_set, which we skip here.
+///
+/// Returns the count of pre-marked tables (for logging).
+fn preMarkOldTables(g: u32) u32 {
+    const LUA_TTABLE: u8 = 5;
+    var count: u32 = 0;
+    var obj = readU32(g + GS_ROOTGC);
+    while (obj != 0) {
+        const tt = @as(*const u8, @ptrFromInt(obj + 4)).*;
+        if (tt == LUA_TTABLE and luaalloc.isOld(obj) and !isTouched(obj)) {
+            const m_ptr: *u8 = @ptrFromInt(obj + 5);
+            m_ptr.* = m_ptr.* | 0x01;
+            count += 1;
+        }
+        obj = readU32(obj + OBJ_NEXT);
+    }
+    return count;
+}
+
+/// Custom minor sweep of rootgc.
+///
+/// Walks the rootgc linked list. For each object:
+///   - old (in age bitmap): skip entirely (don't touch marked byte, don't free)
+///   - young, mark bit 0 cleared (unreachable): free via lua_gc_free_object
+///   - young, mark bit 0 set (reachable): clear mark bit, promote to old
+///
+/// This mimics what lua_gc_remove_objects does for young objects but leaves
+/// old objects untouched. Returns the number of freed objects.
+///
+/// Safe to call in one pass (non-chunked) because it's fast: old objects are
+/// just a linked-list walk with a bitmap lookup, and young objects should be
+/// a small fraction of the heap after the first few cycles.
+fn minorSweepRootgc(L: u32, g: u32) u32 {
+    var freed: u32 = 0;
+    var prev_next_addr: u32 = g + GS_ROOTGC;
+    var obj = readU32(prev_next_addr);
+
+    while (obj != 0) {
+        const next = readU32(obj + OBJ_NEXT);
+        const marked_ptr: *u8 = @ptrFromInt(obj + 5);
+        const marked = marked_ptr.*;
+
+        if (luaalloc.isOld(obj)) {
+            // Old object: always keep alive (regardless of mark bit),
+            // but MUST clear mark bit 0 so the next mark phase re-traverses
+            // it. Without this, the TEST 0x11 check at the parent's reference
+            // check skips the old object's children, and any young object
+            // reachable only through the old one gets freed while alive.
+            marked_ptr.* = marked & 0xFE;
+            prev_next_addr = obj + OBJ_NEXT;
+        } else {
+            if ((marked & 0x01) == 0) {
+                // Unreachable young: unlink and free
+                writeU32(prev_next_addr, next);
+                lua_gc_free_object(L, obj);
+                freed += 1;
+            } else {
+                // Reachable young: clear mark bit 0, promote to old
+                marked_ptr.* = marked & 0xFE;
+                luaalloc.setOld(obj);
+                prev_next_addr = obj + OBJ_NEXT;
+            }
+        }
+
+        obj = next;
+    }
+
+    return freed;
+}
+
 /// Walk the list from a head pointer, find the Nth object.
 /// Returns (obj_addr, count_walked). obj_addr=0 if list shorter than N.
 fn findNth(head: u32, n: u32) struct { obj: u32, count: u32 } {
@@ -241,6 +348,10 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         selectCycleMode();
         cycleStart();
 
+        // Pre-marking disabled: causes crashes (see GC_NOTES.md).
+        // Machinery kept in place (preMarkOldTables, touched set, age bitmap)
+        // for future reactivation once the missed-barrier path is identified.
+
         // === Atomic: mark + udata sweep + string sweep ===
         const t0 = rdtsc();
         lua_gc_full_collection(L);
@@ -251,7 +362,18 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
         logGc("mark", t1 - t0, 0);
         logGc("udata+str", t2 - t1, 0);
 
-        // Initialize swept list
+        // === Minor cycle: custom single-pass rootgc sweep ===
+        if (!is_major) {
+            const tm0 = rdtsc();
+            const freed = minorSweepRootgc(L, g);
+            logGc("minor-sweep", rdtsc() - tm0, freed);
+            lua_gc_shrink_memory(L);
+            luaCallUserDataGC(L);
+            cycleFinish(g);
+            return;
+        }
+
+        // === Major cycle: chunked incremental sweep (existing logic) ===
         swept_head = 0;
         swept_tail = 0;
 
@@ -345,8 +467,9 @@ var collect_hook: hook.Detour(CollectFn) = .{};
 pub fn install() u32 {
     var installed: u32 = 0;
     if (collect_hook.attach(0x6F7340, &collectGarbageDetour) == .ok) installed += 1;
-    // Generational write barrier
+    // Generational write barriers
     if (table_set_hook.attach(0x6FA840, &tableSetBarrier) == .ok) installed += 1;
+    if (table_set_int_hook.attach(0x6FAD80, &tableSetIntBarrier) == .ok) installed += 1;
     return installed;
 }
 
@@ -375,6 +498,7 @@ pub fn remove() void {
     }
     collect_hook.detach();
     table_set_hook.detach();
+    table_set_int_hook.detach();
     sweeping = false;
     swept_head = 0;
     swept_tail = 0;

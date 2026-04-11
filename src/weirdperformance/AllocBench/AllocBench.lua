@@ -103,6 +103,175 @@ SLASH_ALLOCBENCH1 = "/allocbench"
 SlashCmdList["ALLOCBENCH"] = run_bench
 
 -- =========================================================================
+-- /gccompare: time a forced full GC cycle.
+-- Builds a heap first, then times collectgarbage("collect").
+-- Run with our GC and with native (DIAG_MODE=1) to compare.
+-- =========================================================================
+
+SLASH_GCCOMPARE1 = "/gccompare"
+SlashCmdList["GCCOMPARE"] = function(args)
+    local size = tonumber(args) or 100
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff00GC Compare|r: building %dk object heap...", size))
+
+    -- Build a realistic mixed-age heap
+    local heap = {}
+    local closures = {}
+    for i = 1, size * 1000 do
+        local mode = math.mod(i, 4)
+        if mode == 0 then
+            heap[i] = { name = "obj" .. i, value = i, sub = { i, i+1 } }
+        elseif mode == 1 then
+            heap[i] = "string_key_" .. i
+        elseif mode == 2 then
+            local captured = i
+            closures[i] = function() return captured end
+            heap[i] = closures[i]
+        else
+            heap[i] = { [tostring(i)] = true, flag = i > size * 500 }
+        end
+    end
+
+    -- Kill half the heap to create garbage
+    for i = 1, size * 500 do
+        heap[i] = nil
+        closures[i] = nil
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "  heap built: %dk live, %dk garbage. Timing GC...", size / 2, size / 2))
+
+    -- Time 5 forced collections
+    local times = {}
+    for trial = 1, 5 do
+        -- Recreate some garbage between trials
+        for i = 1, size * 100 do
+            local _ = { i, "tmp" .. i }
+        end
+
+        debugprofilestart()
+        collectgarbage()
+        local elapsed = debugprofilestop()
+        table.insert(times, elapsed)
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "  trial %d: |cffffd700%.2f ms|r", trial, elapsed))
+    end
+
+    -- Find min/max/avg
+    local min_t, max_t, sum = 999999, 0, 0
+    for _, t in ipairs(times) do
+        if t < min_t then min_t = t end
+        if t > max_t then max_t = t end
+        sum = sum + t
+    end
+    local avg = sum / table.getn(times)
+
+    local gc_type = "incremental"
+    if type(ZGCStats) == "function" then
+        local _, mark_steps = ZGCStats()
+        if mark_steps <= 1 then gc_type = "atomic" end
+    else
+        gc_type = "native"
+    end
+
+    DEFAULT_CHAT_FRAME:AddMessage(string.format(
+        "|cff00ff00GC Compare|r [%s]: min=%.2f max=%.2f avg=%.2f ms (%dk heap)",
+        gc_type, min_t, max_t, avg, size))
+
+    -- Cleanup
+    heap = nil
+    closures = nil
+    collectgarbage()
+end
+
+-- =========================================================================
+-- zluagen stats frame — visible by default, center screen, movable
+-- ZGCStats() is registered by zluagen on its first GC tick.
+-- Returns: cycles_total, cycles_major, cycles_minor,
+--          mark_steps_last, sweep_steps_last,
+--          gray_peak, touched_peak, current_phase
+-- =========================================================================
+
+local zgc_frame = CreateFrame("Frame", "ZGCStatsFrame", UIParent)
+zgc_frame:SetWidth(280)
+zgc_frame:SetHeight(120)
+zgc_frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+zgc_frame:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    tile = true, tileSize = 16, edgeSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
+})
+zgc_frame:SetBackdropColor(0, 0, 0, 0.7)
+zgc_frame:EnableMouse(true)
+zgc_frame:SetMovable(true)
+zgc_frame:RegisterForDrag("LeftButton")
+zgc_frame:SetScript("OnDragStart", function() this:StartMoving() end)
+zgc_frame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
+
+local zgc_title = zgc_frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+zgc_title:SetPoint("TOP", zgc_frame, "TOP", 0, -8)
+zgc_title:SetText("|cff00ff00zluagen|r")
+
+local zgc_text = zgc_frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+zgc_text:SetPoint("TOPLEFT", zgc_frame, "TOPLEFT", 12, -28)
+zgc_text:SetPoint("BOTTOMRIGHT", zgc_frame, "BOTTOMRIGHT", -12, 8)
+zgc_text:SetJustifyH("LEFT")
+zgc_text:SetJustifyV("TOP")
+zgc_text:SetText("waiting for DLL...")
+
+local zgc_last_update = 0
+zgc_frame:SetScript("OnUpdate", function()
+    local now = GetTime()
+    if now - zgc_last_update < 0.2 then return end  -- ~5Hz refresh
+    zgc_last_update = now
+
+    if type(ZGCStats) ~= "function" then
+        zgc_text:SetText("|cffff8800ZGCStats() not registered|r\n\n" ..
+            "zluagen.dll may not be loaded.\n" ..
+            "Try |cffffd700/run collectgarbage()|r to trigger first GC.")
+        return
+    end
+
+    local total, mark_steps, sweep_steps, gray_peak, freed, freed_str, ph, max_step_us, atomic_us = ZGCStats()
+    local phase_name = "?"
+    if ph == 0 then phase_name = "idle"
+    elseif ph == 1 then phase_name = "marking"
+    elseif ph == 2 then phase_name = "atomic"
+    elseif ph == 3 then phase_name = "sweep_str"
+    elseif ph == 4 then phase_name = "sweeping"
+    elseif ph == 5 then phase_name = "finalize"
+    end
+
+    local step_color = "|cff00ff00"
+    if max_step_us > 2000 then step_color = "|cffff0000"
+    elseif max_step_us > 1000 then step_color = "|cffffff00"
+    end
+
+    zgc_text:SetText(string.format(
+        "cycles: |cffffd700%d|r  phase: %s\n" ..
+        "last: |cffffd700%d|r mark / |cffffd700%d|r sweep steps\n" ..
+        "freed: %d obj + %d str\n" ..
+        "step max: %s%d us|r  atomic: %s%d us|r\n" ..
+        "gray peak: %d",
+        total, phase_name,
+        mark_steps, sweep_steps,
+        freed, freed_str,
+        step_color, max_step_us, step_color, atomic_us,
+        gray_peak))
+end)
+
+-- /zgcstats toggles visibility
+SLASH_ZGCSTATS1 = "/zgcstats"
+SlashCmdList["ZGCSTATS"] = function()
+    if zgc_frame:IsVisible() then
+        zgc_frame:Hide()
+    else
+        zgc_frame:Show()
+    end
+end
+
+-- =========================================================================
 -- GC stress test: /gcstress [size_k] [churn_pct] [duration]
 -- Builds a large live heap then churns a fraction of it each frame.
 -- size_k: thousands of live objects to maintain (default 200 = 200K objects)

@@ -48,6 +48,8 @@ const Stats = struct {
     gray_peak: u32 = 0,
     dead_freed_last: u32 = 0,
     strings_freed_last: u32 = 0,
+    max_step_us: u32 = 0, // longest single step in microseconds (last cycle)
+    atomic_us: u32 = 0, // atomic phase duration in microseconds (last cycle)
 };
 
 var stats: Stats = .{};
@@ -57,6 +59,25 @@ var cur_mark_steps: u32 = 0;
 var cur_sweep_steps: u32 = 0;
 var cur_dead_freed: u32 = 0;
 var cur_strings_freed: u32 = 0;
+var cur_max_step_cycles: u64 = 0;
+var cur_atomic_cycles: u64 = 0;
+
+/// Read CPU timestamp counter for timing.
+inline fn rdtsc() u64 {
+    var lo: u32 = undefined;
+    var hi: u32 = undefined;
+    asm volatile ("rdtsc"
+        : [lo] "={eax}" (lo),
+          [hi] "={edx}" (hi),
+    );
+    return @as(u64, hi) << 32 | lo;
+}
+
+/// Convert TSC cycles to microseconds (approximate, assumes ~3GHz).
+/// Good enough for relative comparisons.
+fn cyclesToUs(cycles: u64) u32 {
+    return @intCast(@min(cycles / 3000, 0xFFFFFFFF));
+}
 
 // =============================================================================
 // GC State Machine
@@ -807,6 +828,7 @@ fn markroot(g: u32) void {
 /// Process up to CHUNK_SIZE objects from the gray stack.
 /// Returns true when gray stack is drained (mark complete).
 fn markStep() bool {
+    const t0 = rdtsc();
     cur_mark_steps += 1;
     var processed: u32 = 0;
 
@@ -817,6 +839,8 @@ fn markStep() bool {
         processed += 1;
     }
 
+    const elapsed = rdtsc() - t0;
+    if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
     return gray_count == 0;
 }
 
@@ -843,6 +867,8 @@ fn propagateall() void {
 /// Atomic phase. Matches Lua 5.1 atomic() (lgc.c:525-553).
 /// This runs to completion in a single call -- no yielding.
 fn atomicPhase(L: u32, g: u32) void {
+    const t0 = rdtsc();
+
     // (1) Propagate any remaining gray objects
     propagateall();
 
@@ -893,6 +919,8 @@ fn atomicPhase(L: u32, g: u32) void {
 
     weak_table_count = 0;
     grayagain_count = 0;
+
+    cur_atomic_cycles = rdtsc() - t0;
 }
 
 /// Walk tmudata and re-mark each entry so references survive sweep.
@@ -991,12 +1019,17 @@ fn isCleared(tv_tt: u8, tv_gc: u32) bool {
 // field that leads to the current object (initially &g->rootgc).
 
 fn sweepRootgcStep(L: u32) bool {
+    const t0 = rdtsc();
     cur_sweep_steps += 1;
     var processed: u32 = 0;
 
     while (processed < CHUNK_SIZE) {
         const obj = readU32(sweep_prev_next);
-        if (obj == 0) return true; // end of list, sweep done
+        if (obj == 0) {
+            const elapsed = rdtsc() - t0;
+            if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
+            return true;
+        }
 
         if (!isDead(obj)) {
             // Alive: set to current white for next cycle.
@@ -1013,9 +1046,10 @@ fn sweepRootgcStep(L: u32) bool {
         processed += 1;
     }
 
-    // Bump threshold so GC doesn't re-trigger immediately
+    const elapsed = rdtsc() - t0;
+    if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
     bumpThresholdHeadroom(saved_g);
-    return false; // more to sweep
+    return false;
 }
 
 // =============================================================================
@@ -1049,6 +1083,7 @@ fn sweepRootudata(L: u32, g: u32) void {
 // Chunks by processing N buckets per call.
 
 fn sweepStringsStep(L: u32, g: u32) bool {
+    const t0 = rdtsc();
     cur_sweep_steps += 1;
     const hash_array = readU32(g + offsets.GS_strt_hash);
     const bucket_count = readU32(g + offsets.GS_strt_size);
@@ -1076,6 +1111,9 @@ fn sweepStringsStep(L: u32, g: u32) bool {
         sweep_string_bucket += 1;
         buckets_done += 1;
     }
+
+    const elapsed = rdtsc() - t0;
+    if (elapsed > cur_max_step_cycles) cur_max_step_cycles = elapsed;
 
     if (sweep_string_bucket >= bucket_count) return true;
 
@@ -1232,6 +1270,8 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
             cur_sweep_steps = 0;
             cur_dead_freed = 0;
             cur_strings_freed = 0;
+            cur_max_step_cycles = 0;
+            cur_atomic_cycles = 0;
             dbg_table_count = 0;
             dbg_closure_count = 0;
             dbg_thread_count = 0;
@@ -1345,6 +1385,10 @@ fn finalizeCycle(L: u32, g: u32) void {
     stats.sweep_steps_last = cur_sweep_steps;
     stats.dead_freed_last = cur_dead_freed;
     stats.strings_freed_last = cur_strings_freed;
+    stats.max_step_us = cyclesToUs(cur_max_step_cycles);
+    stats.atomic_us = cyclesToUs(cur_atomic_cycles);
+    cur_max_step_cycles = 0;
+    cur_atomic_cycles = 0;
 
     if (stats.cycles_total <= 20 or stats.cycles_total % 100 == 0) {
         const tb = readU32(g + offsets.GS_totalbytes);
@@ -1402,7 +1446,6 @@ const SetGcThresholdFn = fn (u32, u32) callconv(hook.cc.fastcall) void;
 var setgcthreshold_hook: hook.Detour(SetGcThresholdFn) = .{};
 
 fn setgcthresholdDetour(L: u32, newthreshold: u32) callconv(hook.cc.fastcall) void {
-    _ = newthreshold;
     if (readU32(L + offsets.L_active_check) == 0) return;
 
     // 5.1 luaC_fullgc pattern: if a forced GC arrives mid-cycle,
@@ -1450,9 +1493,11 @@ fn setgcthresholdDetour(L: u32, newthreshold: u32) callconv(hook.cc.fastcall) vo
 
     const g = getGlobalState(L);
     const tb = readU32(g + offsets.GS_totalbytes);
-    const thr = readU32(g + offsets.GS_gcthreshold);
-    if (thr > tb) return;
-    collectGarbageDetour(L);
+    const requested = @as(u64, newthreshold) << 10;
+    if (requested < tb) {
+        // Caller wants to force GC (e.g. collectgarbage() passes 0)
+        collectGarbageDetour(L);
+    }
 }
 
 // =============================================================================
@@ -1863,7 +1908,9 @@ pub fn luaZGCStats(L: lua.State) callconv(hook.cc.fastcall) i32 {
     lua.pushnumber(L, @floatFromInt(stats.dead_freed_last));
     lua.pushnumber(L, @floatFromInt(stats.strings_freed_last));
     lua.pushnumber(L, @floatFromInt(@intFromEnum(phase)));
-    return 7;
+    lua.pushnumber(L, @floatFromInt(stats.max_step_us));
+    lua.pushnumber(L, @floatFromInt(stats.atomic_us));
+    return 9;
 }
 
 // =============================================================================

@@ -210,6 +210,15 @@ fn slabFree(ptr: u32) void {
     if (seg_val == 0) return; // not ours (shouldn't happen)
     const class_idx: usize = seg_val - 1;
 
+    // Clear the age bitmap bit for this slot. Without this, a reused slot
+    // would inherit the "old" status of its previous occupant, causing a
+    // freshly allocated young object to be treated as old by isOld().
+    const bitmap = age_bitmaps[ptr >> SEGMENT_SHIFT];
+    if (bitmap) |bm| {
+        const idx = slotIndex(ptr, class_idx);
+        bm[idx >> 3] &= ~(@as(u8, 1) << @intCast(idx & 7));
+    }
+
     const next_ptr: *u32 = @ptrFromInt(ptr);
     next_ptr.* = free_lists[class_idx];
     free_lists[class_idx] = ptr;
