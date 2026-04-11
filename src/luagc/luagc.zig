@@ -176,16 +176,18 @@ fn syncBirthMarks() void {
 }
 
 fn bootstrapWhite(g: u32) void {
-    // Walk rootgc and set all objects to currentwhite
+    // Walk rootgc and set currentwhite, preserving non-color flags.
+    // Uses makewhite pattern: (marked & MASKMARKS) | currentwhite
+    // This preserves KEYWEAK, VALUEWEAK, FINALIZED, FIXED bits.
     var obj = readU32(g + offsets.GS_rootgc);
     while (obj != 0) {
-        writeU8(obj + offsets.OBJ_marked, currentwhite);
+        writeU8(obj + offsets.OBJ_marked, (readU8(obj + offsets.OBJ_marked) & offsets.MASKMARKS) | currentwhite);
         obj = readU32(obj + offsets.OBJ_next);
     }
     // Walk rootudata
     obj = readU32(g + offsets.GS_rootudata);
     while (obj != 0) {
-        writeU8(obj + offsets.OBJ_marked, currentwhite);
+        writeU8(obj + offsets.OBJ_marked, (readU8(obj + offsets.OBJ_marked) & offsets.MASKMARKS) | currentwhite);
         obj = readU32(obj + offsets.OBJ_next);
     }
     // Walk string hash table
@@ -497,9 +499,18 @@ fn detectAndSetWeakFlags(table: u32, mt: u32) void {
 /// Matches Lua 5.1 traversetable (lgc.c:158-196).
 fn traverseTable(table: u32) bool {
     const mt = readU32(table + offsets.TABLE_metatable);
-    if (mt != 0) _ = markObject(mt);
-
-    if (mt != 0) detectAndSetWeakFlags(table, mt);
+    if (mt != 0) {
+        _ = markObject(mt);
+        detectAndSetWeakFlags(table, mt);
+    } else {
+        // No metatable: clear any stale weak flags from previous cycles.
+        // Without this, a table that lost its metatable (setmetatable(t, nil))
+        // would keep old KEYWEAK/VALUEWEAK bits and be treated as weak.
+        const m = readU8(table + offsets.OBJ_marked);
+        if ((m & (offsets.KEYWEAK | offsets.VALUEWEAK)) != 0) {
+            writeU8(table + offsets.OBJ_marked, m & ~(offsets.KEYWEAK | offsets.VALUEWEAK));
+        }
+    }
 
     const marked = readU8(table + offsets.OBJ_marked);
     const weakkey = (marked & offsets.KEYWEAK) != 0;
@@ -542,14 +553,7 @@ fn traverseTable(table: u32) bool {
     while (ni < sizenode) : (ni += 1) {
         const node = node_ptr + ni * offsets.NODE_size;
         const val_tt = readU8(node + offsets.NODE_value_tt);
-        if (val_tt == 0) {
-            // 5.1: remove dead entries during traversal (removeentry)
-            const key_tt = readU8(node + offsets.NODE_key_tt);
-            if (key_tt >= offsets.LUA_TSTRING) {
-                writeU8(node + offsets.NODE_key_tt, offsets.LUA_TNONE);
-            }
-            continue;
-        }
+        if (val_tt == 0) continue; // dead node, skip (5.0 leaves key as-is)
 
         if (!weakkey) {
             const key_tt = readU8(node + offsets.NODE_key_tt);
@@ -735,10 +739,6 @@ fn markroot(g: u32) void {
     grayagain_count = 0;
     weak_table_count = 0;
 
-    // Bootstrap: on first cycle, existing objects from native GC have marked=0.
-    // Set them to currentwhite so our mark can find them.
-    if (needs_bootstrap) bootstrapWhite(g);
-
     // defaultmeta
     if (readU8(g + 0x40) >= offsets.LUA_TTABLE) {
         const dm = readU32(g + offsets.GS_defaultmeta);
@@ -751,8 +751,10 @@ fn markroot(g: u32) void {
         if (reg != 0) _ = markObject(reg);
     }
 
-    // mainthread
+    // mainthread -- not created via luaC_link (lua_open assigns directly).
+    // Ensure it has currentwhite so markObject can find it.
     const mt = readU32(g + offsets.GS_mainthread);
+    if (!isWhite(mt)) makewhite(mt);
     _ = markObject(mt);
 
     // Make global table be traversed before main stack (5.1 line 508)
@@ -762,8 +764,9 @@ fn markroot(g: u32) void {
         if (gt_gc != 0) _ = markObject(gt_gc);
     }
 
-    // current L if different
+    // current L if different (also may bypass luaC_link)
     if (saved_L != 0 and saved_L != mt) {
+        if (!isWhite(saved_L)) makewhite(saved_L);
         _ = markObject(saved_L);
     }
 }
@@ -1380,19 +1383,24 @@ const SetGcThresholdFn = fn (u32, u32) callconv(hook.cc.fastcall) void;
 var setgcthreshold_hook: hook.Detour(SetGcThresholdFn) = .{};
 
 fn setgcthresholdDetour(L: u32, newthreshold: u32) callconv(hook.cc.fastcall) void {
-    // The caller wants to set gcthreshold = newthreshold << 10.
-    // If it's a low value (forcing GC), just run our GC cycle.
-    // The original also calls luaC_checkGC after setting, which would
-    // trigger our collectGarbageDetour anyway. Skip the threshold write
-    // entirely -- our GC owns the threshold.
     _ = newthreshold;
     if (readU32(L + offsets.L_active_check) == 0) return;
+
+    // 5.1 luaC_fullgc pattern: if a forced GC arrives mid-cycle,
+    // abandon the current cycle and start fresh. Without this,
+    // we'd continue processing stale gray stack entries from a
+    // partially-traversed state after /reload swaps in new objects.
+    if (phase != .idle) {
+        phase = .idle;
+        gray_count = 0;
+        grayagain_count = 0;
+        weak_table_count = 0;
+    }
+
     const g = getGlobalState(L);
     const tb = readU32(g + offsets.GS_totalbytes);
     const thr = readU32(g + offsets.GS_gcthreshold);
-    // If threshold is already above totalbytes, no need to force GC
     if (thr > tb) return;
-    // Otherwise trigger a GC by calling our detour path
     collectGarbageDetour(L);
 }
 
@@ -1615,6 +1623,55 @@ fn upvalCreateDetour(L: u32, level: u32) callconv(hook.cc.fastcall) u32 {
 }
 
 // =============================================================================
+// Compiler barriers (5.1 lcode.c:244, lparser.c:151,199,319)
+// =============================================================================
+//
+// The Lua compiler adds constants, nested protos, locvars, and upvalue names
+// to proto objects during compilation. If GC runs mid-compilation (multi-step
+// mark), a proto can be BLACK when the compiler adds new WHITE children.
+// 5.1 has luaC_barrier/luaC_objbarrier after each such write.
+// We hook the compiler functions and apply barrier-back on the proto.
+
+const CreateConstantFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) void;
+var create_constant_hook: hook.Detour(CreateConstantFn) = .{};
+
+fn createConstantDetour(lexstate: u32, value: u32, typ: u32) callconv(hook.cc.fastcall) void {
+    create_constant_hook.callOriginal(.{ lexstate, value, typ });
+    // All callers pass LexState in ECX (verified from Ghidra: parse_string_field,
+    // parseFunctionCall, parse_primary_expression all pass the same struct).
+    // LexState+0x30 = FuncState, FuncState+0x00 = Proto.
+    if (phase == .marking and lexstate != 0) {
+        const fs = readU32(lexstate + 0x30);
+        if (fs != 0) {
+            const proto = readU32(fs);
+            if (proto != 0 and isBlack(proto)) {
+                black2gray(proto);
+                grayagainAdd(proto);
+            }
+        }
+    }
+}
+
+const FinishFunctionFn = fn (u32) callconv(hook.cc.fastcall) void;
+var finish_function_hook: hook.Detour(FinishFunctionFn) = .{};
+
+fn finishFunctionDetour(lexstate: u32) callconv(hook.cc.fastcall) void {
+    // Barrier BEFORE native: proto arrays are about to be resized.
+    // LexState+0x30 = FuncState, FuncState+0x00 = Proto (verified Ghidra).
+    if (phase == .marking and lexstate != 0) {
+        const fs = readU32(lexstate + 0x30);
+        if (fs != 0) {
+            const proto = readU32(fs);
+            if (proto != 0 and isBlack(proto)) {
+                black2gray(proto);
+                grayagainAdd(proto);
+            }
+        }
+    }
+    finish_function_hook.callOriginal(.{lexstate});
+}
+
+// =============================================================================
 // OP_SETUPVAL VM patch (forward barrier)
 // =============================================================================
 //
@@ -1786,6 +1843,13 @@ pub fn installHooks() void {
         installed += 1;
     }
     // Note: lua_pushcclosure doesn't need a barrier (new closures are WHITE)
+    // Compiler barriers (5.1 lcode.c, lparser.c)
+    if (create_constant_hook.attach(offsets.lua_parser_create_constant, &createConstantDetour) == .ok) {
+        installed += 1;
+    }
+    if (finish_function_hook.attach(offsets.lua_parser_finish_function, &finishFunctionDetour) == .ok) {
+        installed += 1;
+    }
     installSetupvalPatch();
     log.print("installed forward barriers\n");
 
@@ -1816,6 +1880,8 @@ pub fn removeHooks() void {
     setmeta_hook.detach();
     setupval_hook.detach();
     setfenv_hook.detach();
+    create_constant_hook.detach();
+    finish_function_hook.detach();
     removeSetupvalPatch();
     luaalloc.remove();
 

@@ -48,6 +48,13 @@ pub const lua_setfenv: usize = 0x6F40D0;
 /// OP_SETUPVAL patch point: right after TValue copy, EDX=uv->v.
 pub const vm_setupval_patch: usize = 0x6F8A97;
 
+/// Compiler functions that add children to protos (need forward barriers).
+/// lua_parser_create_constant: __fastcall(ECX=FuncState, EDX=TValue*, stack=type).
+/// FuncState+0x30 = proto pointer. Adds constant to proto->k.
+pub const lua_parser_create_constant: usize = 0x6FD400;
+/// lua_parser_finish_function: __fastcall(ECX=LexState). Finalizes proto arrays.
+pub const lua_parser_finish_function: usize = 0x6FCB00;
+
 /// luaS_newlstr: __fastcall(ECX=L, EDX=str_ptr, stack=len). Returns TString*.
 /// Does the intern lookup (may return existing dead string) then calls
 /// lua_create_string_object (0x6F9D90) for new strings.
