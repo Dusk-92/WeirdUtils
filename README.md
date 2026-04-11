@@ -9,6 +9,32 @@ On Turtle WoW, place your chosen DLLs next to your `WoW.exe` and add them to you
 
 ## Features
 
+### World Markers
+
+Place up to 5 animated colored markers (Cataclysm style) at any position in the world, useful for raid positioning, pull planning, or route marking. Requires party/raid leader or raid assist.
+
+- `/worldmarker 1` through `/worldmarker 5` (or `/wm 1`) -- place a marker where your cursor is pointing
+- `/worldmarker 1 target` -- place a marker on a unit (player, target, mouseover, etc.)
+- `/clearworldmarker` (or `/cwm`) -- remove all markers
+- `/clearworldmarker 2` -- remove a specific marker
+
+Keybindings for placing each marker and clearing all markers are available in the Key Bindings menu.
+
+Markers automatically sync with group members who also have WeirdUtils installed. When a leader/assist places or clears a marker, all group members see it. Markers persist across zone transitions and respawn when you return to the area.
+
+Lua API for addon developers:
+
+- `WorldMarker(index)` -- place marker at cursor (returns x,y,z,areaId on success, nil if no permission, -1 on failure)
+- `WorldMarker(index, "unit")` -- place marker at a unit's position
+- `WorldMarker(index, x, y, z)` -- place marker at world coordinates
+- `ClearWorldMarker(index)` / `ClearWorldMarker()` -- remove one or all markers (returns 1 on success, nil if no permission)
+- `GetWorldMarker(index)` -- returns x,y,z,areaId for an active marker, nil if empty
+- `CanSetWorldMarker()` -- returns 1 if the local player is party/raid leader or raid assist, nil otherwise
+
+**DLL:** `worldmarkers.dll`
+
+---
+
 ### PNG Screenshots
 
 Saves screenshots as compressed PNG files instead of the default uncompressed TGA format. Runs on a background thread with no frame drops.
@@ -46,16 +72,16 @@ No configuration needed, install and forget.
 
 ### Utility Minimap Trackings
 
-Adds TBC/WotLK-style minimap tracking icons for NPC types, game objects, and quest givers.
-Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.
-Can be disabled from the normal AddOn menu. Preferences saved per-character.
+Adds TBC/WotLK-style minimap tracking icons for NPC types, game objects, and quest givers.  
+Replaces the native tracking dropdown with a combined menu showing both spell tracking and NPC category tracking.  
+Can be disabled from the normal AddOn menu. Preferences saved per-character.  
 
 - Click the minimap tracking icon to open the dropdown
 - Check/uncheck NPC categories to toggle their minimap icons
 - Spell tracking (Hunter tracking, Find Herbs, etc.) remains available alongside NPC tracking
 - "Hide in Cities" toggle suppresses NPC icons in capital cities
 
-Tracks various npc types and useful objects like Oranges and Brainwasher and Mailbox.
+Tracks various npc types and useful objects like Oranges and Brainwasher and Mailbox.  
 
 **DLL:** `minimapicons.dll`
 
@@ -69,7 +95,7 @@ Smart cursor targeting that prioritizes useful interactions. Instead of always s
 - Dead non-lootable corpses can still be selected when nothing more useful is behind them
 - Disabled inside battlegrounds to prevent targeting objectives through enemy players
 
-Can replaces SuperWoW's `Clickthrough()` toggle with always-on smart targeting that doesn't require a manual toggle and preserves the ability to select dead bodies when needed. Disable corpse-clickthrough in SuperAPI if you want this.
+Can replace SuperWoW's `Clickthrough()` toggle with always-on smart targeting that doesn't require a manual toggle and preserves the ability to select dead bodies when needed. Disable corpse-clickthrough in SuperAPI if you want this.
 
 No configuration needed, install and forget.
 
@@ -79,16 +105,16 @@ No configuration needed, install and forget.
 
 ### Log Sessions
 
-Organizes the combat, raw combat, and chat logs into per-character directories with timestamped filenames:
+Organizes the combat, raw combat, and chat logs into per-character, per-day files:
 
 ```
-Logs\<Realm>\<Character>\WoWChatLog_YYYYMMDD_HHMMSS.txt
-Logs\<Realm>\<Character>\WoWCombatLog_YYYYMMDD_HHMMSS.txt
-Logs\<Realm>\<Character>\WoWRawCombatLog_YYYYMMDD_HHMMSS.txt (superwow only)
+Logs\<Realm>\<Character>\WoWChatLog_YYYY_MM_DD.txt
+Logs\<Realm>\<Character>\WoWCombatLog_YYYY_MM_DD.txt
+Logs\<Realm>\<Character>\WoWRawCombatLog_YYYY_MM_DD.txt (superwow only)
 ```
 
 Every character login begins with a marker line (`COMBATLOG_SESSION` or `CHAT_SESSION`) identifying the character and realm.
-If a log file for the same character was written to within the last 60 minutes, the same logfile will be used instead of creating a new one.
+If today's log file for that character already exists, it is appended to instead of creating a new one, so a day of play stays in one file even across multiple logins or `/reload`s.
 
 Lua API for addon developers:
 
@@ -120,7 +146,7 @@ This value is saved to the `cursorScale` CVar in tenths: `/script SetCVar("curso
 
 Lua API for addon developers:
 
-- `SetCursorScale(n)` -- set scale factor (1.0–4.0), takes effect on next cursor change
+- `SetCursorScale(n)` -- set scale factor (1.0-4.0), takes effect on next cursor change
 - `GetCursorScale()` -- returns current scale factor
 
 **DLL:** `bigcursor.dll`
@@ -129,14 +155,15 @@ Lua API for addon developers:
 
 ### Performance
 
-Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression. No visual difference, no configuration needed. Included in `weirdutils.dll`.
+Engine-level optimizations that reduce CPU time on math, rendering helpers, file lookups, and data decompression.
 
-- **SIMD Math** - replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
-- **Data Decompression** - swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
-- **MPQ File Cache** - caches archive file lookups so repeat file opens skip the archive chain walk. Saving 50-160ms every 15 seconds during heavy gameplay
-- **Timer Calibration** - recalibrates the OS performance counter for accurate animation timing. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
+- **SIMD Math** -- replaces 20+ internal math functions with SSE/AVX equivalents covering skeletal animation, particle rendering, frustum culling, collision detection, text glyph caching, and float-to-integer conversion
+- **Data Decompression** -- swaps the game's 2004-era zlib with a modern library (2.2x faster). Loading screen times reduced by at least 13%
+- **MPQ File Cache** -- caches archive file lookups so repeat file opens skip the archive chain walk. Saving 50-160ms every 15 seconds during heavy gameplay
+- **Timer Calibration** -- recalibrates the client's RDTSC against the OS high-resolution counter for accurate animation timing, and raises the OS timer resolution to 0.5ms. Ported from [VanillaFixes](https://github.com/hannesmann/vanillafixes)
+- **Lua Runtime** -- custom slab allocator (O(1) free/realloc), incremental/generational GC (turns the ~1s stop-the-world freeze into ~9ms chunks), faster string interning (~40% on `luaS_newlstr`), and a literal prefilter on `string.find`/`gfind`/`gsub` that kills the O(n²) backtracking addon combat log parsers inflict on every chat message
 
-Most noticeable in cities, raids, and during zone transitions.
+Most noticeable in cities, raids, during zone transitions, and in addon-heavy setups.
 
 **DLL:** `weirdperformance.dll`
 
@@ -163,11 +190,11 @@ WeirdUtils exports three functions for querying and disabling modules at runtime
 |---|---|---|
 | `WeirdUtils_IsModuleActive` | `int __cdecl (const char *name)` | Returns 1 if the module is compiled in and currently hooked, 0 otherwise |
 | `WeirdUtils_DisableModule` | `int __cdecl (const char *name)` | Unhooks the named module. Returns 1 if found, 0 otherwise |
-| `WeirdUtils_DisableAll` | `int __cdecl (void)` | Unhooks all modules. Returns count of modules disabled |
+| `WeirdUtils_DisableAll` | `int __cdecl (void)` | Unhooks all modules and core hooks. Returns count of modules disabled |
 
 Module names are case-insensitive and match the released dll names:
 
-`customassets`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `pngscreenshots`, `clickthrough`, `weirdperformance`
+`customassets`, `logsessions`, `transmogfix`, `minimapicons`, `healtextfix`, `bigcursor`, `worldmarkers`, `pngscreenshots`, `clickthrough`, `weirdperformance`
 
 There is no re-enable API.
 
@@ -183,7 +210,7 @@ if (WeirdUtils_IsModuleActive("transmogfix"))
     WeirdUtils_DisableModule("transmogfix");
 ```
 
-The header tries all known DLL names (`weirdutils.dll`, `minimapicons.dll`, etc.) via `GetModuleHandleA`, so it works regardless of which DLL variant is loaded.
+The header tries all known DLL names (`weirdutils.dll`, `worldmarkers.dll`, etc.) via `GetModuleHandleA`, so it works regardless of which DLL variant is loaded.
 
 #### Raw GetProcAddress
 
@@ -213,7 +240,7 @@ Returns the `WeirdUtils` table containing all enabled modules and their version 
 ```lua
 local modules = GetWeirdUtilsVersion()
 for name, version in pairs(modules) do
-    print(name .. " v" .. version)
+    print(name .. " v" .. version)  -- e.g. "dpslog v1.0"
 end
 ```
 
@@ -222,19 +249,19 @@ end
 Returns the version string for a specific module, or `nil` if not loaded:
 
 ```lua
-if GetWeirdUtilsVersion("minimapicons") then
-    -- Minimap Icons is available
+if GetWeirdUtilsVersion("dpslog") then
+    -- DPSLog is available, register for COMBAT_LOG_EVENT_UNFILTERED
 end
 
-local ver = GetWeirdUtilsVersion("weirdperformance")  -- "1.0" or nil
+local ver = GetWeirdUtilsVersion("minimapicons")  -- "1.0" or nil
 ```
 
-The `WeirdUtils` table is additive - if multiple independent DLLs are loaded (e.g. `minimapicons.dll` and `clickthrough.dll` separately), each adds its own modules to the shared table.
+The `WeirdUtils` table is additive -- if multiple independent DLLs are loaded (e.g. `dpslog.dll` and `minimapicons.dll` separately), each adds its own modules to the shared table.
 
 ---
 
 ### Module Mutexes
 
-Each module also holds a named mutex while active: `Local\WeirdUtils_<name>_<PID>` (e.g. `Local\WeirdUtils_transmogfix_12345`). The exception is transmogfix, which uses `Local\TransmogCoalesceHook_<PID>` for legacy reasons.
+Each module also holds a named mutex while active: `Local\WeirdUtils_<name>_<PID>` (e.g. `Local\WeirdUtils_framecrash_12345`). The exception is transmogfix, which uses `Local\TransmogCoalesceHook_<PID>` for legacy reasons.
 
 If you see the mutex, the module is loaded - and can use the Runtime Module Control API to disable it. If you don't see it, the module isn't active and you're free to hook those functions yourself.

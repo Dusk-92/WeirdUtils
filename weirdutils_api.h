@@ -31,6 +31,7 @@ typedef int (__cdecl *WeirdUtils_DisableAllFn)(void);
 
 static const char *const WeirdUtils__DllNames[] = {
     "weirdutils.dll",
+    "worldmarkers.dll",
     "pngscreenshots.dll",
     "transmogfix.dll",
     "customassets.dll",
@@ -38,6 +39,8 @@ static const char *const WeirdUtils__DllNames[] = {
     "healtextfix.dll",
     "bigcursor.dll",
     "minimapicons.dll",
+    "clickthrough.dll",
+    "weirdperformance.dll",
     NULL
 };
 
