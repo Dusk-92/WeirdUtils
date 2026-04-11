@@ -347,11 +347,30 @@ fn markObject(obj: u32) bool {
             return true;
         },
         offsets.LUA_TUSERDATA => {
-            // Userdata: go black immediately, mark metatable inline
+            // Userdata: go black immediately, mark metatable inline (5.1 line 77-81)
             white2gray(obj);
             gray2black(obj);
             const mt = readU32(obj + offsets.UDATA_metatable);
             if (mt != 0) _ = markObject(mt);
+            return true;
+        },
+        offsets.LUA_TUPVAL => {
+            // Upvalue: mark value, if closed go black, if open stay gray (5.1 line 83-88)
+            // uv->v at +0x08. Closed if v == &uv->u.value (points to +0x10).
+            white2gray(obj);
+            const v_ptr = readU32(obj + 0x08);
+            if (v_ptr != 0) {
+                const v_tt = readU8(v_ptr + offsets.TVALUE_tt);
+                if (v_tt >= offsets.LUA_TSTRING) {
+                    const v_gc = readU32(v_ptr + offsets.TVALUE_gcptr);
+                    if (v_gc != 0) _ = markObject(v_gc);
+                }
+            }
+            // Closed upvalue: v points to inline value at obj+0x10
+            if (v_ptr == obj + 0x10) {
+                gray2black(obj);
+            }
+            // Open upvalues stay gray (never black)
             return true;
         },
         else => {
@@ -399,9 +418,13 @@ fn propagatemark(obj: u32) void {
             if (is_weak) black2gray(obj); // weak tables stay gray
         },
         offsets.LUA_TFUNCTION => {
+            // Closures go to grayagain (like threads/protos). Upvalues can
+            // be modified between mark steps via lua_replace, OP_SETUPVAL,
+            // lua_setupvalue, and other paths. Re-traversal in atomic catches
+            // all mutations regardless of which path modified the upvalue.
             dbg_closure_count += 1;
-            gray2black(obj);
             traverseClosure(obj);
+            grayagainAdd(obj);
         },
         offsets.LUA_TTHREAD => {
             // Lua 5.1: threads NEVER go black. After traversal, add to
@@ -411,9 +434,15 @@ fn propagatemark(obj: u32) void {
             grayagainAdd(obj); // stays gray, re-traversed in atomic
         },
         offsets.LUA_TPROTO => {
+            // Protos go to grayagain (like threads). The Lua compiler adds
+            // constants, nested protos, locvars, and upvalue names between
+            // mark steps. 5.1 uses 4 explicit barriers (lcode.c:244,
+            // lparser.c:151,199,319). We use grayagain re-traversal instead
+            // because the barrier sites are internal compiler functions with
+            // complex calling conventions that vary per call site.
             dbg_proto_count += 1;
-            gray2black(obj);
             traverseProto(obj);
+            grayagainAdd(obj);
         },
         offsets.LUA_TUSERDATA => {
             // Should not reach here -- userdata goes black in markObject.
@@ -877,87 +906,77 @@ fn marktmuImpl(g: u32) void {
     }
 }
 
-/// Clear dead entries from weak tables collected during mark.
+/// Clear dead entries from weak tables. Matches 5.1 cleartable (lgc.c:351-375).
+/// Single pass: for hash nodes, if EITHER key or value is cleared, remove entry.
 fn atomicClearWeakTables() void {
     var i: u32 = 0;
     while (i < weak_table_count) : (i += 1) {
         const table = weak_table_list[i];
         const marked = readU8(table + offsets.OBJ_marked);
-        if ((marked & offsets.VALUEWEAK) != 0) clearWeakValues(table);
-        if ((marked & offsets.KEYWEAK) != 0) clearWeakKeys(table);
+        const has_weakvalue = (marked & offsets.VALUEWEAK) != 0;
+        const has_weakkey = (marked & offsets.KEYWEAK) != 0;
+
+        // Array part: only clear if value-weak
+        if (has_weakvalue) {
+            const array_ptr = readU32(table + offsets.TABLE_array);
+            const sizearray = readU32(table + offsets.TABLE_sizearray);
+            if (array_ptr != 0) {
+                var ai: u32 = 0;
+                while (ai < sizearray) : (ai += 1) {
+                    const tv = array_ptr + ai * offsets.TVALUE_size;
+                    if (isCleared(readU8(tv + offsets.TVALUE_tt), readU32(tv + offsets.TVALUE_gcptr))) {
+                        writeU8(tv + offsets.TVALUE_tt, offsets.LUA_TNIL);
+                        writeU32(tv + offsets.TVALUE_gcptr, 0);
+                    }
+                }
+            }
+        }
+
+        // Hash part: clear if key OR value is cleared (5.1 line 367-368)
+        const node_ptr = readU32(table + offsets.TABLE_node);
+        if (node_ptr == 0) continue;
+        const lsizenode = readU8(table + offsets.TABLE_lsizenode);
+        const sizenode: u32 = @as(u32, 1) << @as(u5, @intCast(lsizenode));
+
+        var ni: u32 = 0;
+        while (ni < sizenode) : (ni += 1) {
+            const node = node_ptr + ni * offsets.NODE_size;
+            const val_tt = readU8(node + offsets.NODE_value_tt);
+            if (val_tt == 0) continue; // already nil, skip
+
+            const key_tt = readU8(node + offsets.NODE_key_tt);
+            const key_gc = readU32(node + offsets.NODE_key_gcptr);
+            const val_gc = readU32(node + offsets.NODE_value_gcptr);
+
+            const key_dead = has_weakkey and isCleared(key_tt, key_gc);
+            const val_dead = has_weakvalue and isCleared(val_tt, val_gc);
+
+            if (key_dead or val_dead) {
+                // removekey: nil value + mark collectable key as dead
+                writeU8(node + offsets.NODE_value_tt, offsets.LUA_TNIL);
+                writeU32(node + offsets.NODE_value_gcptr, 0);
+                if (key_tt >= offsets.LUA_TSTRING) {
+                    writeU8(node + offsets.NODE_key_tt, offsets.LUA_TNONE);
+                }
+            }
+        }
     }
 }
 
 /// Clear dead entries from weak-value tables. Matches native cleartablevalues.
 /// For hash nodes, uses removekey semantics: nil value + set dead key to TNONE.
-fn clearWeakValues(table: u32) void {
-    // Array part: just nil dead values
-    const array_ptr = readU32(table + offsets.TABLE_array);
-    const sizearray = readU32(table + offsets.TABLE_sizearray);
-    if (array_ptr != 0) {
-        var i: u32 = 0;
-        while (i < sizearray) : (i += 1) {
-            const tv = array_ptr + i * offsets.TVALUE_size;
-            const tt = readU8(tv + offsets.TVALUE_tt);
-            if (tt >= offsets.LUA_TSTRING) {
-                const gc = readU32(tv + offsets.TVALUE_gcptr);
-                if (gc != 0 and isWhite(gc)) {
-                    writeU8(tv + offsets.TVALUE_tt, offsets.LUA_TNIL);
-                    writeU32(tv + offsets.TVALUE_gcptr, 0);
-                }
-            }
-        }
+/// 5.1 iscleared equivalent: check if a TValue should be cleared from a weak
+/// table. Strings are NEVER cleared (they're "values", always kept). Non-string
+/// collectables are cleared if white. Non-collectables are never cleared.
+fn isCleared(tv_tt: u8, tv_gc: u32) bool {
+    if (tv_tt < offsets.LUA_TSTRING) return false; // not collectable
+    if (tv_tt == offsets.LUA_TSTRING) {
+        // Strings are values, never weak. Mark them to ensure survival.
+        if (tv_gc != 0) stringmark(tv_gc);
+        return false;
     }
-
-    // Hash part: removekey -- nil value AND mark collectable keys as TNONE
-    const node_ptr = readU32(table + offsets.TABLE_node);
-    if (node_ptr == 0) return;
-    const lsizenode = readU8(table + offsets.TABLE_lsizenode);
-    const sizenode: u32 = @as(u32, 1) << @as(u5, @intCast(lsizenode));
-
-    var ni: u32 = 0;
-    while (ni < sizenode) : (ni += 1) {
-        const node = node_ptr + ni * offsets.NODE_size;
-        const val_tt = readU8(node + offsets.NODE_value_tt);
-        if (val_tt < offsets.LUA_TSTRING) continue;
-        const val_gc = readU32(node + offsets.NODE_value_gcptr);
-        if (val_gc == 0) continue;
-        if (isWhite(val_gc)) {
-            // removekey: nil value
-            writeU8(node + offsets.NODE_value_tt, offsets.LUA_TNIL);
-            writeU32(node + offsets.NODE_value_gcptr, 0);
-            // removekey: mark collectable key as dead
-            const key_tt = readU8(node + offsets.NODE_key_tt);
-            if (key_tt >= offsets.LUA_TSTRING) {
-                writeU8(node + offsets.NODE_key_tt, offsets.LUA_TNONE);
-            }
-        }
-    }
-}
-
-/// Clear dead entries from weak-key tables. Matches native cleartablekeys.
-/// Uses removekey semantics: nil value + set dead collectable key to TNONE.
-fn clearWeakKeys(table: u32) void {
-    const node_ptr = readU32(table + offsets.TABLE_node);
-    if (node_ptr == 0) return;
-    const lsizenode = readU8(table + offsets.TABLE_lsizenode);
-    const sizenode: u32 = @as(u32, 1) << @as(u5, @intCast(lsizenode));
-
-    var ni: u32 = 0;
-    while (ni < sizenode) : (ni += 1) {
-        const node = node_ptr + ni * offsets.NODE_size;
-        const key_tt = readU8(node + offsets.NODE_key_tt);
-        if (key_tt < offsets.LUA_TSTRING) continue;
-        const key_gc = readU32(node + offsets.NODE_key_gcptr);
-        if (key_gc == 0) continue;
-        if (isWhite(key_gc)) {
-            // removekey: nil value
-            writeU8(node + offsets.NODE_value_tt, offsets.LUA_TNIL);
-            writeU32(node + offsets.NODE_value_gcptr, 0);
-            // removekey: mark collectable key as dead
-            writeU8(node + offsets.NODE_key_tt, offsets.LUA_TNONE);
-        }
-    }
+    if (tv_gc == 0) return false;
+    return isWhite(tv_gc);
 }
 
 // =============================================================================
@@ -1387,10 +1406,42 @@ fn setgcthresholdDetour(L: u32, newthreshold: u32) callconv(hook.cc.fastcall) vo
     if (readU32(L + offsets.L_active_check) == 0) return;
 
     // 5.1 luaC_fullgc pattern: if a forced GC arrives mid-cycle,
-    // abandon the current cycle and start fresh. Without this,
-    // we'd continue processing stale gray stack entries from a
-    // partially-traversed state after /reload swaps in new objects.
+    // abandon the current cycle. Must reset ALL objects to white first
+    // (matching 5.1's sweep-everything-back-to-white before restart).
+    // Without this, BLACK objects from the abandoned mark are invisible
+    // to the new cycle and their children may be incorrectly freed.
     if (phase != .idle) {
+        const g = getGlobalState(L);
+        // Walk rootgc and makewhite everything (clear BLACK/GRAY, set currentwhite)
+        var obj = readU32(g + offsets.GS_rootgc);
+        while (obj != 0) {
+            makewhite(obj);
+            obj = readU32(obj + offsets.OBJ_next);
+        }
+        // Walk rootudata
+        obj = readU32(g + offsets.GS_rootudata);
+        while (obj != 0) {
+            makewhite(obj);
+            obj = readU32(obj + offsets.OBJ_next);
+        }
+        // Walk string hash table
+        const hash_array = readU32(g + offsets.GS_strt_hash);
+        const bucket_count = readU32(g + offsets.GS_strt_size);
+        if (hash_array != 0) {
+            var bi: u32 = 0;
+            while (bi < bucket_count) : (bi += 1) {
+                var s = readU32(hash_array + bi * 4);
+                while (s != 0) {
+                    const old = readU8(s + offsets.OBJ_marked);
+                    writeU8(s + offsets.OBJ_marked, (old & offsets.MASKMARKS) | currentwhite);
+                    s = readU32(s + offsets.OBJ_next);
+                }
+            }
+        }
+        // Mainthread
+        const mt = readU32(g + offsets.GS_mainthread);
+        if (mt != 0) makewhite(mt);
+
         phase = .idle;
         gray_count = 0;
         grayagain_count = 0;
@@ -1572,6 +1623,44 @@ fn resolveStackIndex(L: u32, idx: u32) u32 {
         const top = readU32(L + offsets.THREAD_top);
         if (top == 0) return 0;
         return @as(u32, @intCast(@as(i32, @intCast(top)) + idx_i * @as(i32, offsets.TVALUE_size)));
+    }
+}
+
+// =============================================================================
+// lua_replace barrier (5.1 lapi.c:220-221)
+// =============================================================================
+//
+// lua_replace writes to stack indices, upvalue pseudo-indices, and
+// LUA_ENVIRONINDEX/LUA_GLOBALSINDEX. For upvalue writes (idx < LUA_GLOBALSINDEX),
+// 5.1 fires luaC_barrier(L, curr_func(L), value). WoW's 5.0 has no barrier.
+// The native lua_replace does a direct 16-byte copy with no CALL to any
+// hooked function.
+
+const LuaReplaceFn = fn (u32, u32) callconv(hook.cc.fastcall) void;
+var lua_replace_hook: hook.Detour(LuaReplaceFn) = .{};
+
+fn luaReplaceDetour(L: u32, idx: u32) callconv(hook.cc.fastcall) void {
+    lua_replace_hook.callOriginal(.{ L, idx });
+    // Barrier for upvalue writes: idx < LUA_GLOBALSINDEX (0xffffd8f0)
+    // LUA_GLOBALSINDEX in Lua 5.0 = -10000 (0xffffd8f0 as u32)
+    if (phase == .marking) {
+        const idx_i: i32 = @bitCast(idx);
+        if (idx_i < -10000) {
+            // Upvalue or environment write. Barrier the running closure.
+            const ci_base = readU32(L + 0x0C); // L->base
+            if (ci_base != 0) {
+                // curr_func is at base[-1] (the closure TValue below the base)
+                const func_tv = ci_base - offsets.TVALUE_size;
+                const func_tt = readU8(func_tv + offsets.TVALUE_tt);
+                if (func_tt == offsets.LUA_TFUNCTION) {
+                    const func_gc = readU32(func_tv + offsets.TVALUE_gcptr);
+                    if (func_gc != 0 and isBlack(func_gc)) {
+                        black2gray(func_gc);
+                        grayagainAdd(func_gc);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1824,6 +1913,11 @@ pub fn installHooks() void {
         installed += 1;
         log.print("hooked luaC_link\n");
     }
+    // lua_replace barrier (5.1 lapi.c:220-221)
+    if (lua_replace_hook.attach(offsets.lua_replace, &luaReplaceDetour) == .ok) {
+        installed += 1;
+    }
+
     // Resurrection hooks (5.1 lstring.c:88, lfunc.c:61-62)
     if (string_create_hook.attach(offsets.luaS_newlstr, &stringCreateDetour) == .ok) {
         installed += 1;
@@ -1843,13 +1937,8 @@ pub fn installHooks() void {
         installed += 1;
     }
     // Note: lua_pushcclosure doesn't need a barrier (new closures are WHITE)
-    // Compiler barriers (5.1 lcode.c, lparser.c)
-    if (create_constant_hook.attach(offsets.lua_parser_create_constant, &createConstantDetour) == .ok) {
-        installed += 1;
-    }
-    if (finish_function_hook.attach(offsets.lua_parser_finish_function, &finishFunctionDetour) == .ok) {
-        installed += 1;
-    }
+    // Compiler barriers: covered by proto grayagain in propagatemark.
+    // Direct hooks removed -- proto is re-traversed in atomic phase instead.
     installSetupvalPatch();
     log.print("installed forward barriers\n");
 
@@ -1875,13 +1964,14 @@ pub fn removeHooks() void {
     setgcthreshold_hook.detach();
     lua_close_hook.detach();
     luac_link_hook.detach();
+    lua_replace_hook.detach();
     string_create_hook.detach();
     upval_create_hook.detach();
     setmeta_hook.detach();
     setupval_hook.detach();
     setfenv_hook.detach();
-    create_constant_hook.detach();
-    finish_function_hook.detach();
+    // create_constant_hook.detach();  // not installed
+    // finish_function_hook.detach();  // not installed
     removeSetupvalPatch();
     luaalloc.remove();
 

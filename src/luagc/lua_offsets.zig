@@ -40,6 +40,11 @@ pub const cleartablekeys: usize = 0x6F7970;
 /// Resize string hash table. __fastcall(ECX=L, EDX=new_size).
 pub const lua_string_hash_resize: usize = 0x6F9C50;
 
+/// lua_replace (lua_copy_value): __fastcall(ECX=L, EDX=idx).
+/// Writes stack top to the given index. For upvalue pseudo-indices,
+/// writes directly to closure upvalue slots without any barrier.
+pub const lua_replace: usize = 0x6F32B0;
+
 /// Forward barrier hook targets (Lua C API functions that create cross-object refs).
 pub const lua_setmetatable: usize = 0x6F4020;
 pub const lua_setupvalue: usize = 0x6F47B0;
@@ -186,6 +191,7 @@ pub const LUA_TFUNCTION: u8 = 6;
 pub const LUA_TUSERDATA: u8 = 7;
 pub const LUA_TTHREAD: u8 = 8;
 pub const LUA_TPROTO: u8 = 9;
+pub const LUA_TUPVAL: u8 = 10;
 
 /// ---------------------------------------------------------------------------
 // TValue (16 bytes in WoW Lua 5.0)
