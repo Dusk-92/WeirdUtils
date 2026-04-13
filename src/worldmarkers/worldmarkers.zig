@@ -103,6 +103,9 @@ const RESPAWN_CHECK_INTERVAL_MS: u32 = 1000;
 var last_zombie_tick: u32 = 0;
 const ZOMBIE_CHECK_INTERVAL_MS: u32 = 3000;
 
+// Group-leave detection: clear markers when player drops to solo.
+var was_in_group: bool = false;
+
 // Entities playing their Decay animation before destruction.
 // Cleaned up every frame by tickAnimations (via OnWorldUpdate hook).
 const MAX_DESPAWNING = 8;
@@ -540,6 +543,15 @@ const HOLD_QUEUE_DELAY_MS: u32 = 2000;
 /// 4. Respawn markers near the player from persistent definitions
 fn tickAnimations() void {
     const now = GetTickCount();
+
+    // Group-leave detection: leader GUID is set for both party and raid.
+    // When it drops to zero the player left the group — clear all markers.
+    const in_group = wow.readGUID(o.LEADER_GUID) != 0;
+    if (was_in_group and !in_group) {
+        log.print("left group, clearing all markers\n");
+        clearAllMarkers();
+    }
+    was_in_group = in_group;
 
     cleanupDespawning();
 

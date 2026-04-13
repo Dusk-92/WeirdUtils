@@ -82,11 +82,16 @@ end
 -- Broadcast helpers
 -- =============================================================================
 
+-- Encode floats as integers (*1000) to avoid locale-dependent decimal separators.
+-- Receivers divide by 1000. Sub-millimeter precision loss is irrelevant for markers.
+local function encodeCoord(v) return math.floor(v * 1000) end
+local function decodeCoord(v) return v / 1000 end
+
 local function broadcastPlace(index, x, y, z, areaId)
     clearSyncState()
     local ch = getChannel()
     if not ch then return end
-    local msg = "P:" .. index .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
+    local msg = "P:" .. index .. ":" .. encodeCoord(x) .. ":" .. encodeCoord(y) .. ":" .. encodeCoord(z) .. ":" .. areaId
     SendAddonMessage(MSG_PREFIX, msg, ch)
 end
 
@@ -111,7 +116,7 @@ local function broadcastAllDefs()
     for i = 1, NUM_MARKERS do
         local x, y, z, areaId = GetWorldMarker(i)
         if x then
-            local msg = "SF:" .. i .. ":" .. x .. ":" .. y .. ":" .. z .. ":" .. areaId
+            local msg = "SF:" .. i .. ":" .. encodeCoord(x) .. ":" .. encodeCoord(y) .. ":" .. encodeCoord(z) .. ":" .. areaId
             SendAddonMessage(MSG_PREFIX, msg, ch)
         end
     end
@@ -220,7 +225,7 @@ local function parseMarkerFields(parts)
     local z = tonumber(parts[5])
     local areaId = tonumber(parts[6])
     if idx and x and y and z and areaId then
-        return idx, x, y, z, areaId
+        return idx, decodeCoord(x), decodeCoord(y), decodeCoord(z), areaId
     end
     return nil
 end
