@@ -38,6 +38,7 @@ pub fn isActive() bool {
 // =============================================================================
 
 const bone_sse = @import("bone_sse.zig");
+const bone_sse64 = @import("bone_sse64.zig");
 const particle_sse = @import("particle_sse.zig");
 const clip_sse = @import("clip_sse.zig");
 const cull_sse = @import("cull_sse.zig");
@@ -196,6 +197,72 @@ fn destroyObjMgrDetour() callconv(hook.cc.stdcall) void {
 }
 
 // =============================================================================
+// Spell ground effect diagnostic — safe cross-reference approach
+// createModelAttachment saves model ptrs, ManageRenderListNode checks matches.
+// No deferred pointer reads — only value comparisons.
+// =============================================================================
+
+const ModelAttachFn = fn (u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) u32;
+var model_attach_hook: hook.Detour(ModelAttachFn) = .{};
+
+const MAX_TRACKED = 16;
+var tracked_models: [MAX_TRACKED]u32 = [_]u32{0} ** MAX_TRACKED;
+var tracked_next: u32 = 0;
+
+fn modelAttachDetour(parent: u32, path_ptr: u32, flags: u32) callconv(.{ .x86_thiscall = .{} }) u32 {
+    const result = model_attach_hook.callOriginal(.{ parent, path_ptr, flags });
+
+    if (path_ptr != 0 and result != 0) {
+        const path: [*]const u8 = @ptrFromInt(path_ptr);
+        if (path[0] == 'S' and path[1] == 'p' and path[2] == 'e' and path[3] == 'l' and path[4] == 'l' and path[5] == 's') {
+            const path_z: [*:0]const u8 = @ptrFromInt(path_ptr);
+            log.fmt("[spell] created 0x{x}: {s}\n", .{ result, path_z });
+            tracked_models[tracked_next % MAX_TRACKED] = result;
+            tracked_next +%= 1;
+        }
+    }
+    return result;
+}
+
+// CM2Model_ManageRenderListNode (0x710B90)
+// __thiscall(ECX=model, add_remove), RET 0x4
+const ManageRLFn = fn (u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+var manage_rl_hook: hook.Detour(ManageRLFn) = .{};
+
+fn manageRLDetour(model: u32, add_remove: u32) callconv(.{ .x86_thiscall = .{} }) void {
+    for (&tracked_models) |tp| {
+        if (tp != 0 and tp == model) {
+            if (add_remove != 0) {
+                log.fmt("[spell] 0x{x} ADDED to render list\n", .{model});
+            } else {
+                log.fmt("[spell] 0x{x} REMOVED from render list\n", .{model});
+            }
+            break;
+        }
+    }
+    manage_rl_hook.callOriginal(.{ model, add_remove });
+}
+
+// =============================================================================
+// ProcessProjectileMovementWithCollisionAndTargetValidation fix (0x61e1d0)
+// __thiscall(ECX=missile, target_ptr, param_3), RET 0x8
+//
+// Vanilla bug: when target_ptr != 0 (a unit/dynobj exists at the AoE location),
+// the code takes an alternate path that skips ProcessMissileSpellEffects entirely.
+// This means the area effect ground model (e.g. InfectedSecretion_Marked.m2) is
+// never created. Fix: force target_ptr=0 so the area effect path always runs.
+// Target-unit visuals fire separately through ProcessSpellVisualKit.
+// =============================================================================
+
+const ProjMoveFn = fn (u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void;
+var proj_move_hook: hook.Detour(ProjMoveFn) = .{};
+
+fn projMoveDetour(missile: u32, target_ptr: u32, param_3: u32) callconv(.{ .x86_thiscall = .{} }) void {
+    _ = target_ptr;
+    proj_move_hook.callOriginal(.{ missile, 0, param_3 });
+}
+
+// =============================================================================
 // OnWorldUpdate hook (0x482EA0) — per-frame cache reset
 // =============================================================================
 
@@ -298,7 +365,7 @@ pub fn installHooks() void {
     var installed: u32 = 0;
 
     // Bone transform SSE
-    if (transform_hook.attach(0x714260, &bone_sse.transformImpl_SSE) == .ok) installed += 1;
+    if (transform_hook.attach(0x714260, &bone_sse64.transformImpl_SSE64) == .ok) installed += 1;
 
     // Frustum clip SSE (1.9x speedup)
     if (clip_hook.attach(0x6318C0, &clip_sse.clipPolygonToSinglePlane) == .ok) installed += 1;
@@ -306,18 +373,15 @@ pub fn installHooks() void {
     // Particle rendering SSE
     if (particle_hook.attach(0x7B2A50, &particleDetour) == .ok) installed += 1;
 
-    // Glyph cache
-    // Glyph cache removed -- game has internal glyph cache, our hook only sees misses (~30/frame)
-
-    // GUID lookup cache -- A/B testing via transform44
-    // if (findguid_hook.attach(0x464890, &findguidDetour) == .ok) installed += 1;
-    // if (obj_delete_hook.attach(0x464920, &objDeleteDetour) == .ok) installed += 1;
-
-    // GUID cache disabled for now
-    // if (destroy_objmgr_hook.attach(0x467700, &destroyObjMgrDetour) == .ok) installed += 1;
-
     // Per-frame cache reset
     if (world_update_hook.attach(0x482EA0, &worldUpdateDetour) == .ok) installed += 1;
+
+    // Spell ground effect diagnostics
+    if (model_attach_hook.attach(0x707350, &modelAttachDetour) == .ok) installed += 1;
+    if (manage_rl_hook.attach(0x710B90, &manageRLDetour) == .ok) installed += 1;
+
+    // Area effect ground model fix
+    if (proj_move_hook.attach(0x61e1d0, &projMoveDetour) == .ok) installed += 1;
 
     // Silicon SSE binary patches
     _ = installPatches();
@@ -358,6 +422,9 @@ pub fn removeHooks() void {
         obj_delete_hook.detach();
         destroy_objmgr_hook.detach();
         world_update_hook.detach();
+        model_attach_hook.detach();
+        manage_rl_hook.detach();
+        proj_move_hook.detach();
         log.close();
         mod_mutex.release(&g_mutex);
     }

@@ -1662,6 +1662,7 @@ pub fn main() void {
         const ofs = [3]f32{ 0, 0, 0 };
         const sb: u32 = @bitCast(@as(f32, 1.0));
         const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_SSE" });
+        const transformImpl_SSE64 = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_SSE64" });
         const transformImpl_BASELINE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_BASELINE" });
 
         // Pre-set boneKeyframe init flag so we skip the atexit call (Windows CRT, can't run on Linux)
@@ -1716,6 +1717,20 @@ pub fn main() void {
         const best_sse = run_bench_fn(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
         const avg_sse = best_sse / T44_ITERS;
 
+        // Warmup + bench bone_sse64 (f64-intermediate variant)
+        for (0..500) |iter| {
+            wu(u32, anim_ctx_mem[0x0C..0x10], @as(u32, @intCast(iter * 2)), .little);
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            transformImpl_SSE64(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+        }
+        for (0..500) |iter| {
+            wu(u32, anim_ctx_mem[0x0C..0x10], @as(u32, @intCast(999 - iter * 2)), .little);
+            wu(u32, scene_obj[0x40..0x44], 0, .little);
+            transformImpl_SSE64(so, @intFromPtr(&parent_mat), @intFromPtr(&pos), @intFromPtr(&ofs), sb);
+        }
+        const best_sse64 = run_bench_fn(transformImpl_SSE64, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
+        const avg_sse64 = best_sse64 / T44_ITERS;
+
         print("  BASELINE: {d} cycles/call (frozen)\n", .{BASELINE_CYCLES});
         print("  SSE:      {d} cycles/call", .{avg_sse});
         if (avg_sse < BASELINE_CYCLES) {
@@ -1726,6 +1741,25 @@ pub fn main() void {
             print("  (+{d}%)\n", .{pct});
         } else {
             print("  (same)\n", .{});
+        }
+        print("  SSE64:    {d} cycles/call", .{avg_sse64});
+        if (avg_sse64 < BASELINE_CYCLES) {
+            const pct = (BASELINE_CYCLES - avg_sse64) * 100 / BASELINE_CYCLES;
+            print("  (-{d}% vs BASELINE", .{pct});
+        } else if (avg_sse64 > BASELINE_CYCLES) {
+            const pct = (avg_sse64 - BASELINE_CYCLES) * 100 / BASELINE_CYCLES;
+            print("  (+{d}% vs BASELINE", .{pct});
+        } else {
+            print("  (same as BASELINE", .{});
+        }
+        if (avg_sse64 > avg_sse) {
+            const pct = (avg_sse64 - avg_sse) * 100 / avg_sse;
+            print(", +{d}% vs SSE)\n", .{pct});
+        } else if (avg_sse64 < avg_sse) {
+            const pct = (avg_sse - avg_sse64) * 100 / avg_sse;
+            print(", -{d}% vs SSE)\n", .{pct});
+        } else {
+            print(", same as SSE)\n", .{});
         }
 
         // --- Output parity: run BASELINE then SSE with identical input, compare ALL outputs ---
@@ -1791,6 +1825,23 @@ pub fn main() void {
                 print("  parity:   PASS (SSE == BASELINE, {d} bytes checked)\n", .{total_len});
             } else {
                 print("  parity:   FAIL ({d} byte diffs across {d} bytes)\n", .{ diffs, total_len });
+            }
+
+            // Run SSE64 with same input
+            reset_and_run(transformImpl_SSE64, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, &bone_rt, BONE_COUNT);
+
+            var diffs64: u32 = 0;
+            off = 0;
+            for (bufs) |b| {
+                for (0..b.len) |i| {
+                    if (b.ptr[i] != snap[off + i]) diffs64 += 1;
+                }
+                off += b.len;
+            }
+            if (diffs64 == 0) {
+                print("  parity64: PASS (SSE64 == BASELINE, {d} bytes checked)\n", .{total_len});
+            } else {
+                print("  parity64: FAIL ({d} byte diffs across {d} bytes)\n", .{ diffs64, total_len });
             }
         }
     }

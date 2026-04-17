@@ -25,118 +25,118 @@ const V4 = @Vector(4, f32);
 // SceneObject field offsets — assembly-verified from [EBX+N] in transformMatrix4x4
 // =============================================================================
 
-const SO = struct {
-    const model_data_ptr: u32 = 0x010;
-    const anim_ctx_ptr: u32 = 0x02C; // +0xC=timestamp, +0x10=sync_value
-    const model_ctr_ptr: u32 = 0x030; // +0x130=M2 header
-    const sync_value: u32 = 0x040;
-    const search_data_base: u32 = 0x04C; // prev timestamp for delta
-    const emitter_flag: u32 = 0x050;
-    const gs_values_ptr: u32 = 0x064; // pointer to global sequence value array
-    const gs_time_base: u32 = 0x068; // subtracted from timestamp for GS
-    const child_padding: u32 = 0x084;
-    const anim_frame_ctr: u32 = 0x08C;
-    const bone_rt_base: u32 = 0x090; // array of 0x118-byte bone runtime structs
-    const bone_out_ptr: u32 = 0x094; // output bone matrices
-    const tex_anim_out: u32 = 0x0A0;
-    const color_anim_out: u32 = 0x0A8;
-    const scale1: u32 = 0x0AC;
-    const scale2: u32 = 0x0B0;
-    const scale3: u32 = 0x0B4;
-    const bb_row0: u32 = 0x0FC; // billboard matrix row 0 (camera forward)
-    const world_xform: u32 = 0x10C; // float[16] world transform
-    const field_17c: u32 = 0x17C;
-    const field_180: u32 = 0x180;
-    const field_184: u32 = 0x184;
-    const field_188: u32 = 0x188;
-    const field_18c: u32 = 0x18C;
-    const field_190: u32 = 0x190;
-    const render_scale_x: u32 = 0x194;
-    const render_scale_y: u32 = 0x198;
-    const render_scale_z: u32 = 0x19C;
-    const world_pos: u32 = 0x1A0; // Vec3 (passed as param_3 to children)
-    const render_pri: u32 = 0x1AC; // Vec3 (passed as param_4 to children)
-    const hierarchy_ptr: u32 = 0x1C8;
-    const emitter_ctx: u32 = 0x1CC;
-    const field_1d8: u32 = 0x1D8;
-    const hierarchy_idx: u32 = 0x1DC;
-    const field_200: u32 = 0x200;
-    const particle1: u32 = 0x3C4;
-    const particle2: u32 = 0x3C8;
-    const particle3: u32 = 0x3D0;
-    const particle4: u32 = 0x3D4;
-    const add_remaining: u32 = 0x3D8;
+pub const SO = struct {
+    pub const model_data_ptr: u32 = 0x010;
+    pub const anim_ctx_ptr: u32 = 0x02C; // +0xC=timestamp, +0x10=sync_value
+    pub const model_ctr_ptr: u32 = 0x030; // +0x130=M2 header
+    pub const sync_value: u32 = 0x040;
+    pub const search_data_base: u32 = 0x04C; // prev timestamp for delta
+    pub const emitter_flag: u32 = 0x050;
+    pub const gs_values_ptr: u32 = 0x064; // pointer to global sequence value array
+    pub const gs_time_base: u32 = 0x068; // subtracted from timestamp for GS
+    pub const child_padding: u32 = 0x084;
+    pub const anim_frame_ctr: u32 = 0x08C;
+    pub const bone_rt_base: u32 = 0x090; // array of 0x118-byte bone runtime structs
+    pub const bone_out_ptr: u32 = 0x094; // output bone matrices
+    pub const tex_anim_out: u32 = 0x0A0;
+    pub const color_anim_out: u32 = 0x0A8;
+    pub const scale1: u32 = 0x0AC;
+    pub const scale2: u32 = 0x0B0;
+    pub const scale3: u32 = 0x0B4;
+    pub const bb_row0: u32 = 0x0FC; // billboard matrix row 0 (camera forward)
+    pub const world_xform: u32 = 0x10C; // float[16] world transform
+    pub const field_17c: u32 = 0x17C;
+    pub const field_180: u32 = 0x180;
+    pub const field_184: u32 = 0x184;
+    pub const field_188: u32 = 0x188;
+    pub const field_18c: u32 = 0x18C;
+    pub const field_190: u32 = 0x190;
+    pub const render_scale_x: u32 = 0x194;
+    pub const render_scale_y: u32 = 0x198;
+    pub const render_scale_z: u32 = 0x19C;
+    pub const world_pos: u32 = 0x1A0; // Vec3 (passed as param_3 to children)
+    pub const render_pri: u32 = 0x1AC; // Vec3 (passed as param_4 to children)
+    pub const hierarchy_ptr: u32 = 0x1C8;
+    pub const emitter_ctx: u32 = 0x1CC;
+    pub const field_1d8: u32 = 0x1D8;
+    pub const hierarchy_idx: u32 = 0x1DC;
+    pub const field_200: u32 = 0x200;
+    pub const particle1: u32 = 0x3C4;
+    pub const particle2: u32 = 0x3C8;
+    pub const particle3: u32 = 0x3D0;
+    pub const particle4: u32 = 0x3D4;
+    pub const add_remaining: u32 = 0x3D8;
 };
 
 // Bone runtime struct offsets (within 0x118-byte per-bone runtime)
-const BR = struct {
+pub const BR = struct {
     // Translation interpolation state
-    const trans_idx0: u32 = 0x00; // [0] lower keyframe index
-    const trans_idx1: u32 = 0x04; // [1] upper keyframe index
-    const trans_t: u32 = 0x08; // [2] interpolation factor (float bits)
-    const trans_x: u32 = 0x0C; // [3] interpolated translation X
-    const trans_y: u32 = 0x10; // [4] Y
-    const trans_z: u32 = 0x14; // [5] Z
+    pub const trans_idx0: u32 = 0x00; // [0] lower keyframe index
+    pub const trans_idx1: u32 = 0x04; // [1] upper keyframe index
+    pub const trans_t: u32 = 0x08; // [2] interpolation factor (float bits)
+    pub const trans_x: u32 = 0x0C; // [3] interpolated translation X
+    pub const trans_y: u32 = 0x10; // [4] Y
+    pub const trans_z: u32 = 0x14; // [5] Z
     // Secondary translation (crossfade)
-    const trans2_idx0: u32 = 0x18;
-    const trans2_idx1: u32 = 0x1C;
-    const trans2_t: u32 = 0x20;
-    const trans2_x: u32 = 0x24;
-    const trans2_y: u32 = 0x28;
-    const trans2_z: u32 = 0x2C;
+    pub const trans2_idx0: u32 = 0x18;
+    pub const trans2_idx1: u32 = 0x1C;
+    pub const trans2_t: u32 = 0x20;
+    pub const trans2_x: u32 = 0x24;
+    pub const trans2_y: u32 = 0x28;
+    pub const trans2_z: u32 = 0x2C;
     // Scale interpolation state (at puVar20 + 0x1a = offset 0x68)
-    const scale_idx0: u32 = 0x68;
-    const scale_idx1: u32 = 0x6C;
-    const scale_t: u32 = 0x70;
-    const scale_x: u32 = 0x74;
-    const scale_y: u32 = 0x78;
-    const scale_z: u32 = 0x7C;
-    const scale2_idx0: u32 = 0x80;
-    const scale2_idx1: u32 = 0x84;
-    const scale2_t: u32 = 0x88;
-    const scale2_x: u32 = 0x8C;
-    const scale2_y: u32 = 0x90;
-    const scale2_z: u32 = 0x94;
+    pub const scale_idx0: u32 = 0x68;
+    pub const scale_idx1: u32 = 0x6C;
+    pub const scale_t: u32 = 0x70;
+    pub const scale_x: u32 = 0x74;
+    pub const scale_y: u32 = 0x78;
+    pub const scale_z: u32 = 0x7C;
+    pub const scale2_idx0: u32 = 0x80;
+    pub const scale2_idx1: u32 = 0x84;
+    pub const scale2_t: u32 = 0x88;
+    pub const scale2_x: u32 = 0x8C;
+    pub const scale2_y: u32 = 0x90;
+    pub const scale2_z: u32 = 0x94;
     // Primary animation time range
-    const prim_time: u32 = 0x98; // puVar20[0x26]
-    const prim_track: u32 = 0x9C; // puVar20[0x27]
-    const prim_anim: u32 = 0xA0; // puVar20[0x28]
-    const anim_slot: u32 = 0xA4; // puVar20[0x29] - animation slot index
+    pub const prim_time: u32 = 0x98; // puVar20[0x26]
+    pub const prim_track: u32 = 0x9C; // puVar20[0x27]
+    pub const prim_anim: u32 = 0xA0; // puVar20[0x28]
+    pub const anim_slot: u32 = 0xA4; // puVar20[0x29] - animation slot index
     // Secondary animation time range (crossfade)
-    const sec_start: u32 = 0xA8; // puVar20[0x2a]
-    const sec_end: u32 = 0xAC; // puVar20[0x2b]
-    const time_scale: u32 = 0xB0; // puVar20[0x2c] — float scale for FILD*FMUL→__ftol time conversion
-    const sec_anim_offset: u32 = 0xB8; // puVar20[0x2e]
+    pub const sec_start: u32 = 0xA8; // puVar20[0x2a]
+    pub const sec_end: u32 = 0xAC; // puVar20[0x2b]
+    pub const time_scale: u32 = 0xB0; // puVar20[0x2c] — float scale for FILD*FMUL→__ftol time conversion
+    pub const sec_anim_offset: u32 = 0xB8; // puVar20[0x2e]
     // Rotation interpolation (interpolateAnimationKeyframes output at +0xC*4 = 0x30)
-    const rot_idx0: u32 = 0x30;
-    const rot_idx1: u32 = 0x34;
-    const rot_t: u32 = 0x38;
-    const rot_x: u32 = 0x3C;
-    const rot_y: u32 = 0x40;
-    const rot_z: u32 = 0x44;
-    const rot_w: u32 = 0x48;
+    pub const rot_idx0: u32 = 0x30;
+    pub const rot_idx1: u32 = 0x34;
+    pub const rot_t: u32 = 0x38;
+    pub const rot_x: u32 = 0x3C;
+    pub const rot_y: u32 = 0x40;
+    pub const rot_z: u32 = 0x44;
+    pub const rot_w: u32 = 0x48;
     // Secondary rotation
-    const rot2_idx0: u32 = 0x4C;
-    const rot2_idx1: u32 = 0x50;
-    const rot2_t: u32 = 0x54;
-    const rot2_x: u32 = 0x58;
-    const rot2_y: u32 = 0x5C;
-    const rot2_z: u32 = 0x60;
-    const rot2_w: u32 = 0x64;
+    pub const rot2_idx0: u32 = 0x4C;
+    pub const rot2_idx1: u32 = 0x50;
+    pub const rot2_t: u32 = 0x54;
+    pub const rot2_x: u32 = 0x58;
+    pub const rot2_y: u32 = 0x5C;
+    pub const rot2_z: u32 = 0x60;
+    pub const rot2_w: u32 = 0x64;
     // Secondary time range
-    const sec_time: u32 = 0xC4; // puVar20[0x31]
-    const sec_track: u32 = 0xC8; // puVar20[0x32]
-    const sec_slot: u32 = 0xD0; // puVar20[0x34]
-    const sec_start2: u32 = 0xD4; // puVar20[0x35]
-    const sec_end2: u32 = 0xD8; // puVar20[0x36]
-    const sec_offset2: u32 = 0xE4; // puVar20[0x39]
+    pub const sec_time: u32 = 0xC4; // puVar20[0x31]
+    pub const sec_track: u32 = 0xC8; // puVar20[0x32]
+    pub const sec_slot: u32 = 0xD0; // puVar20[0x34]
+    pub const sec_start2: u32 = 0xD4; // puVar20[0x35]
+    pub const sec_end2: u32 = 0xD8; // puVar20[0x36]
+    pub const sec_offset2: u32 = 0xE4; // puVar20[0x39]
     // Flags and weights
-    const flags2: u32 = 0xF4; // puVar20[0x3d]
-    const crossfade_end: u32 = 0x100; // puVar20[0x40]
-    const crossfade_inv: u32 = 0x104; // puVar20[0x41]
-    const crossfade_weight: u32 = 0x108; // puVar20[0x42]
-    const blend_weight: u32 = 0x10C; // puVar20[0x43] - blend weight for crossfade
-    const bone_flag_cache: u32 = 0xF0; // puVar20[0x3c]
+    pub const flags2: u32 = 0xF4; // puVar20[0x3d]
+    pub const crossfade_end: u32 = 0x100; // puVar20[0x40]
+    pub const crossfade_inv: u32 = 0x104; // puVar20[0x41]
+    pub const crossfade_weight: u32 = 0x108; // puVar20[0x42]
+    pub const blend_weight: u32 = 0x10C; // puVar20[0x43] - blend weight for crossfade
+    pub const bone_flag_cache: u32 = 0xF0; // puVar20[0x3c]
 };
 
 // OldAnimationBlock struct offsets (28 bytes = 0x1C per track in v256 M2)
@@ -144,37 +144,37 @@ const BR = struct {
 //   pMVar23->m31 (bone_def+0x34) = rot block+0x0C = nTimestamps (gates rotation)
 //   pMVar23->m12 (bone_def+0x18) = trans block+0x0C = nTimestamps (gates translation)
 //   pMVar23[1].m10 (bone_def+0x50) = scale block+0x0C = nTimestamps (gates scale)
-const AD = struct {
-    const interp_mode: u32 = 0x00; // u16: interpolation mode (0=none, 1=lerp)
-    const time_index: u32 = 0x02; // i16: global sequence index (-1 = none)
-    const track_count_flag: u32 = 0x04; // nRanges: 0 = single track
-    const keyframe_ranges: u32 = 0x08; // ofsRanges: ptr to per-track range pairs
-    const keyframe_count: u32 = 0x0C; // nTimestamps: total keyframe count
-    const timestamps_ptr: u32 = 0x10; // ofsTimestamps: ptr to timestamp array
-    const nvalues: u32 = 0x14; // nValues: number of value entries
-    const keyframe_base: u32 = 0x18; // ofsValues: ptr to keyframe data
+pub const AD = struct {
+    pub const interp_mode: u32 = 0x00; // u16: interpolation mode (0=none, 1=lerp)
+    pub const time_index: u32 = 0x02; // i16: global sequence index (-1 = none)
+    pub const track_count_flag: u32 = 0x04; // nRanges: 0 = single track
+    pub const keyframe_ranges: u32 = 0x08; // ofsRanges: ptr to per-track range pairs
+    pub const keyframe_count: u32 = 0x0C; // nTimestamps: total keyframe count
+    pub const timestamps_ptr: u32 = 0x10; // ofsTimestamps: ptr to timestamp array
+    pub const nvalues: u32 = 0x14; // nValues: number of value entries
+    pub const keyframe_base: u32 = 0x18; // ofsValues: ptr to keyframe data
 };
 
 // M2CompBone struct offsets (0x6C = 108 bytes per bone in v256 model)
 // Layout: 12 bytes fixed header + 3x28 byte OldAnimationBlock tracks + 12 bytes pivot
 // Track order: translation, rotation, scale (standard M2 order)
-const BD = struct {
-    const key_id: u32 = 0x00; // i32: key bone ID
-    const flags: u32 = 0x04; // u32: bone flags (billboard type in bits 0-6, etc.)
-    const parent_bone: u32 = 0x08; // i16 at low bytes, submesh_id u16 at high bytes
+pub const BD = struct {
+    pub const key_id: u32 = 0x00; // i32: key bone ID
+    pub const flags: u32 = 0x04; // u32: bone flags (billboard type in bits 0-6, etc.)
+    pub const parent_bone: u32 = 0x08; // i16 at low bytes, submesh_id u16 at high bytes
     // Translation OldAnimationBlock (28 bytes, +0x0C to +0x27)
-    const trans_anim: u32 = 0x0C;
-    const trans_nts: u32 = 0x18; // nTimestamps — gates translation interpolation
+    pub const trans_anim: u32 = 0x0C;
+    pub const trans_nts: u32 = 0x18; // nTimestamps — gates translation interpolation
     // Rotation OldAnimationBlock (28 bytes, +0x28 to +0x43)
-    const rot_anim: u32 = 0x28;
-    const rot_nts: u32 = 0x34; // nTimestamps — gates rotation interpolation
+    pub const rot_anim: u32 = 0x28;
+    pub const rot_nts: u32 = 0x34; // nTimestamps — gates rotation interpolation
     // Scale OldAnimationBlock (28 bytes, +0x44 to +0x5F)
-    const scale_anim: u32 = 0x44;
-    const scale_nts: u32 = 0x50; // nTimestamps — gates scale interpolation
+    pub const scale_anim: u32 = 0x44;
+    pub const scale_nts: u32 = 0x50; // nTimestamps — gates scale interpolation
     // Pivot point (12 bytes, +0x60 to +0x6B)
-    const pivot_x: u32 = 0x60;
-    const pivot_y: u32 = 0x64;
-    const pivot_z: u32 = 0x68;
+    pub const pivot_x: u32 = 0x60;
+    pub const pivot_y: u32 = 0x64;
+    pub const pivot_z: u32 = 0x68;
 };
 
 // Game constants
@@ -182,12 +182,12 @@ const ZERO_F: f32 = 0.0;
 const ONE_F: f32 = 1.0;
 const THREE_F: f32 = 3.0;
 // getBillboardEpsilon(): read from game memory (runtime 0x34800000, NOT static 0x3727c5ac from Ghidra)
-fn getBillboardEpsilon() f32 {
+pub fn getBillboardEpsilon() f32 {
     return rf32(0x008029d4);
 }
 // getShortToFloat(): read from game memory at 0x00811610 (runtime value is 0x38000100 = 1/32767,
 // NOT the static 0x38000000 = 1/32768 from Ghidra). The game patches this at startup.
-fn getShortToFloat() f32 {
+pub fn getShortToFloat() f32 {
     return rf32(0x00811610);
 }
 // MSVC CRT sin/cos — linked from the WoW process
@@ -202,42 +202,42 @@ const OrigTransformFn = *const fn (u32, u32, u32, u32, u32) callconv(.c) void;
 // Memory access helpers
 // =============================================================================
 
-inline fn ru32(addr: u32) u32 {
+pub inline fn ru32(addr: u32) u32 {
     return @as(*const u32, @ptrFromInt(addr)).*;
 }
-inline fn ri32(addr: u32) i32 {
+pub inline fn ri32(addr: u32) i32 {
     return @as(*const i32, @ptrFromInt(addr)).*;
 }
-inline fn rf32(addr: u32) f32 {
+pub inline fn rf32(addr: u32) f32 {
     return @as(*const f32, @ptrFromInt(addr)).*;
 }
-inline fn ru16(addr: u32) u16 {
+pub inline fn ru16(addr: u32) u16 {
     return @as(*align(1) const u16, @ptrFromInt(addr)).*;
 }
-inline fn ri16(addr: u32) i16 {
+pub inline fn ri16(addr: u32) i16 {
     return @as(*align(1) const i16, @ptrFromInt(addr)).*;
 }
-inline fn ru8(addr: u32) u8 {
+pub inline fn ru8(addr: u32) u8 {
     return @as(*const u8, @ptrFromInt(addr)).*;
 }
 
-inline fn wu32(addr: u32, v: u32) void {
+pub inline fn wu32(addr: u32, v: u32) void {
     @as(*u32, @ptrFromInt(addr)).* = v;
 }
-inline fn wf32(addr: u32, v: f32) void {
+pub inline fn wf32(addr: u32, v: f32) void {
     @as(*f32, @ptrFromInt(addr)).* = v;
 }
-inline fn wu16(addr: u32, v: u16) void {
+pub inline fn wu16(addr: u32, v: u16) void {
     @as(*align(1) u16, @ptrFromInt(addr)).* = v;
 }
-inline fn wu8(addr: u32, v: u8) void {
+pub inline fn wu8(addr: u32, v: u8) void {
     @as(*u8, @ptrFromInt(addr)).* = v;
 }
 
-inline fn fbits(v: f32) u32 {
+pub inline fn fbits(v: f32) u32 {
     return @bitCast(v);
 }
-inline fn ufloat(v: u32) f32 {
+pub inline fn ufloat(v: u32) f32 {
     return @bitCast(v);
 }
 
@@ -245,12 +245,12 @@ inline fn ufloat(v: u32) f32 {
 // Math helpers — using @Vector(4, f32) for SSE
 // =============================================================================
 
-inline fn splat(v: f32) V4 {
+pub inline fn splat(v: f32) V4 {
     return @splat(v);
 }
 
 /// 3-component lerp: a + (b - a) * t. Uses @mulAdd → vfmadd.
-inline fn lerpVec3(a_addr: u32, b_addr: u32, t: f32) [3]f32 {
+pub inline fn lerpVec3(a_addr: u32, b_addr: u32, t: f32) [3]f32 {
     return .{
         @mulAdd(f32, rf32(b_addr) - rf32(a_addr), t, rf32(a_addr)),
         @mulAdd(f32, rf32(b_addr + 4) - rf32(a_addr + 4), t, rf32(a_addr + 4)),
@@ -260,7 +260,7 @@ inline fn lerpVec3(a_addr: u32, b_addr: u32, t: f32) [3]f32 {
 
 /// Scale 3x3 rotation portion of a row-major 4x4 matrix by per-axis scale.
 /// Row 0 *= scale.x, Row 1 *= scale.y, Row 2 *= scale.z
-inline fn scaleMatrix3x3(mat: u32, sx: f32, sy: f32, sz: f32) void {
+pub inline fn scaleMatrix3x3(mat: u32, sx: f32, sy: f32, sz: f32) void {
     // Row 0 (offsets 0x00, 0x04, 0x08)
     wf32(mat + 0x00, rf32(mat + 0x00) * sx);
     wf32(mat + 0x04, rf32(mat + 0x04) * sx);
@@ -279,15 +279,15 @@ inline fn scaleMatrix3x3(mat: u32, sx: f32, sy: f32, sz: f32) void {
 ///   mat[3][0] += dot(mat[0], t)
 ///   mat[3][1] += dot(mat[1], t)
 ///   mat[3][2] += dot(mat[2], t)
-/// Uses @mulAdd chain → vfmadd for each dot product component.
-inline fn applyTranslation(mat: u32, tx: f32, ty: f32, tz: f32) void {
+/// Uses @mulAdd chain for each dot product component.
+pub inline fn applyTranslation(mat: u32, tx: f32, ty: f32, tz: f32) void {
     wf32(mat + 0x30, @mulAdd(f32, tz, rf32(mat + 0x20), @mulAdd(f32, ty, rf32(mat + 0x10), @mulAdd(f32, tx, rf32(mat + 0x00), rf32(mat + 0x30)))));
     wf32(mat + 0x34, @mulAdd(f32, tz, rf32(mat + 0x24), @mulAdd(f32, ty, rf32(mat + 0x14), @mulAdd(f32, tx, rf32(mat + 0x04), rf32(mat + 0x34)))));
     wf32(mat + 0x38, @mulAdd(f32, tz, rf32(mat + 0x28), @mulAdd(f32, ty, rf32(mat + 0x18), @mulAdd(f32, tx, rf32(mat + 0x08), rf32(mat + 0x38)))));
 }
 
 /// Quaternion → rotation matrix as value. No memory writes.
-inline fn buildRotationMatrixVal(qx: f32, qy: f32, qz: f32, qw: f32) [16]f32 {
+pub inline fn buildRotationMatrixVal(qx: f32, qy: f32, qz: f32, qw: f32) [16]f32 {
     const xx2 = qx * (qx + qx);
     const xy2 = qx * (qy + qy);
     const xz2 = qx * (qz + qz);
@@ -308,7 +308,7 @@ inline fn buildRotationMatrixVal(qx: f32, qy: f32, qz: f32, qw: f32) [16]f32 {
 
 /// Quaternion → rotation matrix: writes to game memory via u32 address.
 /// Used by boneKeyframeLoop where the matrix is in game memory.
-inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
+pub inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
     const m = buildRotationMatrixVal(qx, qy, qz, qw);
     inline for (0..16) |i| {
         wf32(mat + @as(u32, @intCast(i * 4)), m[i]);
@@ -316,7 +316,7 @@ inline fn buildRotationMatrix(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void
 }
 
 /// Quaternion → rotation matrix × mat. Fused: builds quat rows as V4, multiplies in-register.
-inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
+pub inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void {
     const xx2 = qx * (qx + qx);
     const xy2 = qx * (qy + qy);
     const xz2 = qx * (qz + qz);
@@ -354,7 +354,7 @@ inline fn rotateByQuaternion(mat: u32, qx: f32, qy: f32, qz: f32, qw: f32) void 
 }
 
 /// Copy 4x4 matrix (64 bytes) — 4 V4 loads/stores instead of 16 scalar copies.
-inline fn copyMat4(dst: u32, src: u32) void {
+pub inline fn copyMat4(dst: u32, src: u32) void {
     inline for (0..4) |i| {
         const off: u32 = @intCast(i * 16);
         const row = V4{ rf32(src + off), rf32(src + off + 4), rf32(src + off + 8), rf32(src + off + 12) };
@@ -367,19 +367,16 @@ inline fn copyMat4(dst: u32, src: u32) void {
 
 /// 4x4 matrix multiply: dst = a * b (row-major). Safe for dst==a or dst==b.
 /// Uses V4 + @mulAdd (FMA): 1 mul + 3 FMA per row = 16 SIMD ops total.
-inline fn matMul4x4(dst: u32, a: u32, b: u32) void {
-    // Pre-load all rows of B
+pub inline fn matMul4x4(dst: u32, a: u32, b: u32) void {
     const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
     const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
     const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
     const b3 = V4{ rf32(b + 48), rf32(b + 52), rf32(b + 56), rf32(b + 60) };
-    // Pre-load all rows of A (in case dst aliases a)
     const a0 = V4{ rf32(a), rf32(a + 4), rf32(a + 8), rf32(a + 12) };
     const a1 = V4{ rf32(a + 16), rf32(a + 20), rf32(a + 24), rf32(a + 28) };
     const a2 = V4{ rf32(a + 32), rf32(a + 36), rf32(a + 40), rf32(a + 44) };
     const a3 = V4{ rf32(a + 48), rf32(a + 52), rf32(a + 56), rf32(a + 60) };
     const rows = [4]V4{ a0, a1, a2, a3 };
-    // Compute: each output row = broadcast(a[row][col]) * b_row, accumulated with FMA
     inline for (0..4) |i| {
         const s0: V4 = @splat(rows[i][0]);
         const s1: V4 = @splat(rows[i][1]);
@@ -395,7 +392,7 @@ inline fn matMul4x4(dst: u32, a: u32, b: u32) void {
 }
 
 /// 4x4 matrix multiply: dst = a * b. Left operand is a local array, right is game memory.
-inline fn matMul4x4Local(dst: u32, a: [16]f32, b: u32) void {
+pub inline fn matMul4x4Local(dst: u32, a: [16]f32, b: u32) void {
     const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
     const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
     const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
@@ -421,7 +418,7 @@ inline fn matMul4x4Local(dst: u32, a: [16]f32, b: u32) void {
 }
 
 /// In-place multiply: a = a * b (b from game memory). Returns new array.
-inline fn matMul4x4InPlace(a: [16]f32, b: u32) [16]f32 {
+pub inline fn matMul4x4InPlace(a: [16]f32, b: u32) [16]f32 {
     const b0 = V4{ rf32(b), rf32(b + 4), rf32(b + 8), rf32(b + 12) };
     const b1 = V4{ rf32(b + 16), rf32(b + 20), rf32(b + 24), rf32(b + 28) };
     const b2 = V4{ rf32(b + 32), rf32(b + 36), rf32(b + 40), rf32(b + 44) };
@@ -448,7 +445,7 @@ inline fn matMul4x4InPlace(a: [16]f32, b: u32) [16]f32 {
 }
 
 /// Set identity matrix (16 floats)
-inline fn setIdentity(dst: u32) void {
+pub inline fn setIdentity(dst: u32) void {
     inline for (0..16) |i| {
         const val: f32 = if (i == 0 or i == 5 or i == 10 or i == 15) 1.0 else 0.0;
         wf32(dst + @as(u32, @intCast(i)) * 4, val);
@@ -458,7 +455,7 @@ inline fn setIdentity(dst: u32) void {
 /// Normalize a 3-component vector in memory at addr.
 /// Calls game's vec3 squared magnitude (0x4549F0), then sqrt, epsilon check, divide.
 /// Assembly pattern: CALL 0x4549F0 → FSQRT → FABS → FCOMP → FLD1 → FDIVRP → FMUL×3
-inline fn normalizeVec3InPlace(addr: u32) void {
+pub inline fn normalizeVec3InPlace(addr: u32) void {
     const sq_mag = callVec3SqMag(addr);
     const len = @sqrt(sq_mag);
     if (@abs(len) >= getBillboardEpsilon()) {
@@ -471,7 +468,7 @@ inline fn normalizeVec3InPlace(addr: u32) void {
 
 /// Normalize a 3-component vector, returns (nx, ny, nz). Returns unchanged if too small.
 /// Writes vec3 to stack local and calls game's vec3 squared magnitude (0x4549F0).
-inline fn normalizeVec3(x: f32, y: f32, z: f32) [3]f32 {
+pub inline fn normalizeVec3(x: f32, y: f32, z: f32) [3]f32 {
     var v: [3]f32 = .{ x, y, z };
     const sq_mag = callVec3SqMag(@intFromPtr(&v));
     const len = @sqrt(sq_mag);
@@ -481,7 +478,7 @@ inline fn normalizeVec3(x: f32, y: f32, z: f32) [3]f32 {
 }
 
 /// Cross product of two 3-component vectors
-inline fn crossVec3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) [3]f32 {
+pub inline fn crossVec3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) [3]f32 {
     return .{
         ay * bz - az * by,
         az * bx - ax * bz,
@@ -502,7 +499,7 @@ inline fn crossVec3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) [3]f32
 
 /// IsParticleBufferEmpty (0x7B5F60) — recursive tree check.
 /// Returns true if any node in the tree has active particles (this->0x64 != 0).
-fn isParticleBufferNotEmpty(ptr: u32) bool {
+pub fn isParticleBufferNotEmpty(ptr: u32) bool {
     if (ru32(ptr + 0x64) != 0) return true;
     const count = ru32(ptr + 0x7C);
     if (count == 0) return false;
@@ -514,7 +511,7 @@ fn isParticleBufferNotEmpty(ptr: u32) bool {
     return false;
 }
 
-const InterpResult = struct {
+pub const InterpResult = struct {
     idx0: u32,
     idx1: u32,
     t: f32,
@@ -523,7 +520,7 @@ const InterpResult = struct {
 /// Check if two AnimData tracks share the same temporal structure,
 /// meaning findInterpIdx would produce identical (idx0, idx1, t) for both.
 /// Both must use prim_time (time_index == -1) and have matching range/timestamp layout.
-inline fn canReuseInterp(ref_anim: u32, other_anim: u32) bool {
+pub inline fn canReuseInterp(ref_anim: u32, other_anim: u32) bool {
     if (ri16(ref_anim + AD.time_index) != -1) return false;
     if (ri16(other_anim + AD.time_index) != -1) return false;
     return ru32(ref_anim + AD.track_count_flag) == ru32(other_anim + AD.track_count_flag) and
@@ -533,7 +530,7 @@ inline fn canReuseInterp(ref_anim: u32, other_anim: u32) bool {
 }
 
 /// Write temporal coherence cache for a reused result so next frame's forward scan starts right.
-inline fn applyCachedResult(cached: InterpResult, output: u32) void {
+pub inline fn applyCachedResult(cached: InterpResult, output: u32) void {
     wu32(output, cached.idx0);
 }
 
@@ -541,7 +538,7 @@ inline fn applyCachedResult(cached: InterpResult, output: u32) void {
 /// Reimplementation of game function at 0x713D50 (334 bytes).
 /// Assembly-verified against t44_helpers_asm.txt.
 /// Returns indices and t in registers; only writes output[0] for next-frame cache persistence.
-inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) InterpResult {
+pub inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_data: u32, output: u32) InterpResult {
     const n_ranges = ru32(anim_data + AD.track_count_flag);
 
     // Range selection: [start, last] not [start, count]
@@ -659,13 +656,13 @@ inline fn findInterpIdx(this: u32, search_value: u32, track_index: u32, anim_dat
 
 /// Quaternion keyframe interpolation — replaces game's 0x713EA0.
 /// Assembly-verified: stride 16 (SHL EAX,4), values are 4×float, not CompQuat.
-inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) [4]f32 {
+pub inline fn interpAnimKF(this: u32, bone_rt: u32, anim_data: u32, output: u32) [4]f32 {
     return interpAnimKFCached(this, bone_rt, anim_data, output, null);
 }
 
 /// Quaternion keyframe interpolation with optional cached primary InterpResult.
 /// When cached_primary is non-null, skips findInterpIdx and uses the cached indices/t.
-inline fn interpAnimKFCached(this: u32, bone_rt: u32, anim_data: u32, output: u32, cached_primary: ?InterpResult) [4]f32 {
+pub inline fn interpAnimKFCached(this: u32, bone_rt: u32, anim_data: u32, output: u32, cached_primary: ?InterpResult) [4]f32 {
     const r = if (cached_primary) |c| blk: {
         applyCachedResult(c, output);
         break :blk c;
@@ -716,7 +713,7 @@ inline fn interpAnimKFCached(this: u32, bone_rt: u32, anim_data: u32, output: u3
 
 /// Fast modulo for looping animations. The value is almost always < 2*length
 /// (frame-to-frame delta is small), so a conditional subtract beats idiv.
-inline fn fastMod(val: u32, len: u32) u32 {
+pub inline fn fastMod(val: u32, len: u32) u32 {
     var v = val;
     if (v >= len) {
         v -%=  len;
@@ -727,12 +724,12 @@ inline fn fastMod(val: u32, len: u32) u32 {
 
 /// Float truncation — replaces game's __ftol at 0x40A2B0.
 /// Original: FILD i32 → FMUL f32 → __ftol, all in 80-bit x87 precision.
-inline fn callFtol(delta: i32, scale_addr: u32) i32 {
+pub inline fn callFtol(delta: i32, scale_addr: u32) i32 {
     return @intFromFloat(@as(f32, @floatFromInt(delta)) * rf32(scale_addr));
 }
 
 /// Vec3 squared magnitude — replaces game's 0x4549F0. Uses @mulAdd → vfmadd.
-inline fn callVec3SqMag(vec3_ptr: u32) f32 {
+pub inline fn callVec3SqMag(vec3_ptr: u32) f32 {
     const x = rf32(vec3_ptr);
     const y = rf32(vec3_ptr + 4);
     const z = rf32(vec3_ptr + 8);
@@ -741,7 +738,7 @@ inline fn callVec3SqMag(vec3_ptr: u32) f32 {
 
 /// Read i16 at keyframe index. Replaces game's getIndexOffset (0x71AFF0) + setShortValue (0x71B010).
 /// getIndexOffset returns table[4] + index*2, setShortValue copies a word. Direct read is equivalent.
-inline fn readShortViaGame(table: u32, index: u32) i16 {
+pub inline fn readShortViaGame(table: u32, index: u32) i16 {
     const values_ptr = ru32(table + 4);
     return ri16(values_ptr + index * 2);
 }
@@ -749,7 +746,7 @@ inline fn readShortViaGame(table: u32, index: u32) i16 {
 /// Interpolate a Vec3 track (12 bytes per keyframe) with crossfade support.
 /// Writes result to output[3..5] (as u32 float bits). Uses output[0..2] for indices/t,
 /// and output[6..11] for secondary crossfade state.
-inline fn interpVec3Track(
+pub inline fn interpVec3Track(
     this: u32,
     bone_rt: u32,
     anim_data: u32,
@@ -760,7 +757,7 @@ inline fn interpVec3Track(
 }
 
 /// Vec3 keyframe interpolation with optional cached primary InterpResult.
-inline fn interpVec3TrackCached(
+pub inline fn interpVec3TrackCached(
     this: u32,
     bone_rt: u32,
     anim_data: u32,
@@ -806,7 +803,7 @@ inline fn interpVec3TrackCached(
 
 /// Interpolate a single float track (4 bytes per keyframe) with crossfade.
 /// Writes result to output[3] as float bits.
-inline fn interpFloatTrack(
+pub inline fn interpFloatTrack(
     this: u32,
     bone_rt: u32,
     anim_data: u32,
@@ -846,7 +843,7 @@ inline fn interpFloatTrack(
 // Hermite/Bezier basis + particle emitter interp helpers
 // =============================================================================
 
-inline fn hermiteBasis(t: f32) struct { h1: f32, h2: f32, h3: f32, h4: f32 } {
+pub inline fn hermiteBasis(t: f32) struct { h1: f32, h2: f32, h3: f32, h4: f32 } {
     const t2 = t * t;
     const t3 = t2 * t;
     return .{
@@ -857,7 +854,7 @@ inline fn hermiteBasis(t: f32) struct { h1: f32, h2: f32, h3: f32, h4: f32 } {
     };
 }
 
-inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
+pub inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
     const u = 1.0 - t;
     const t2 = t * t;
     const u_sq = u * u;
@@ -869,7 +866,7 @@ inline fn bezierBasis(t: f32) struct { b0: f32, b1: f32, b2: f32, b3: f32 } {
     };
 }
 
-inline fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+pub inline fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
     const r = findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
 
     const mode = ri16(anim_data + AD.interp_mode);
@@ -950,7 +947,7 @@ inline fn interpVec3Track36(this: u32, bone_rt_base: u32, anim_data: u32, output
     }
 }
 
-inline fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
+pub inline fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, output: u32) void {
     const r = findInterpIdx(this, ru32(bone_rt_base + 0x98), ru32(bone_rt_base + 0x9C), anim_data, output);
 
     const mode = ri16(anim_data + AD.interp_mode);
@@ -1007,7 +1004,7 @@ inline fn interpFloatTrack12(this: u32, bone_rt_base: u32, anim_data: u32, outpu
 // Same as interpFloatTrack but uses the bone_rt directly (different register mapping)
 // =============================================================================
 
-inline fn getInterpolatedFloat(this: u32, bone_rt_addr: u32, anim_data_short_ptr: u32, output: u32) void {
+pub inline fn getInterpolatedFloat(this: u32, bone_rt_addr: u32, anim_data_short_ptr: u32, output: u32) void {
     const r = findInterpIdx(this, ru32(bone_rt_addr + 0x98), ru32(bone_rt_addr + 0x9C), anim_data_short_ptr, output);
 
     const interp_mode = ri16(anim_data_short_ptr);
@@ -1040,7 +1037,7 @@ inline fn getInterpolatedFloat(this: u32, bone_rt_addr: u32, anim_data_short_ptr
 // applies inverse translation.
 // =============================================================================
 
-fn calcScaledInverse(this_mat: u32, out: u32, scale: f32) void {
+pub fn calcScaledInverse(this_mat: u32, out: u32, scale: f32) void {
     // Simple transpose for unit scale
     if (@abs(scale - 1.0) < @as(f32, @bitCast(@as(u32, 0x35800000)))) {
         // Transpose 3x3
@@ -1472,68 +1469,60 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
                     const pivot_y = rf32(bdef + BD.pivot_y);
                     const pivot_z = rf32(bdef + BD.pivot_z);
 
-                    // Compute translated position
-                    const tx = local_mat[0] * pivot_x + local_mat[4] * pivot_y + local_mat[8] * pivot_z + local_mat[12];
-                    const ty = local_mat[1] * pivot_x + local_mat[5] * pivot_y + local_mat[9] * pivot_z + local_mat[13];
-                    const tz = local_mat[2] * pivot_x + local_mat[6] * pivot_y + local_mat[10] * pivot_z + local_mat[14];
+                    // Compute translated position — accumulation order must match
+                    // original x87. Row 0 uses (pz + px + py), rows 1/2 use (pz + py + px).
+                    const tx = local_mat[8] * pivot_z + local_mat[0] * pivot_x + local_mat[4] * pivot_y + local_mat[12];
+                    const ty = local_mat[9] * pivot_z + local_mat[5] * pivot_y + local_mat[1] * pivot_x + local_mat[13];
+                    const tz = local_mat[10] * pivot_z + local_mat[6] * pivot_y + local_mat[2] * pivot_x + local_mat[14];
 
                     const bb_type = combined_flags & 6;
+                    const billboard_eps_f64: f64 = @floatCast(rf32(0x008029d4));
+                    const cull_eps_f64: f64 = @floatCast(rf32(0x0080c5c8));
                     if (bb_type == 2) {
-                        // Cylindrical billboard — normalize each column
-                        const n0 = normalizeVec3(local_mat[0], local_mat[1], local_mat[2]);
-                        local_mat[0] = n0[0];
-                        local_mat[1] = n0[1];
-                        local_mat[2] = n0[2];
-                        const n1 = normalizeVec3(local_mat[4], local_mat[5], local_mat[6]);
-                        local_mat[4] = n1[0];
-                        local_mat[5] = n1[1];
-                        local_mat[6] = n1[2];
-                        const n2 = normalizeVec3(local_mat[8], local_mat[9], local_mat[10]);
-                        local_mat[8] = n2[0];
-                        local_mat[9] = n2[1];
-                        local_mat[10] = n2[2];
+                        // Cylindrical billboard — normalize each column in f64 to
+                        // match x87's extended-precision 1/sqrt. Previous f32 impl
+                        // drifted from x87 by a ULP per axis, causing particle
+                        // emitter orientation to jitter on camera motion and
+                        // flicker against ground effects.
+                        inline for ([_]u32{ 0, 4, 8 }) |row_off| {
+                            const cx: f64 = @floatCast(local_mat[row_off]);
+                            const cy: f64 = @floatCast(local_mat[row_off + 1]);
+                            const cz: f64 = @floatCast(local_mat[row_off + 2]);
+                            const len_sq = cx * cx + cy * cy + cz * cz;
+                            const len = @sqrt(len_sq);
+                            if (len >= billboard_eps_f64) {
+                                const inv = 1.0 / len;
+                                local_mat[row_off] = @floatCast(cx * inv);
+                                local_mat[row_off + 1] = @floatCast(cy * inv);
+                                local_mat[row_off + 2] = @floatCast(cz * inv);
+                            }
+                        }
                     } else if (bb_type == 4) {
-                        // Spherical billboard — inherit camera rotation with scale preservation
-                        // All sqmag computations MUST call game's vec3SqMag (0x4549F0)
-                        const cam0 = [3]f32{ rf32(this + SO.bb_row0), rf32(this + SO.bb_row0 + 4), rf32(this + SO.bb_row0 + 8) };
-                        const cam_len_sq0 = callVec3SqMag(this + SO.bb_row0);
-                        var s0: f32 = 1.0;
-                        if (cam_len_sq0 > rf32(0x0080c5c8)) {
-                            var tmp0 = [3]f32{ local_mat[0], local_mat[1], local_mat[2] };
-                            const mat_len_sq0 = callVec3SqMag(@intFromPtr(&tmp0));
-                            s0 = @sqrt(mat_len_sq0 / cam_len_sq0);
+                        // Spherical billboard — inherit camera basis, rescale to
+                        // preserve each column's length. All intermediates in f64
+                        // to match x87's 80-bit temporaries.
+                        inline for ([_]struct { row_off: u32, src_off: u32 }{
+                            .{ .row_off = 0, .src_off = SO.bb_row0 },
+                            .{ .row_off = 4, .src_off = SO.world_xform },
+                            .{ .row_off = 8, .src_off = SO.world_xform + 16 },
+                        }) |p| {
+                            const src_addr = this + p.src_off;
+                            const cam_x: f64 = @floatCast(rf32(src_addr));
+                            const cam_y: f64 = @floatCast(rf32(src_addr + 4));
+                            const cam_z: f64 = @floatCast(rf32(src_addr + 8));
+                            const cam_len_sq = cam_x * cam_x + cam_y * cam_y + cam_z * cam_z;
+                            var s: f64 = 1.0;
+                            if (cam_len_sq > cull_eps_f64) {
+                                const mx: f64 = @floatCast(local_mat[p.row_off]);
+                                const my: f64 = @floatCast(local_mat[p.row_off + 1]);
+                                const mz: f64 = @floatCast(local_mat[p.row_off + 2]);
+                                const mat_len_sq = mx * mx + my * my + mz * mz;
+                                s = @sqrt(mat_len_sq / cam_len_sq);
+                            }
+                            local_mat[p.row_off] = @floatCast(s * cam_x);
+                            local_mat[p.row_off + 1] = @floatCast(s * cam_y);
+                            local_mat[p.row_off + 2] = @floatCast(s * cam_z);
                         }
-                        local_mat[0] = s0 * cam0[0];
-                        local_mat[1] = s0 * cam0[1];
-                        local_mat[2] = s0 * cam0[2];
-
-                        const wt0 = rf32(this + SO.world_xform + 0 * 4);
-                        const wt1 = rf32(this + SO.world_xform + 1 * 4);
-                        const wt2 = rf32(this + SO.world_xform + 2 * 4);
-                        const wt_len_sq = callVec3SqMag(this + SO.world_xform);
-                        var s1: f32 = 1.0;
-                        if (wt_len_sq > rf32(0x0080c5c8)) {
-                            var tmp1 = [3]f32{ local_mat[4], local_mat[5], local_mat[6] };
-                            const mat_len_sq1 = callVec3SqMag(@intFromPtr(&tmp1));
-                            s1 = @sqrt(mat_len_sq1 / wt_len_sq);
-                        }
-                        local_mat[4] = s1 * wt0;
-                        local_mat[5] = s1 * wt1;
-                        local_mat[6] = s1 * wt2;
-
-                        const wt4 = rf32(this + SO.world_xform + 4 * 4);
-                        const wt5 = rf32(this + SO.world_xform + 5 * 4);
-                        const wt6 = rf32(this + SO.world_xform + 6 * 4);
-                        const wt_len_sq2 = callVec3SqMag(this + SO.world_xform + 16);
-                        var s2: f32 = 1.0;
-                        if (wt_len_sq2 > rf32(0x0080c5c8)) {
-                            var tmp2 = [3]f32{ local_mat[8], local_mat[9], local_mat[10] };
-                            const mat_len_sq2 = callVec3SqMag(@intFromPtr(&tmp2));
-                            s2 = @sqrt(mat_len_sq2 / wt_len_sq2);
-                        }
-                        local_mat[8] = s2 * wt4;
-                        local_mat[9] = s2 * wt5;
-                        local_mat[10] = s2 * wt6;
                     } else if (bb_type == 6) {
                         // Full billboard — copy camera rotation directly
                         local_mat[0] = rf32(this + SO.bb_row0);
@@ -1547,11 +1536,12 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
                         local_mat[10] = rf32(this + SO.world_xform + 6 * 4);
                     }
 
-                    // Recompute translation: pos - rot * pivot
+                    // Recompute translation: pos - rot * pivot.
+                    // Accumulation order mirrors the tx/ty/tz computation above.
                     if ((combined_flags & 1) == 0) {
-                        local_mat[12] = tx - (local_mat[0] * pivot_x + local_mat[4] * pivot_y + local_mat[8] * pivot_z);
-                        local_mat[13] = ty - (local_mat[1] * pivot_x + local_mat[5] * pivot_y + local_mat[9] * pivot_z);
-                        local_mat[14] = tz - (local_mat[2] * pivot_x + local_mat[6] * pivot_y + local_mat[10] * pivot_z);
+                        local_mat[12] = tx - (local_mat[8] * pivot_z + local_mat[0] * pivot_x + local_mat[4] * pivot_y);
+                        local_mat[13] = ty - (local_mat[9] * pivot_z + local_mat[5] * pivot_y + local_mat[1] * pivot_x);
+                        local_mat[14] = tz - (local_mat[10] * pivot_z + local_mat[6] * pivot_y + local_mat[2] * pivot_x);
                     } else {
                         local_mat[12] = rf32(this + SO.world_xform + 8 * 4);
                         local_mat[13] = rf32(this + SO.world_xform + 9 * 4);
@@ -1671,9 +1661,13 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
                 const bpx = rf32(bdef + BD.pivot_x);
                 const bpy = rf32(bdef + BD.pivot_y);
                 const bpz = rf32(bdef + BD.pivot_z);
+                // Accumulation order mirrors original x87:
+                //   pos_x: px + py + pz + const
+                //   pos_y: py + pz + px + const
+                //   pos_z: py + pz + px + const
                 const pos_x = bpx * rf32(om) + bpy * rf32(om + 0x10) + bpz * rf32(om + 0x20) + rf32(om + 0x30);
-                const pos_y = bpx * rf32(om + 0x04) + bpy * rf32(om + 0x14) + bpz * rf32(om + 0x24) + rf32(om + 0x34);
-                const pos_z = bpx * rf32(om + 0x08) + bpy * rf32(om + 0x18) + bpz * rf32(om + 0x28) + rf32(om + 0x38);
+                const pos_y = bpy * rf32(om + 0x14) + bpz * rf32(om + 0x24) + bpx * rf32(om + 0x04) + rf32(om + 0x34);
+                const pos_z = bpy * rf32(om + 0x18) + bpz * rf32(om + 0x28) + bpx * rf32(om + 0x08) + rf32(om + 0x38);
 
                 // Switch on billboard post-processing type
                 const bb_post = combined_flags & 0x78;
@@ -1798,10 +1792,14 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
                 const r2z_s = rf32(om + 0x28);
                 wf32(om + 0x28, scale_len2 * r2z_s);
 
-                // Recompute translation: pos - scaled_matrix * pivot
-                wf32(om + 0x30, pos_x - (scale_len0 * r0x_s * bpx + scale_len1 * r1x_s * bpy + scale_len2 * r2x_s * bpz));
-                wf32(om + 0x34, pos_y - (scale_len0 * r0y_s * bpx + scale_len1 * r1y_s * bpy + scale_len2 * r2y_s * bpz));
-                wf32(om + 0x38, pos_z - (scale_len0 * r0z_s * bpx + scale_len1 * r1z_s * bpy + scale_len2 * r2z_s * bpz));
+                // Recompute translation: pos - scaled_matrix * pivot.
+                // Accumulation order must match original x87: row0 + row2 + row1
+                // (pivot_x, then pivot_z, then pivot_y). f32 addition isn't associative —
+                // this ordering matters for matching terrain-pipeline precision and
+                // avoiding z-fighting on ground-aligned billboard spell effects.
+                wf32(om + 0x30, pos_x - (scale_len0 * r0x_s * bpx + scale_len2 * r2x_s * bpz + scale_len1 * r1x_s * bpy));
+                wf32(om + 0x34, pos_y - (scale_len0 * r0y_s * bpx + scale_len2 * r2y_s * bpz + scale_len1 * r1y_s * bpy));
+                wf32(om + 0x38, pos_z - (scale_len0 * r0z_s * bpx + scale_len2 * r2z_s * bpz + scale_len1 * r1z_s * bpy));
                 wf32(om + 0x3C, 1.0);
             }
         }
@@ -1817,8 +1815,6 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
     // above. Each section iterates over its respective model array and calls
     // findInterpIdx + lerp + crossfade blend.
     // =========================================================================
-
-    // BISECT: stop after section 7 (bone loop)
 
     // Section 8: Texture animation loop
     texAnimLoop(this, model_hdr, frame_ctr);
@@ -1841,7 +1837,7 @@ pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) 
 // Post-bone-loop sections (extracted for readability)
 // =============================================================================
 
-fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x54);
     if (count == 0) return;
@@ -1891,7 +1887,7 @@ fn texAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
 
 /// Short-value interpolation: uses InterpResult indices, looks up short values, interpolates.
 /// Shared by texAnimLoop alpha, colorAnimLoop, and word animation crossfade.
-inline fn shortInterpToFloat(anim_data: u32, r: InterpResult, stf: f32) f32 {
+pub inline fn shortInterpToFloat(anim_data: u32, r: InterpResult, stf: f32) f32 {
     const mode = ri16(anim_data);
     const table = anim_data + AD.nvalues;
     if (mode == 0) {
@@ -1903,7 +1899,7 @@ inline fn shortInterpToFloat(anim_data: u32, r: InterpResult, stf: f32) f32 {
     }
 }
 
-fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     // Assembly: model_hdr+0x64 is both entry gate AND loop count
     const count = ru32(model_hdr + 0x64);
@@ -1946,7 +1942,7 @@ fn colorAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     // Assembly 0x715E46-0x715F25: word/byte animation section
     // model_hdr+0x6C = count, model_hdr+0x70 = data base
@@ -1989,7 +1985,7 @@ fn wordAnimLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
+pub fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     const count = ru32(model_hdr + 0x74);
     if (count == 0) return;
 
@@ -2050,7 +2046,7 @@ fn boneKeyframeLoop(this: u32, model_hdr: u32) void {
     }
 }
 
-fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     // Particle emitters are the largest section (~1000 lines of decompiled C).
     // They follow the same interpolation patterns but with many sub-tracks per emitter.
     // For the initial implementation, we handle the key tracks (position, speed, scale).
@@ -2066,7 +2062,7 @@ fn particleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     additionalParticleLoops(this, model_hdr, frame_ctr);
 }
 
-fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x11C);
     if (count == 0) return;
@@ -2136,7 +2132,7 @@ fn ribbonEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     const count = ru32(model_hdr + 0x124);
     if (count == 0) return;
@@ -2169,7 +2165,7 @@ fn particleEmitterLoop(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
+pub fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     const stf = getShortToFloat();
     // Assembly: model_hdr+0x134 section (asm 0x71763E-0x717D6A)
@@ -2377,7 +2373,7 @@ fn additionalParticleLoops(this: u32, model_hdr: u32, frame_ctr: u32) void {
     }
 }
 
-fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
+pub fn attachmentRecursion(this: u32, model_hdr: u32, bone_out_base: u32, frame_ctr: u32) void {
     @setEvalBranchQuota(50000);
     const hierarchy = ru32(this + SO.hierarchy_ptr);
     if (hierarchy == 0) return;
