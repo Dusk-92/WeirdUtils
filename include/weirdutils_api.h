@@ -43,6 +43,8 @@ static const char *const WeirdUtils__DllNames[] = {
     "bigcursor.dll",
     "minimapicons.dll",
     "dpslog.dll",
+    "clickthrough.dll",
+    "weirdperformance.dll",
     NULL
 };
 
