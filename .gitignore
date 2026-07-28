@@ -43,3 +43,6 @@ __pycache__/
 # fetched at runtime by tools/stormlib.py
 tools/libstorm.so
 tools/lib/
+
+# zig package cache
+zig-pkg/
