@@ -274,14 +274,14 @@ what you do with them on someone else's server is between you and that server's 
 
 ### Building
 
-Requires Zig 0.16 and a checkout of [zhook](https://codeberg.org/marcelinevq/zhook)
-as a sibling directory - `build.zig.zon` refers to it by relative path:
+Requires Zig 0.16. The only dependency is
+[zhook](https://codeberg.org/marcelinevq/zhook), the x86 inline hooking library,
+pinned in `build.zig.zon` and fetched automatically:
 
 ```sh
-git clone https://codeberg.org/marcelinevq/zhook
 git clone https://codeberg.org/MarcelineVQ/WeirdUtils
 cd WeirdUtils
-zig build                                   # zig-out/bin/weirdutils.dll
+zig build                                        # zig-out/bin/weirdutils.dll
 zig build all-variants -Doptimize=ReleaseSmall   # + one DLL per module
 ```
 

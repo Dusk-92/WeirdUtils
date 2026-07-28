@@ -1,0 +1,10 @@
+.{
+    .name = .zhook,
+    .version = "0.1.0",
+    .fingerprint = 0xf05c933a601259a4,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
