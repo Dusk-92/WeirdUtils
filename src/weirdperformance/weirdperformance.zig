@@ -19,6 +19,7 @@ const mod_mutex = @import("../mutex.zig");
 const inflate_hook = @import("inflate_hook.zig");
 const timer_fix = @import("timer_fix.zig");
 const filecache = @import("filecache.zig");
+const transform_capture = @import("transform_capture.zig");
 
 pub const module_name: [*:0]const u8 = "weirdperformance";
 
@@ -364,8 +365,17 @@ pub fn installHooks() void {
     log = logging.Logger.open(module_name, .both);
     var installed: u32 = 0;
 
-    // Bone transform SSE
-    if (transform_hook.attach(0x714260, &bone_sse64.transformImpl_SSE64) == .ok) installed += 1;
+    // Bone transform: either the f64 SSE impl for normal operation, OR the
+    // transform_capture hook for recording game-x87 state to disk.
+    // Compile-time flag picks one: the two are mutually exclusive because
+    // capture requires the game's x87 output (bone_sse64 would replace it).
+    const build_options = @import("build_options");
+    const capture_mode = @hasDecl(build_options, "transform_capture") and build_options.transform_capture;
+    if (capture_mode) {
+        if (transform_capture.install()) installed += 1;
+    } else {
+        if (transform_hook.attach(0x714260, &bone_sse64.transformImpl_SSE64) == .ok) installed += 1;
+    }
 
     // Frustum clip SSE (1.9x speedup)
     if (clip_hook.attach(0x6318C0, &clip_sse.clipPolygonToSinglePlane) == .ok) installed += 1;

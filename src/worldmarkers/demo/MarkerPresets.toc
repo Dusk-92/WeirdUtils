@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: [WeirdUtils] Marker Presets
+## Notes: Save and restore world marker positions. Requires WeirdUtils World Markers.
+## Version: 1.0
+## SavedVariablesPerCharacter: MarkerPresetsDB
+
+MarkerPresets.lua

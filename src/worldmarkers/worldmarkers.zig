@@ -22,7 +22,6 @@ const std = @import("std");
 const hook = @import("zhook");
 const lua = @import("../lua.zig");
 const o = @import("offsets.zig");
-const offsets = @import("../offsets.zig");
 const wow = @import("../wow.zig");
 const logging = @import("../logging.zig");
 
@@ -356,7 +355,7 @@ fn placeMarker(index: usize, pos: Vec3) bool {
     // Store persistent definition
     marker_defs[index] = .{
         .pos = pos,
-        .area_id = hook.readMem(u32, offsets.ZONE_AREA_ID),
+        .area_id = wow.getMapId(),
         .active = true,
     };
 
@@ -590,7 +589,7 @@ fn tickAnimations() void {
         if (player != 0) {
             const player_pos = getUnitPosition(player);
             if (player_pos.x != 0 or player_pos.y != 0 or player_pos.z != 0) {
-                const current_area = hook.readMem(u32, offsets.ZONE_AREA_ID);
+                const current_area = wow.getMapId();
                 for (0..NUM_MARKERS) |i| {
                     if (!marker_defs[i].active) continue;
                     if (marker_entities[i] != null) continue; // entity alive, skip

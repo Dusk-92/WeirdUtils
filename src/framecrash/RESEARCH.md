@@ -836,3 +836,43 @@ Called from:
 ### Module currently DISABLED by default
 
 Build flag changed to `orelse false` in build.zig. Enable with `-Dframecrash=true`.
+
+---
+
+## Uninvestigated: NULL this in PrepareModelForRender (0x710450)
+
+Crash observed 2026-03-25:
+```
+0x0071045A: MOV EAX, [ESI + 0x10]  -- ESI=ECX=0 (NULL this pointer)
+ACCESS_VIOLATION reading 0x00000010
+```
+
+Call chain:
+```
+CM2Scene_ExecuteRenderPass (0x708900)
+  -> RenderBatches (0x70B371)
+    -> DrawCallback (0x70D960)
+      -> ValidateClientObjectAndProcessWithManagerLookup (0x6C7780)
+        -> PrepareModelForRender (0x710450) -- CRASH
+```
+
+Root cause: at 0x6C77A8, `MOV EAX, [EAX+0xD8]` reads a field that can be NULL. The
+parent object is NULL-checked but the +0xD8 field is not. Then `MOV ECX, EAX` passes
+NULL as this to PrepareModelForRender.
+
+```asm
+0x6C77A4: TEST EAX, EAX        ; parent object null check
+0x6C77A6: JZ skip               ; OK
+0x6C77A8: MOV EAX, [EAX+0xD8]  ; read child -- CAN BE NULL
+0x6C77AE: PUSH 0
+0x6C77B0: PUSH 0
+0x6C77B2: MOV ECX, EAX          ; this = possibly NULL
+0x6C77B4: CALL PrepareModelForRender  ; CRASH if ECX=0
+```
+
+PrepareModelForRender: thiscall(ECX=this, stack: 2 params), RET 0x8.
+
+Fix options:
+1. Hook PrepareModelForRender with NULL-this guard (protects all callers)
+2. Patch call site at 0x6C77AE to add TEST EAX,EAX + JZ (needs code cave, only 11 bytes available for 15 bytes of patched code)
+3. Binary patch PrepareModelForRender prologue (needs to preserve RET 0x8 stack cleanup)

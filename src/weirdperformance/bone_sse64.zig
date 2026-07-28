@@ -284,7 +284,7 @@ fn attachmentRecursion64(this: u32, model_hdr: u32, bone_out_base: u32, frame_ct
 // scene objects stay on the f64 pipeline.
 // =============================================================================
 
-pub fn transformImpl_SSE64(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
+pub export fn transformImpl_SSE64(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
     @setEvalBranchQuota(50000);
 
     // Section 1: Entry checks

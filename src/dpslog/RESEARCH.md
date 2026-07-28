@@ -599,6 +599,20 @@ All in the 0x51xxxx addon/UI system. Zeroing/overwriting these corrupts game sta
   SMSG_RESURRECT_FAILED (0x252).
 - [ ] **UNIT_POSITION**: Periodic or event-driven unit position data in combat log events.
   Useful for replay/analysis tools.
+- [ ] **SPELL_CAST dest coordinates**: SMSG_SPELL_START/GO include destination XYZ for
+  area-targeted spells via TARGET_FLAG_DEST_LOCATION (0x40) in SpellCastTargets.
+  - Target data format in packet: uint16 targetMask, then if 0x02: packed GUID (unit),
+    if 0x20: 3x float (source XYZ), if 0x40: 3x float (dest XYZ)
+  - Player ground AoE (Blizzard, Flamestrike, Rain of Fire, Volley): client sends clicked
+    position, server echoes in both SPELL_START and SPELL_GO
+  - Mob ground AoE (Ignite Earth, mob Flamestrike): AI script calls CastSpell(x,y,z,...),
+    server sets 0x40 via setDestination(), coords appear in SPELL_GO
+  - Self-centered AoE (Arcane Explosion, Hellfire): no 0x40, no dest coords
+  - Triggered spells: dest overridden to caster position regardless of original flags
+  - Already hooked at 0x6E7640 (spellStartDetour) -- just need to parse target mask and
+    extract floats when 0x40 is set, emit as extra CLEU params on SPELL_CAST_START/SUCCESS
+  - Server ref: SpellCastTargets::write() in tortoise-wow Spell.cpp lines 223-268
+  - Enables boss mod positional warnings (e.g. Karazhan 40-man Ignite Earth ground zones)
 
 ### Completed reference
 - [x] RANGE_MISSED: Detected via spell ID check (75/5019) in ProcessSpellCombatResult hook.
@@ -1010,3 +1024,91 @@ ProcessSpellDamageWithLocalization (0x629d30)
 | FrameScript_CreateEvents | FrameScript_CreateEvents | 0x703D90 |
 | FrameScript_RegisterFunction | FrameScript_RegisterFunction | 0x704120 |
 | GetSpellNameById | (SpellDb at 0xC0D780) | 0x6264b0 |
+
+---
+
+## Missing WotLK CLEU Subevents
+
+Events present in WotLK 3.3.5 COMBAT_LOG_EVENT_UNFILTERED but not yet implemented.
+
+### Loot Events (novel -- never existed in any WoW combat log)
+
+LOOT was never a COMBAT_LOG_EVENT subevent in any WoW expansion. Loot tracking addons
+use separate Lua events (LOOT_OPENED, CHAT_MSG_LOOT, etc.), not the combat log.
+Adding loot to our combat log would be a novel extension, not WotLK parity.
+
+Relevant vanilla packets if we ever want to add this:
+
+| Packet | Opcode | Format |
+|--------|--------|--------|
+| SMSG_ITEM_PUSH_RESULT | 0x166 | playerGUID(8), received(4), created(4), showInChat(4), bagSlot(1), itemSlot(4), itemID(4), suffix(4), randomProp(4), count(4) |
+| SMSG_LOOT_ROLL | 0x2A2 | targetGUID(8), slot(4), rollerGUID(8), itemID(4), suffix(4), randomProp(4), rollNum(1), rollType(1) |
+| SMSG_LOOT_ROLL_WON | 0x29F | targetGUID(8), slot(4), itemID(4), suffix(4), randomProp(4), winnerGUID(8), rollNum(1), rollType(1) |
+| SMSG_LOOT_ALL_PASSED | 0x29E | targetGUID(8), slot(4), itemID(4), randomProp(4), suffix(4) |
+| SMSG_LOOT_MONEY_NOTIFY | 0x163 | amount(4) |
+
+### Enchant Events (verified in WotLK/Cata logs)
+
+Confirmed present in real WotLK combat logs. No vanilla packet equivalent -- would need
+to hook the client enchant application/removal functions.
+
+| Subevent | Description |
+|----------|-------------|
+| ENCHANT_APPLIED | Item enchanted (temp or permanent) |
+| ENCHANT_REMOVED | Enchant removed/expired |
+
+Verified WotLK format:
+```
+ENCHANT_APPLIED,srcGUID,srcName,srcFlags,srcRaidFlags,dstGUID,dstName,dstFlags,dstRaidFlags,"enchantName",itemID,"itemName"
+ENCHANT_REMOVED,0x0000000000000000,nil,0x80000000,0x80000000,dstGUID,dstName,dstFlags,dstRaidFlags,"enchantName",itemID,"itemName"
+```
+
+Note: ENCHANT_REMOVED source is always null GUID (no "remover").
+
+### SPELL_CREATE (verified in WotLK/Cata logs)
+
+Fires when a player creates a game object (trap, totem, feast, cauldron).
+Uses standard spell prefix. Dest is the created GO's GUID.
+
+```
+SPELL_CREATE,srcGUID,srcName,srcFlags,srcRaidFlags,goGUID,"goName",goFlags,goRaidFlags,spellID,"spellName",spellSchool
+```
+
+### Combat Events (low priority)
+
+| Subevent | Description | Notes |
+|----------|-------------|-------|
+| UNIT_DISSIPATES | Pet/totem/guardian despawn | Variant of UNIT_DIED, not in WotLK sample but in retail |
+| SPELL_ABSORBED | Damage absorbed by shield | Present in Shadowlands+, not in WotLK sample |
+| SPELL_HEAL_ABSORBED | Healing absorbed by anti-heal | Shadowlands+, no vanilla mechanic |
+| SWING_DAMAGE_LANDED | Melee hit after absorb | Shadowlands+, not in WotLK |
+| SPELL_BUILDING_* | Structure damage prefix | WotLK siege content, N/A in vanilla |
+| *_DURABILITY_DAMAGE | Equipment durability loss | Rarely useful |
+
+### Metadata Events (Shadowlands+ only, NOT in WotLK)
+
+These do NOT appear in WotLK/Cata combat logs. They were added in later expansions
+(combat log version 16+). Listed for reference only.
+
+| Subevent | Description | First seen |
+|----------|-------------|------------|
+| ENCOUNTER_START | Boss encounter begins | Shadowlands+ |
+| ENCOUNTER_END | Boss encounter ends | Shadowlands+ |
+| ZONE_CHANGE | Player changes zone | Shadowlands+ |
+| COMBATANT_INFO | Gear/talent snapshot | Shadowlands+ |
+| CHALLENGE_MODE_START/END | M+ key start/end | Shadowlands+ |
+| EMOTE | Boss emote text | Shadowlands+ |
+| MAP_CHANGE | Map transition | Shadowlands+ |
+| ARENA_MATCH_START/END | Arena match | Shadowlands+ |
+
+### Current Implementation Status
+
+37 subevents implemented across 23 hooks (Phases 1-5 complete):
+- Damage: SWING/RANGE/SPELL/PERIODIC/SHIELD/SPLIT/ENVIRONMENTAL (7)
+- Missed: SWING/RANGE/SPELL/PERIODIC/SHIELD (5)
+- Heal: SPELL/PERIODIC (2)
+- Power: ENERGIZE/DRAIN/PERIODIC_ENERGIZE/PERIODIC_DRAIN/PERIODIC_LEECH (5)
+- Aura: APPLIED/REMOVED/DOSE(x2)/REFRESH/BROKEN/BROKEN_SPELL (7)
+- Cast: START/SUCCESS/FAILED (3)
+- Misc: INTERRUPT/DISPEL/DISPEL_FAILED/STOLEN/EXTRA_ATTACKS/SUMMON/RESURRECT/INSTAKILL (8)
+- Death: UNIT_DIED/UNIT_DESTROYED/PARTY_KILL (3)

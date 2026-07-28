@@ -145,6 +145,14 @@ end
 local profiling = false
 local profCLEU = { events = 0, totalMs = 0, gcStart = 0 }
 local profOrig = { events = 0, totalMs = 0, gcStart = 0 }
+
+-- Fine-grained timing buckets (microseconds, accumulated)
+local profDetail = { getInfo = 0, dbCalls = 0, dispatch = 0, total = 0, count = 0 }
+-- Per-DB-function timing (microseconds, accumulated)
+local profDB = {
+    DamageDone = 0, DamageTaken = 0, EnemyDamage = 0, DeathHistory = 0,
+    Healing = 0, HealingTaken = 0, BuildBuffs = 0, Other = 0, count = 0
+}
 local profCurrent = nil
 
 -- Hook the parser's OnEvent to measure original mode
@@ -204,6 +212,32 @@ local function profReport(label, tbl)
         "|cff00ff00[%s]|r %d events, %.1fms total, %.1f us/event, %+.1f KB gc",
         label, tbl.events, totalMs, avgUs, gcDelta))
 
+    -- Detail breakdown for CLEU
+    if label == "CLEU" and profDetail.count > 0 then
+        local avgGetInfo = profDetail.getInfo / profDetail.count
+        local avgDB = profDetail.dbCalls / profDetail.count
+        local avgTotal = profDetail.total / profDetail.count
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "|cff00ff00[CLEU detail]|r getInfo=%.1f us, db+logic=%.1f us, total=%.1f us (%d events)",
+            avgGetInfo, avgDB, avgTotal, profDetail.count))
+        -- Per-DB-function breakdown
+        if profDB.count > 0 then
+            local n = profDB.count
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "|cff00ff00[DB funcs]|r DD=%.0f DT=%.0f ED=%.0f DH=%.0f H=%.0f HT=%.0f Buf=%.0f Oth=%.0f us/evt",
+                profDB.DamageDone/n, profDB.DamageTaken/n, profDB.EnemyDamage/n,
+                profDB.DeathHistory/n, profDB.Healing/n, profDB.HealingTaken/n,
+                profDB.BuildBuffs/n, profDB.Other/n))
+        end
+        profDetail.getInfo = 0
+        profDetail.dbCalls = 0
+        profDetail.total = 0
+        profDetail.count = 0
+        profDB.DamageDone = 0; profDB.DamageTaken = 0; profDB.EnemyDamage = 0
+        profDB.DeathHistory = 0; profDB.Healing = 0; profDB.HealingTaken = 0
+        profDB.BuildBuffs = 0; profDB.Other = 0; profDB.count = 0
+    end
+
     -- If we have both measurements, show comparison
     if lastCLEUAvg and lastOrigAvg and lastOrigAvg > 0 then
         local pct = ((lastCLEUAvg - lastOrigAvg) / lastOrigAvg) * 100
@@ -216,38 +250,42 @@ local function profReport(label, tbl)
     end
 end
 
--- /dpsbench  -- enables per-combat A/B profiling. Each combat: measure, report, flip.
-local benchActive = true
+-- Always-on CLEU profiling: report stats at every combat end.
+-- /dpsbench toggles A/B mode (alternates CLEU/ORIGINAL each combat for comparison).
+local benchActive = false
 
 local benchFrame = CreateFrame("Frame")
 
-local function benchCombatStart()
-    if not benchActive then return end
+local function combatStart()
     profCurrent = cleuActive and profCLEU or profOrig
     profReset(profCurrent)
-    debugprofilestart() -- start the monotonic clock for this combat
+    debugprofilestart()
     profiling = true
-    local label = cleuActive and "CLEU" or "ORIGINAL"
-    DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff00ff00[DPS Bench]|r combat started, measuring %s", label))
+    if benchActive then
+        local label = cleuActive and "CLEU" or "ORIGINAL"
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff00ff00[DPS Bench]|r measuring %s", label))
+    end
 end
 
-local function benchCombatEnd()
-    if not benchActive or not profiling then return end
+local function combatEnd()
+    if not profiling then return end
     profiling = false
     local label = cleuActive and "CLEU" or "ORIGINAL"
     profReport(label, profCurrent)
-    toggle()
-    DEFAULT_CHAT_FRAME:AddMessage(string.format(
-        "|cff00ff00[DPS Bench]|r next combat will use: %s", cleuActive and "CLEU" or "ORIGINAL"))
+    if benchActive then
+        toggle()
+        DEFAULT_CHAT_FRAME:AddMessage(string.format(
+            "|cff00ff00[DPS Bench]|r next combat: %s", cleuActive and "CLEU" or "ORIGINAL"))
+    end
 end
 
 benchFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 benchFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 benchFrame:SetScript("OnEvent", function()
     if event == "PLAYER_REGEN_DISABLED" then
-        benchCombatStart()
+        combatStart()
     elseif event == "PLAYER_REGEN_ENABLED" then
-        benchCombatEnd()
+        combatEnd()
     end
 end)
 
@@ -256,11 +294,10 @@ SlashCmdList["DPSBENCH"] = function()
     benchActive = not benchActive
     if benchActive then
         DEFAULT_CHAT_FRAME:AddMessage(string.format(
-            "|cff00ff00[DPS Bench]|r enabled. Current mode: %s. Enter combat to begin.",
+            "|cff00ff00[DPS Bench]|r A/B enabled. Current mode: %s. Enter combat to begin.",
             cleuActive and "CLEU" or "ORIGINAL"))
     else
-        profiling = false
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[DPS Bench]|r disabled.")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[DPS Bench]|r A/B disabled (stats still reported).")
     end
 end
 
@@ -280,15 +317,16 @@ local FailDB = DPSMate.Parser.FailDB
 
 cleuHandler = function()
     if not CombatLogGetCurrentEventInfo then return end
-    -- Single call — positions differ by prefix type:
-    --   Swing:  p1=amount, p2=overkill, p3=school, ...
-    --   Spell:  p1=spellId, p2=spellName, p3=spellSchool, p4=amount, ...
-    --   Env:    p1=envType, p2=amount, ...
+
+    local t0 = profiling and debugprofilestop()
+
     local sub, srcGUID, srcName, srcFlags, srcRaidFlags,
           dstGUID, dstName, dstFlags, dstRaidFlags,
           p1, p2, p3, p4, p5, p6, p7, p8, p9,
           p10, p11, p12 = CombatLogGetCurrentEventInfo()
     if not sub then return end
+
+    local t1 = profiling and debugprofilestop()
 
     if not srcName or srcName == "" then srcName = "Unknown" end
     if not dstName or dstName == "" then dstName = "Unknown" end
@@ -306,11 +344,17 @@ cleuHandler = function()
         local crush = crushing and 1 or 0
         local hit   = (crit == 0 and glanc == 0 and crush == 0) and 1 or 0
 
+        local ta, tb
+        if profiling then ta = debugprofilestop() end
         DB:DamageDone(srcName, AAttack, hit, crit, 0, 0, 0, 0, amount, glanc, 0)
+        if profiling then tb = debugprofilestop(); profDB.DamageDone = profDB.DamageDone + (tb - ta); ta = tb end
         DB:DamageTaken(dstName, AAttack, hit, crit, 0, 0, 0, 0, amount, srcName, crush, 0)
+        if profiling then tb = debugprofilestop(); profDB.DamageTaken = profDB.DamageTaken + (tb - ta); ta = tb end
         DB:EnemyDamage(1, DPSMateEDT, dstName, AAttack, hit, crit, 0, 0, 0, 0, amount, srcName, 0, crush)
         DB:EnemyDamage(2, DPSMateEDD, srcName, AAttack, hit, crit, 0, 0, 0, 0, amount, dstName, 0, 0)
+        if profiling then tb = debugprofilestop(); profDB.EnemyDamage = profDB.EnemyDamage + (tb - ta); ta = tb end
         DB:DeathHistory(dstName, srcName, AAttack, amount, hit, crit, "hit", crush)
+        if profiling then tb = debugprofilestop(); profDB.DeathHistory = profDB.DeathHistory + (tb - ta); profDB.count = profDB.count + 1 end
         if absorbed > 0 then
             DB:SetUnregisterVariables(absorbed, AAttack, srcName)
             DB:Absorb(AAttack, dstName, srcName)
@@ -346,11 +390,17 @@ cleuHandler = function()
         local hit   = (crit == 0 and glanc == 0 and crush == 0) and 1 or 0
         local abilityName = (sub == "SPELL_PERIODIC_DAMAGE") and (spellName .. "(Periodic)") or spellName
 
+        local ta, tb
+        if profiling then ta = debugprofilestop() end
         DB:DamageDone(srcName, abilityName, hit, crit, 0, 0, 0, 0, amount, glanc, 0)
+        if profiling then tb = debugprofilestop(); profDB.DamageDone = profDB.DamageDone + (tb - ta); ta = tb end
         DB:DamageTaken(dstName, abilityName, hit, crit, 0, 0, 0, 0, amount, srcName, crush, 0)
+        if profiling then tb = debugprofilestop(); profDB.DamageTaken = profDB.DamageTaken + (tb - ta); ta = tb end
         DB:EnemyDamage(1, DPSMateEDT, dstName, abilityName, hit, crit, 0, 0, 0, 0, amount, srcName, 0, crush)
         DB:EnemyDamage(2, DPSMateEDD, srcName, abilityName, hit, crit, 0, 0, 0, 0, amount, dstName, 0, 0)
+        if profiling then tb = debugprofilestop(); profDB.EnemyDamage = profDB.EnemyDamage + (tb - ta); ta = tb end
         DB:DeathHistory(dstName, srcName, abilityName, amount, hit, crit, "hit", crush)
+        if profiling then tb = debugprofilestop(); profDB.DeathHistory = profDB.DeathHistory + (tb - ta); profDB.count = profDB.count + 1 end
         if spellSchool then DB:AddSpellSchool(abilityName, spellSchool) end
         if absorbed > 0 then
             DB:SetUnregisterVariables(absorbed, abilityName, srcName)
@@ -396,10 +446,15 @@ cleuHandler = function()
         local effective = amount - overheal
         if effective < 0 then effective = 0 end
 
+        local ta, tb
+        if profiling then ta = debugprofilestop() end
         DB:Healing(1, DPSMateHealingTaken, srcName, spellName, hit, crit, effective)
         DB:Healing(2, DPSMateOverhealing, srcName, spellName, hit, crit, overheal)
+        if profiling then tb = debugprofilestop(); profDB.Healing = profDB.Healing + (tb - ta); ta = tb end
         DB:HealingTaken(1, DPSMateHealingTaken, srcName, spellName, hit, crit, effective, dstName)
+        if profiling then tb = debugprofilestop(); profDB.HealingTaken = profDB.HealingTaken + (tb - ta); ta = tb end
         DB:DeathHistory(dstName, srcName, spellName, effective, hit, crit, "heal", 0)
+        if profiling then tb = debugprofilestop(); profDB.DeathHistory = profDB.DeathHistory + (tb - ta); profDB.count = profDB.count + 1 end
 
     -- ========================================================================
     -- AURA events (+ absorb shield lifecycle)
@@ -480,6 +535,14 @@ cleuHandler = function()
         if not Parser.petToOwnerMap then Parser.petToOwnerMap = {} end
         if not Parser.petToOwnerMap[dstName] then Parser.petToOwnerMap[dstName] = {} end
         Parser.petToOwnerMap[dstName][srcName] = true
+    end
+
+    if profiling and t0 then
+        local t2 = debugprofilestop()
+        profDetail.getInfo = profDetail.getInfo + (t1 - t0)
+        profDetail.dbCalls = profDetail.dbCalls + (t2 - t1)
+        profDetail.total = profDetail.total + (t2 - t0)
+        profDetail.count = profDetail.count + 1
     end
 end
 

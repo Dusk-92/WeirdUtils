@@ -108,7 +108,7 @@ const OtherPending = struct {
 var g_other_pending: [OTHER_PENDING_SIZE]OtherPending = [1]OtherPending{.{}} ** OTHER_PENDING_SIZE;
 var g_other_pending_count: i32 = 0;
 
-var g_cached_visible_item: [19]u32 = .{0} ** 19;
+
 
 const UNIT_CACHE_SIZE: u32 = 64;
 
@@ -193,8 +193,6 @@ fn cachePlayerState() bool {
 
         const field_index = PLAYER_VISIBLE_ITEM_1_0 + (slot * VISIBLE_ITEM_STRIDE);
         g_cache.visible_items[i] = hook.readMem(u32, g_cache.player_desc + field_index * 4);
-
-        g_cached_visible_item[i] = g_cache.visible_items[i];
     }
 
     g_cache.valid = true;
@@ -488,20 +486,23 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                 if (!g_cache.valid or g_cache.player_obj != obj) {
                     _ = cachePlayerState();
                 }
-                if (val == 0 and g_cached_visible_item[slot] != 0) {
+                // Read live descriptor — g_cached_visible_item can be stale if
+                // another DLL (e.g. VanillaHelpers) writes directly to the
+                // descriptor, bypassing SetBlock and our hook.
+                const current_visible = readUnitVisibleItem(obj, slot);
+                if (val == 0 and current_visible != 0) {
                     // CLEAR detected - check if INV_SLOT is already empty (real unequip)
                     if (g_cache.valid and g_cache.equipped_guids[slot] == 0) {
-                        g_cached_visible_item[slot] = 0;
                         return callOriginalSetBlock(obj, index, value);
                     }
 
                     // Start transmog pattern tracking
                     if (!g_local_pending[slot].active) g_local_pending_count += 1;
-                    g_local_pending[slot].original_visible_item = g_cached_visible_item[slot];
+                    g_local_pending[slot].original_visible_item = current_visible;
                     g_local_pending[slot].timestamp = now;
                     g_local_pending[slot].active = true;
                     g_local_pending[slot].has_durability = false;
-                    log.fmt("BLOCK clear  slot={d:2} item=0x{X:0>8}\n", .{ slot, g_cached_visible_item[slot] });
+                    log.fmt("BLOCK clear  slot={d:2} item=0x{X:0>8}\n", .{ slot, current_visible });
                     return 1; // Block the clear
                 } else if (val != 0 and g_local_pending[slot].active) {
                     if (val == g_local_pending[slot].original_visible_item) {
@@ -537,10 +538,6 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                     }
                 }
 
-                // Update cache for non-blocked writes
-                if (val != 0) {
-                    g_cached_visible_item[slot] = val;
-                }
             } else if (g_enabled) {
                 // =========== OTHER PLAYERS ===========
                 const guid = getUnitGuid(obj);
@@ -628,7 +625,6 @@ fn hookSetBlock(obj: u32, index: u32, value: u32) callconv(hook.cc.thiscall) u32
                 const field_index = PLAYER_VISIBLE_ITEM_1_0 + (@as(u32, @intCast(es)) * VISIBLE_ITEM_STRIDE);
                 _ = callOriginalSetBlock(obj, field_index, 0);
 
-                g_cached_visible_item[es] = 0;
                 g_local_pending[es].active = false;
                 g_local_pending[es].has_durability = false;
                 g_local_pending_count -= 1;
@@ -780,7 +776,6 @@ pub fn installHooks() void {
     g_other_pending_count = 0;
     g_cache = .{};
     g_unit_cache = [1]UnitVisualState{.{}} ** UNIT_CACHE_SIZE;
-    g_cached_visible_item = .{0} ** 19;
 
     // Hook 1: SetBlock
     if (set_block_hook.attach(ADDR_SetBlock, &hookSetBlock) != .ok) return;

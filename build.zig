@@ -66,6 +66,12 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     addModuleOptionsFromArray(b, build_options, &module_enabled);
+    // transform_capture: records game-x87 transformMatrix4x4 state to disk for
+    // offline bench parity. Mutually exclusive with bone_sse64 (capture needs
+    // the real game output; bone_sse64 replaces it).
+    const transform_capture_enabled = b.option(bool, "transform_capture",
+        "Record transformMatrix4x4 inputs/outputs to disk (disables bone_sse64)") orelse false;
+    build_options.addOption(bool, "transform_capture", transform_capture_enabled);
     const build_options_module = build_options.createModule();
 
     const zhook_dep = b.dependency("zhook", .{
@@ -281,7 +287,10 @@ pub fn build(b: *std.Build) void {
         });
         bench.root_module.addObject(bench_math_sse);
         bench.root_module.addObject(bench_silicon_sse);
-        bench.root_module.addObject(bench_bone_sse);
+        // bench_bone_sse64 imports bone_sse, so it provides both transformImpl_SSE
+        // and transformImpl_SSE64 symbols. Linking bench_bone_sse too would cause
+        // duplicate-symbol errors.
+        _ = bench_bone_sse;
         bench.root_module.addObject(bench_bone_sse64);
         bench.root_module.addObject(bench_bone_baseline);
         bench.root_module.addObject(bench_particle_sse);

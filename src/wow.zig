@@ -189,6 +189,14 @@ pub fn isInBattleground() bool {
     return map_type == o.MAP_TYPE_BATTLEGROUND;
 }
 
+/// Current map ID from the object manager (ObjMgr+0xCC).
+/// Returns 0xFFFFFFFF if the object manager is not available.
+pub fn getMapId() u32 {
+    const obj_mgr = hook.readMem(u32, o.OBJECT_MANAGER_PTR);
+    if (obj_mgr == 0) return 0xFFFFFFFF;
+    return hook.readMem(u32, obj_mgr + o.OBJMGR_MAP_ID_OFFSET);
+}
+
 // =============================================================================
 // Game function wrappers
 // =============================================================================

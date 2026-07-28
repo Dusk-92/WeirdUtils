@@ -3,5 +3,4 @@
 ## Notes: Session-based combat and chat log management
 ## Version: 1.0
 
-
 LogSessions.lua

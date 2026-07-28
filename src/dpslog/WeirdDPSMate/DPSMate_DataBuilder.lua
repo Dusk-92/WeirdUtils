@@ -875,6 +875,7 @@ function DPSMate.DB:OnGroupUpdate()
 	local num = GetNumRaidMembers()
 	DPSMate.Parser.TargetParty = {}
 	DPSMate.Parser.petToOwnerMap = {}
+	petQualifiedCache = {}
 	if num<=0 then
 		type = "party"
 		num = GetNumPartyMembers()
@@ -993,18 +994,36 @@ function DPSMate.DB:OnGroupUpdate()
 	DPSMate.Parser:AssociateShaman("None", "None", true)
 end
 
+-- Cache: raw pet name -> qualified "PetName (OwnerName)" to avoid repeated pairs() iteration
+local petQualifiedCache = {}
+
 function DPSMate.DB:BuildUser(Dname, Dclass)
 	if not Dname then Dname = "?!NIL Name?!" end
-	-- Auto-qualify raw pet/totem names via petToOwnerMap (single-owner only)
-	local pom = DPSMate.Parser.petToOwnerMap
-	if pom and pom[Dname] then
-		local count, singleOwner = 0, nil
-		for o, _ in pairs(pom[Dname]) do
-			count = count + 1
-			singleOwner = o
-		end
-		if count == 1 then
-			Dname = Dname .. " (" .. singleOwner .. ")"
+	-- Fast path: already-known non-pet name — skip regex + petToOwnerMap entirely
+	local u = DPSUser[Dname]
+	if u then return u[1] end
+	-- Check pet name cache (avoids repeated pairs() iteration on petToOwnerMap)
+	local cached = petQualifiedCache[Dname]
+	if cached then
+		u = DPSUser[cached]
+		if u then return u[1] end
+		Dname = cached
+	else
+		-- Auto-qualify raw pet/totem names via petToOwnerMap (single-owner only)
+		local pom = DPSMate.Parser.petToOwnerMap
+		if pom and pom[Dname] then
+			local count, singleOwner = 0, nil
+			for o, _ in pairs(pom[Dname]) do
+				count = count + 1
+				singleOwner = o
+			end
+			if count == 1 then
+				local qualified = Dname .. " (" .. singleOwner .. ")"
+				petQualifiedCache[Dname] = qualified
+				u = DPSUser[qualified]
+				if u then return u[1] end
+				Dname = qualified
+			end
 		end
 	end
 	local _,_, pet,owner = strfind(Dname,"(.+)%s%((.+)%)")
@@ -1102,7 +1121,8 @@ function DPSMate.DB:Threat(cause, spellname, target, value, amount)
 	target = self:BuildUser(target)
 	cause = self:BuildUser(cause)
 	spellname = self:BuildAbility(spellname)
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do
+		local val = tablemodes[cat]
 		if not DPSThreat[cat] then DPSThreat[cat] = {} end
 		if not DPSThreat[cat][cause] then
 			DPSThreat[cat][cause] = {}
@@ -1743,7 +1763,7 @@ function DPSMate.DB:RegisterAbsorb(owner, ability, abilityTarget)
 	owner = self:BuildUser(owner)
 	abilityTarget = self:BuildUser(abilityTarget)
 	ability = self:BuildAbility(ability)
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSAbsorb[cat] then DPSAbsorb[cat] = {} end
 		if not DPSAbsorb[cat][abilityTarget] then
 			DPSAbsorb[cat][abilityTarget] = {}
@@ -1777,7 +1797,7 @@ function DPSMate.DB:UnregisterAbsorb(ability, abilityTarget)
 	ability = self:BuildAbility(ability)
 	abilityTarget = self:BuildUser(abilityTarget)
 	local AbsorbingAbility
-	for cat, val in pairs(tablemodes) do 
+	for cat = 1, 2 do local val = tablemodes[cat] 
 		AbsorbingAbility = self:GetActiveAbsorbAbilityByPlayer(ability, abilityTarget, cat)
 		if AbsorbingAbility[1] then
 			path = DPSAbsorb[cat][abilityTarget][AbsorbingAbility[1]][AbsorbingAbility[2]][AbsorbingAbility[3]]["i"]
@@ -1889,7 +1909,7 @@ function DPSMate.DB:Absorb(ability, abilityTarget, incTarget)
 	abilityTarget = self:BuildUser(abilityTarget)
 	ability = self:BuildAbility(ability)
 	local AbsorbingAbility
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		local abilityName = DPSMate:GetAbilityById(ability)
 		local abilityEntry = abilityName and DPSMateAbility[abilityName]
 		if not abilityEntry then break end
@@ -2094,7 +2114,7 @@ function DPSMate.DB:Dispels(cause, Dname, target, ability)
 	target = self:BuildUser(target)
 	Dname = self:BuildAbility(Dname)
 	ability = self:BuildAbility(ability)
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSDispel[cat] then DPSDispel[cat] = {} end
 		if not DPSDispel[cat][cause] then
 			DPSDispel[cat][cause] = {
@@ -2130,13 +2150,13 @@ function DPSMate.DB:UnregisterDeath(target)
 	if strfind(target, "%s") then return end
 	target = self:BuildUser(target)
 	local p
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do
 		if DPSDeath[cat] and DPSDeath[cat][target] and DPSDeath[cat][target][1] then
 			DPSDeath[cat][target][1]["i"][1]=1
 			DPSDeath[cat][target][1]["i"][2]=GameTime_GT()
 			if cat==1 and DPSMate.Parser.TargetParty[DPSMate:GetUserById(target)] and DPSDeath[cat][target][1][1] then
 				p = DPSDeath[cat][target][1][1]
-				DPSMate:Broadcast(4, DPSMate:GetUserById(target), DPSMate:GetUserById(p[1]), DPSMate:GetAbilityById(p[2]), p[3]) 
+				DPSMate:Broadcast(4, DPSMate:GetUserById(target), DPSMate:GetUserById(p[1]), DPSMate:GetAbilityById(p[2]), p[3])
 			end
 		end
 	end
@@ -2148,7 +2168,8 @@ function DPSMate.DB:DeathHistory(target, cause, ability, amount, hit, crit, type
 	cause = self:BuildUser(cause)
 	ability = self:BuildAbility(ability)
 	local hitCritCrush
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do
+		local val = tablemodes[cat]
 		if not DPSDeath[cat] then DPSDeath[cat] = {} end
 		if not DPSDeath[cat][target] then
 			DPSDeath[cat][target] = {}
@@ -2245,7 +2266,7 @@ function DPSMate.DB:Kick(cause, target, causeAbility, targetAbility)
 	cause = self:BuildUser(cause)
 	causeAbility = self:BuildAbility(causeAbility)
 	targetAbility = self:BuildAbility(targetAbility)
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSInterrupt[cat] then DPSInterrupt[cat] = {} end
 		if not DPSInterrupt[cat][cause] then
 			DPSInterrupt[cat][cause] = {
@@ -2310,7 +2331,7 @@ function DPSMate.DB:BuildBuffs(cause, target, ability, bool)
 	target = self:BuildUser(target)
 	cause = self:BuildUser(cause)
 	ability = self:BuildAbility(ability)
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSAurasGained[cat] then DPSAurasGained[cat] = {} end
 		if not DPSAurasGained[cat][target] then
 			DPSAurasGained[cat][target] = {}
@@ -2347,7 +2368,7 @@ function DPSMate.DB:DestroyBuffs(target, ability)
 	target = self:BuildUser(target)
 	ability = self:BuildAbility(ability)
 	local TL
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSAurasGained[cat] then DPSAurasGained[cat] = {} end
 		if not DPSAurasGained[cat][target] then
 			DPSAurasGained[cat][target] = {}
@@ -2557,7 +2578,7 @@ function DPSMate.DB:BuildFail(type, user, cause, ability, amount)
 	cause = self:BuildUser(cause)
 	ability = self:BuildAbility(ability)
 	local time = GameTime_GT()
-	for cat, val in pairs(tablemodes) do
+	for cat = 1, 2 do local val = tablemodes[cat]
 		if not DPSFail[cat] then DPSFail[cat] = {} end
 		if not DPSFail[cat][cause] then
 			DPSFail[cat][cause] = {}

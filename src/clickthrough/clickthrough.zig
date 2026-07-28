@@ -196,7 +196,7 @@ pub fn installHooks() void {
     g_is_hook_owner = result.is_owner;
     if (!g_is_hook_owner) return;
 
-    log = logging.Logger.open(module_name, .both);
+    log = logging.Logger.open(module_name, .console);
     _ = cotp_hook.attach(ADDR_CheckObjectTypePermissions, &checkObjTypeDetour);
     _ = wit_hook.attach(ADDR_WorldIntersectionTest, &worldIntersectDetour);
     // _ = portal_visual.install();

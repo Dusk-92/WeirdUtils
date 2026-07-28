@@ -1098,7 +1098,7 @@ pub fn calcScaledInverse(this_mat: u32, out: u32, scale: f32) void {
 //         mat3(offset_vec3*), mat4(scale_float_bits)
 // =============================================================================
 
-pub fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
+pub export fn transformImpl_SSE(this: u32, mat1: u32, mat2: u32, mat3: u32, mat4: u32) callconv(.{ .x86_thiscall = .{} }) void {
 
     @setEvalBranchQuota(50000);
     // =========================================================================

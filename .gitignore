@@ -7,7 +7,39 @@ ideas/
 wiki/
 src/**/assets_backup/
 .kangentic/
-.claude/settings.local.json
+.claude/
 kangentic.local.json
 
 remote/
+
+# agent/editor scratch
+.memsearch/
+.sisyphus/
+.vscode/
+AGENTS.md
+src/**/AGENTS.md
+CLAUDE.md
+
+# build artifacts
+logsession.zip
+src/transform44/cycles.out
+
+# vendored third-party addon, not ours to relicense
+src/dpslog/WSBT/*
+!src/dpslog/WSBT/WSBT_CLEUAdapter.lua
+
+# separate upstream repos, checked out here for reference only
+# WeirdThreat -> github.com/MarcelineVQ/TWThreat
+# uwu-logs    -> github.com/Ridepad/uwu-logs
+src/dpslog/WeirdThreat/
+src/dpslog/uwu-logs/
+
+# internal planning notes
+SHARING_AUDIT.md
+
+__pycache__/
+*.pyc
+
+# fetched at runtime by tools/stormlib.py
+tools/libstorm.so
+tools/lib/

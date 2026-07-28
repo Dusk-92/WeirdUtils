@@ -128,14 +128,25 @@ fn mapWowSections() bool {
     // Map additional pages for runtime constants that live outside .rdata:
     // 0x80C000-0x813000 covers 0x80C5C8 (billboard epsilon) and 0x811610 (SHORT_TO_FLOAT)
     // 0xCF0000-0xCF1000 covers 0xCF04C4 (boneKeyframe init flag) and 0xCF043C (pivot constants)
+    // 0x876000-0x877000 covers 0x876504 (matrix-multiply dispatch table — statically
+    //   holds 0x74A7AD initializer; we write 0x74A7C6 directly to skip CPUID init)
     _ = mapZeroed(0x80C000, 0x8000); // covers 0x80C000-0x814000
     _ = mapZeroed(0xCF0000, 0x1000); // covers 0xCF0000-0xCF1000
+    _ = mapZeroed(0x876000, 0x1000); // covers 0x876504 dispatch table (real-game-bytes bench)
     // Write runtime constant values
     @as(*align(1) u32, @ptrFromInt(0x811610)).* = 0x38000100; // SHORT_TO_FLOAT ~1/32767
     @as(*align(1) u32, @ptrFromInt(0x8029D4)).* = 0x34800000; // billboard epsilon
     @as(*align(1) u32, @ptrFromInt(0x80C5C8)).* = 0x35800000; // billboard sq epsilon
     @as(*align(1) u32, @ptrFromInt(0x80297C)).* = 0x40400000; // 3.0
     @as(*align(1) u32, @ptrFromInt(0x802990)).* = 0x40C00000; // 6.0
+    // NOTE: benching against the real game x87 function at 0x714260 requires
+    // initialising several dispatch tables in .data (0x876504, 0x876594, ...)
+    // that select x87 vs SSE math implementations based on CPUID. Running the
+    // game's init at 0x74FB49 pulls in heap/init dependencies we don't satisfy.
+    // For now, the bench uses the Zig reimpl baseline (transformImpl_BASELINE).
+    // Real-game-bytes parity is better done in-game via a hook diff.
+    @as(*align(1) u32, @ptrFromInt(0x876504)).* = 0x0074A7C6;
+    print("  [debug] *(0x876504) = 0x{x}\n", .{@as(*align(1) u32, @ptrFromInt(0x876504)).*});
     sections_mapped = true;
     return true;
 }
@@ -977,6 +988,8 @@ pub fn main() void {
         report("__ftol", t_best, s_best, mismatches == 0);
     }
 
+    } // close outer disabled block so transform44 runs standalone
+
     // =========================================================================
     // transform44: SSE implementation benchmark — comprehensive fixture
     // Exercises: bone loop (rot/trans/scale/static/billboard), texAnim,
@@ -1663,7 +1676,11 @@ pub fn main() void {
         const sb: u32 = @bitCast(@as(f32, 1.0));
         const transformImpl_SSE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_SSE" });
         const transformImpl_SSE64 = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_SSE64" });
-        const transformImpl_BASELINE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.c) void, .{ .name = "transformImpl_BASELINE" });
+        // Baseline: Zig reimplementation (bit-identical to bone_sse by construction).
+        // Attempting to call the real game function at 0x714260 requires running
+        // game init code (CPUID-based dispatch population, possibly heap setup)
+        // that isn't feasible from this isolated bench fixture. See mapWowSections.
+        const transformImpl_BASELINE = @extern(*const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, .{ .name = "transformImpl_BASELINE" });
 
         // Pre-set boneKeyframe init flag so we skip the atexit call (Windows CRT, can't run on Linux)
         @as(*u8, @ptrFromInt(0xCF04C4)).* = 1;
@@ -1687,7 +1704,7 @@ pub fn main() void {
 
         // --- Benchmark both BASELINE and SSE ---
         const run_bench_fn = struct {
-            fn run(func: *const fn (u32, u32, u32, u32, u32) callconv(.c) void, so2: u32, pm: u32, pp: u32, po: u32, sb2: u32, scene: *[0x400]u8, actx: *[0x20]u8, iters: u32) u64 {
+            fn run(func: *const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, so2: u32, pm: u32, pp: u32, po: u32, sb2: u32, scene: *[0x400]u8, actx: *[0x20]u8, iters: u32) u64 {
                 var best_inner: u64 = std.math.maxInt(u64);
                 for (0..5) |_| {
                     const t = rdtsc();
@@ -1714,6 +1731,9 @@ pub fn main() void {
         const pp = @intFromPtr(&pos);
         const po = @intFromPtr(&ofs);
 
+        const best_base = run_bench_fn(transformImpl_BASELINE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
+        const avg_base = best_base / T44_ITERS;
+
         const best_sse = run_bench_fn(transformImpl_SSE, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
         const avg_sse = best_sse / T44_ITERS;
 
@@ -1731,7 +1751,7 @@ pub fn main() void {
         const best_sse64 = run_bench_fn(transformImpl_SSE64, so, pm, pp, po, sb, &scene_obj, &anim_ctx_mem, T44_ITERS);
         const avg_sse64 = best_sse64 / T44_ITERS;
 
-        print("  BASELINE: {d} cycles/call (frozen)\n", .{BASELINE_CYCLES});
+        print("  BASELINE: {d} cycles/call (frozen ref {d})\n", .{ avg_base, BASELINE_CYCLES });
         print("  SSE:      {d} cycles/call", .{avg_sse});
         if (avg_sse < BASELINE_CYCLES) {
             const pct = (BASELINE_CYCLES - avg_sse) * 100 / BASELINE_CYCLES;
@@ -1782,7 +1802,7 @@ pub fn main() void {
             };
 
             const reset_and_run = struct {
-                fn go(func: *const fn (u32, u32, u32, u32, u32) callconv(.c) void, so3: u32, pm3: u32, pp3: u32, po3: u32, sb3: u32, scene3: *[0x400]u8, actx3: *[0x20]u8, brt3: [*]u8, bc: usize) void {
+                fn go(func: *const fn (u32, u32, u32, u32, u32) callconv(.{ .x86_thiscall = .{} }) void, so3: u32, pm3: u32, pp3: u32, po3: u32, sb3: u32, scene3: *[0x400]u8, actx3: *[0x20]u8, brt3: [*]u8, bc: usize) void {
                     wu(u32, actx3[0x0C..0x10], 500, .little);
                     wu(u32, scene3[0x40..0x44], 0, .little);
                     // Re-init bone_rt anim_slot/sec_slot fields
@@ -1849,14 +1869,14 @@ pub fn main() void {
     // calcColorValues_SSE -- disabled: no standalone SSE export yet
     // bench_calcColorValues();
 
-    // si_frustumCullBBox -- fastcall(bbox_ECX, flags_EDX, radius_stack) -> u32
-    bench_frustumCullBBox();
+    if (false) { // disabled: pulls in silicon_sse exports not linked into bench
+        // si_frustumCullBBox -- fastcall(bbox_ECX, flags_EDX, radius_stack) -> u32
+        bench_frustumCullBBox();
 
-    // si_processLinkedListCollision -- fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack) -> u32
-    // Builds a fake linked list with 8 nodes to benchmark AABB overlap test.
-    bench_processLinkedListCollision();
-
-    } // end disabled block
+        // si_processLinkedListCollision -- fastcall(listHead_ECX, queryBox_EDX, resultBuf_stack, flags_stack) -> u32
+        // Builds a fake linked list with 8 nodes to benchmark AABB overlap test.
+        bench_processLinkedListCollision();
+    }
 
     print("\n", .{});
 }

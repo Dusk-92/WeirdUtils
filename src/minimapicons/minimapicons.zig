@@ -550,14 +550,14 @@ fn worldPosToMinimapCoords(
     });
 }
 
-fn getFrameUnkScale(info: u32) f32 {
+fn getFrameUnkScale(info: u32) ?f32 {
     const frame = hook.readMem(u32, info + ADDR.MI_FRAME);
-    if (!isValidPtr(frame)) return 1.0;
+    if (!isValidPtr(frame)) return null;
     const fsp = frame + ADDR.FRAME_SCRIPT_PART;
     const vtable = hook.readMem(u32, fsp);
-    if (!isValidPtr(vtable)) return 1.0;
+    if (!isValidPtr(vtable)) return null;
     const fn_addr = hook.readMem(u32, vtable + 7 * 4);
-    if (!isValidPtr(fn_addr)) return 1.0;
+    if (!isValidPtr(fn_addr)) return null;
     // __thiscall(fsp_ECX) → f32 on FPU ST(0)
     return hook.call(fn (u32) callconv(hook.cc.thiscall) f32, fn_addr, .{fsp});
 }
@@ -837,6 +837,10 @@ fn trackObject(info: u32, guid_lo: u32, guid_hi: u32, blip: Blip) void {
 
     // Cache minimap info per frame — same for all objects in one enumeration cycle
     if (!g_minimap_info.valid) {
+        // If the minimap frame scale can't be resolved (transient state during
+        // zone transitions), skip all blips this cycle rather than projecting
+        // with a wrong scale that pushes blips outside the circle.
+        const unk_scale = getFrameUnkScale(info) orelse return;
         g_minimap_info = .{
             .cur = .{
                 .x = hook.readMem(f32, info + ADDR.MI_POS),
@@ -845,7 +849,7 @@ fn trackObject(info: u32, guid_lo: u32, guid_hi: u32, blip: Blip) void {
             },
             .radius = hook.readMem(f32, info + ADDR.MI_RADIUS),
             .layout_scale = hook.readMem(f32, info + ADDR.MI_LAYOUT_SCALE),
-            .unk_scale = getFrameUnkScale(info),
+            .unk_scale = unk_scale,
             .valid = true,
         };
     }

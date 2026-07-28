@@ -4,15 +4,25 @@
 
 ## How the remote repo works
 
-This project is developed entirely locally. The remote repo is **only** a
-distribution point for releases - no source code is pushed.
+`main` on the remote holds the full source, the user-facing `README.md`,
+`include/weirdutils_api.h`, and issue templates under `.gitea/`. Releases
+attach pre-built DLLs to a tag on `main`.
 
-The remote `main` branch contains `README.md` (built from the local
-`DLL_README.md`), `weirdutils_api.h`, and issue templates under `.gitea/`.
+This was previously a distribution-only remote - source lived locally and only
+a trimmed README plus binaries were pushed. That is no longer the case; develop
+against `main` and push directly.
 
-A local clone of the remote repo lives at `remote/WeirdUtils/`. The wiki
-lives at `remote/wiki/`. Use these for all remote operations - no tmp clones
-needed.
+The wiki clone lives at `remote/wiki/`. `remote/WeirdUtils/` is the old
+distribution-only clone and is obsolete - it can be deleted.
+
+## 0. Sync tags
+
+`tea` creates tags on Codeberg, so fetch them before comparing against the
+previous release:
+
+```sh
+git fetch --tags
+```
 
 ## 1. Bump module versions
 
@@ -63,27 +73,19 @@ Verify:
 ls -lh zig-out/bin/weirdutils.dll zig-out/variants/*.dll
 ```
 
-## 3. Update the remote README
+## 3. Update the README
 
-The remote README should match the features in this release. Start from
-`DLL_README.md` and remove the sections for modules not being released -
-keep the header, install instructions, and included feature sections exactly
-as they are. Do NOT remove trailing spaces in `DLL_README.md` - they are
-intentional Markdown line breaks.
+`README.md` documents every module, not just the released subset - the source
+is public, so there is nothing to trim. Add a section for any new module.
 
-The module name list in the Developer Notes section must also only list
-released module names.
-
-```sh
-cd remote/WeirdUtils
-# edit README.md: remove sections for modules not in this release
-git add README.md
-git commit -m "Update README for vX.Y.Z"
-git push origin main
-cd ../..
-```
+Do NOT remove trailing spaces in `README.md` - they are intentional Markdown
+line breaks.
 
 ## 4. Write the release notes
+
+Write the release notes to `/tmp/release-notes-vX.Y.Z.md` - NOT inside the
+project directory. They are a transient artifact consumed by `tea --note-file`
+and should not pollute the repo root or end up in git status.
 
 Use this template - fill in the sections that apply, delete the rest.
 Use `-` (not em dash) anywhere a dash would be used.
@@ -147,11 +149,12 @@ tea release assets delete --repo MarcelineVQ/WeirdUtils -y v0.4.0 minimapicons.d
 tea release assets create --repo MarcelineVQ/WeirdUtils v0.4.0 zig-out/variants/minimapicons.dll
 ```
 
-## 6. Hide source archives
+## 6. Source archives
 
-Codeberg attaches empty source tar/zip by default. Hide them via API:
+Codeberg attaches source tar/zip to each release automatically. Now that the
+repo contains the source, leave them visible - they are a useful artifact.
 
-Get your token from the tea config:
+To hide them anyway, get your token from the tea config:
 
 ```sh
 grep 'token:' ~/.config/tea/config.yml | head -1 | awk '{print $2}'
@@ -185,10 +188,10 @@ print(r[0]['id']) if r else print('not found')
 
 ## Checklist
 
+- [ ] Remote clone tags synced (`cd remote/WeirdUtils && git fetch --tags`)
 - [ ] Module versions bumped in `build.zig` for changed modules
 - [ ] Check `RELEASE_NOTES.md` for unreleased changes — move into release notes
 - [ ] Built with `ReleaseSmall` (both default and `all-variants`)
-- [ ] Remote README updated — no unreleased module sections or names
-- [ ] `weirdutils_api.h` trimmed to released DLL names only and uploaded
+- [ ] `README.md` has a section for any new module
+- [ ] `include/weirdutils_api.h` lists all module DLL names
 - [ ] Release created and DLLs uploaded via `tea`
-- [ ] Source archives hidden

@@ -486,7 +486,7 @@ local function profReport(label, tbl)
     end
 end
 
-local benchActive = true
+local benchActive = false
 local benchFrame = CreateFrame("Frame")
 
 local function benchCombatStart()
