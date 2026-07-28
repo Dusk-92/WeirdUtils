@@ -484,12 +484,12 @@ skill for setup.
 
 ### Tool Chain
 
-- **Ghidra 11.4.2** at `/home/august/.ghidra/ghidra_11.4.2_PUBLIC/`
+- **Ghidra 11.4.2** at `<ghidra-install>/`
 - **Project** `Dis` at `/media/faststore/tmp/Dis`
 - **Target binary**: `WoW.exe.multi.latest` (labeled vanilla 1.12.1)
   or `WoW.exe.timber` (Turtle WoW with extra labels)
 - **Wrapper script**:
-  `/home/august/.claude/skills/ghidra-cli-wow-re/scripts/run-analysis.sh`
+  `<ghidra-scripts>/run-analysis.sh`
   takes a Python/Jython script path and runs it headless against the
   default binary, dumping stdout.
 
@@ -541,7 +541,7 @@ def get_callers(addr_int, label):
 **Step 2: Run the script.**
 
 ```bash
-/home/august/.claude/skills/ghidra-cli-wow-re/scripts/run-analysis.sh /tmp/my_script.py 2>/dev/null | grep "0x006f"
+<ghidra-scripts>/run-analysis.sh /tmp/my_script.py 2>/dev/null | grep "0x006f"
 ```
 
 The `2>/dev/null` suppresses Ghidra's startup noise; `grep "0x006f"`

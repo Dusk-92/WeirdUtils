@@ -1,6 +1,6 @@
 # Battleground Interactable Game Objects
 
-Research from TortoisWoW server source (`/home/august/projects/tortoise-wow/`).
+Research from TortoisWoW server source (`the TortoisWoW server source`).
 
 ## Warsong Gulch (Map 489)
 

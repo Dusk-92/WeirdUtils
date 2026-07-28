@@ -2,7 +2,7 @@
 
 Objects that should be valid click-through targets (click through players/units to reach these).
 
-Source: TortoisWoW server at `/home/august/projects/tortoise-wow/`
+Source: TortoisWoW server at `the TortoisWoW server source`
 
 ## Allowed by GO Type
 

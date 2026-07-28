@@ -19,7 +19,7 @@ Achieve pixel-perfect, distance-independent outline thickness using pixel/fragme
 
 ## Current Implementation Analysis
 
-### System Architecture (from `/media/storage/home/august/projects/idris/dlls/c_src/d3d9_hook.cpp`)
+### System Architecture (from `idris-dlls/c_src/d3d9_hook.cpp`)
 
 **Rendering Pipeline**:
 1. Hook `DrawIndexedPrimitive` (vtable index 82) to identify corpse/target/raid-marked models
@@ -406,7 +406,7 @@ Combine approaches 3 and 4 for optimal results:
 
 #### Step 1: Screen-Space Outline Vertex Shader
 
-**File**: `/media/storage/home/august/projects/idris/dlls/c_src/d3d9_hook.cpp` (lines 835-882)
+**File**: `idris-dlls/c_src/d3d9_hook.cpp` (lines 835-882)
 
 **Replace shader code** in `CreateOutlineShader()`:
 
@@ -692,7 +692,7 @@ float4 PS_DepthOutline(float2 uv : TEXCOORD0) : COLOR0
 ### Phase 1: Screen-Space Vertex Shader (Immediate)
 
 **Effort**: 2-4 hours
-**Files Modified**: `/media/storage/home/august/projects/idris/dlls/c_src/d3d9_hook.cpp`
+**Files Modified**: `idris-dlls/c_src/d3d9_hook.cpp`
 **Changes**:
 1. Update shader source to vs_3_0
 2. Add screen-space offset calculation (lines 835-882)

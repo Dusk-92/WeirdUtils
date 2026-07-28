@@ -9,7 +9,7 @@
   - Click an item to view and edit its content
     [Full documentation](https://atelier.dev)
     [Setup](vscode://Atelier.atelier/customize?agent=claude\&defaults=true) [Customize](vscode://Atelier.atelier/customize?agent=claude)
-- [ ] [add scaling to minimapicons](/home/august/.atelier/projects/-media-storage-projects-zig-weirdutils/plans/minimap-icon-scaling.md)
-- [ ] [Investigate the functions behind wow.exe lua string.find and find out how to optimize them as they seem to be extremely expensive for the work they do, at least when the game is ran via wine](/home/august/.atelier/projects/-media-storage-projects-zig-weirdutils/plans/lua-string-pattern-optimization.md)
+- [ ] add scaling to minimapicons
+- [ ] Investigate the functions behind wow.exe lua string.find and find out how to optimize them as they seem to be extremely expensive for the work they do, at least when the game is ran via wine
 - [ ] allow dead player-pets to be selectable in clikthrough
 - [x] adjust our basic settings for atelier to use opus for work as the larger context window is useful

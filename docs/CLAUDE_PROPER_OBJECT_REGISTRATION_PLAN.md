@@ -142,7 +142,7 @@ If failed:
 Use headless scripts via:
 
 ```bash
-/home/august/.claude/skills/ghidra-cli-wow-re/scripts/run-analysis.sh /tmp/analysis.py
+<ghidra-scripts>/run-analysis.sh /tmp/analysis.py
 ```
 
 Focus scripts on:

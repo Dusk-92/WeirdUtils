@@ -1,6 +1,6 @@
 # Idris DLL Research -- Model Ownership & Structure
 
-Findings from `/home/august/projects/idris/dlls/` relevant to outline improvements.
+Findings from `a separate Idris DLL project` relevant to outline improvements.
 
 ## Model Pointer Sources (forward mapping: object -> model)
 
