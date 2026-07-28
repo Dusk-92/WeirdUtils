@@ -1,0 +1,41 @@
+name: Bug Report
+about: Report a crash, error, or unexpected behavior
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: launcher
+    attributes:
+      label: Launcher
+      options:
+        - WoW.exe (direct)
+        - VanillaFixes.exe
+        - Other
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux (Wine)
+        - macOS (Wine/CrossOver)
+      default: 0
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Report
+      description: Attach your WeirdUtils DLL(s) and crash log (.txt from Errors/ folder) by dragging them into this box.
+      value: |
+        ## What happened?
+
+        ## Steps to reproduce:
+
+        ## Other DLLs loaded (nampower, SuperWoW, UnitXP, etc.):
+
+    validations:
+      required: true
