@@ -237,8 +237,7 @@ OutlineCommand("off")     -- disable outlines
 ## Build
 
 ```sh
-cd /media/storage/projects/zig/weirdutils
-zig build
+zig build   # from the repo root
 ```
 
 Target: x86-windows-msvc (32-bit DLL), Zig 0.15.

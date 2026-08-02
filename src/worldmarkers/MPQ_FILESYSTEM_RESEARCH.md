@@ -410,7 +410,7 @@ The hash table uses a specific encryption algorithm (documented in wowdev.wiki a
 
 ### Data Assets Synergy
 
-The [customassets project](/media/storage/projects/zig/customassets/) already implements the glob pattern patch (`0x82edc2: '?' → '*'`) for multi-character patch names. If combined with customassets, the temp file could use any name like `patch-weirdutils.MPQ`.
+The customassets module already implements the glob pattern patch (`0x82edc2: '?' → '*'`) for multi-character patch names. If combined with customassets, the temp file could use any name like `patch-weirdutils.MPQ`.
 
 ---
 
@@ -536,7 +536,7 @@ If we could insert entries into this hash table mapping our asset paths to disk 
 
 ### Concept
 
-The [customassets project](/media/storage/projects/zig/customassets/) takes a different approach entirely:
+The customassets module takes a different approach entirely:
 
 1. **NOP two gates** in `File_FindInArchive` (0x654b5c, 0x654b6a) that restrict `CheckFileExistence` to only "Interface/AddOns" paths
 2. **Hook `CheckFileExistence`** (0x654DD0) to check a hash map of loose disk files
