@@ -1,6 +1,6 @@
 # Outline Port Notes
 
-Pure Zig reimplementation of the WoW 1.12.1 unit outline system, ported from the Idris C/C++ reference at `/media/storage/projects/idris/dlls`.
+Pure Zig reimplementation of the WoW 1.12.1 unit outline system, ported from the earlier Idris C/C++ reference implementation (`reference/c_overlay/`, not included in this repo).
 
 ## Hooked Functions
 

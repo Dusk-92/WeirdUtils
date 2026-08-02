@@ -120,11 +120,11 @@ pDevice->SetRenderState(D3DRS_FILLMODE, D3DFILL_WIREFRAME);
 ### Implementation Status [COMPLETED]
 
 All objectives achieved - see "Working Implementation" at end of document:
-- ✅ Hook DrawIndexedPrimitive to detect corpse/target/raid-marked models
-- ✅ Stencil-based outline rendering in EndScene
-- ✅ Custom vertex shader for bone-animated outline expansion
-- ✅ Per-category visual effects (dark halo for dead, colored outline for marks/target)
-- ✅ Through-wall visibility with proper body/outline layering
+- [OK] Hook DrawIndexedPrimitive to detect corpse/target/raid-marked models
+- [OK] Stencil-based outline rendering in EndScene
+- [OK] Custom vertex shader for bone-animated outline expansion
+- [OK] Per-category visual effects (dark halo for dead, colored outline for marks/target)
+- [OK] Through-wall visibility with proper body/outline layering
 
 ### D3D9 "Chams" / Wallhack Technique
 
@@ -1780,9 +1780,9 @@ c7: 0.000 1.000 0.000 0.000  <- Y identity
 **Attempted:** Scale c0.x, c1.y, c2.x, c3.y by `g_outlineThickness` (1.2x)
 
 **Result:**
-- Model silhouette appears larger ✓
-- But silhouette MOVES when view angle changes ✗
-- Silhouette covers corpse instead of outlining it ✗
+- Model silhouette appears larger [OK]
+- But silhouette MOVES when view angle changes [X]
+- Silhouette covers corpse instead of outlining it [X]
 
 **Root Cause:** Scaling these projection-space constants distorts the view transformation, not the model. The model center isn't at origin in view space, so scaling pushes it in different directions based on camera angle.
 
@@ -2260,9 +2260,9 @@ Self-outline prevention: Local player is excluded from target and raid mark outl
 
 ### Status
 
-- ✅ Full bone transform shader working
-- ✅ Stencil-based outline rendering
-- ✅ Per-category visual effects (outline vs dark halo)
-- ✅ Distance-based thickness scaling with min/max clamping
-- ✅ Through-wall visibility
-- ✅ Self-outline prevention
+- [OK] Full bone transform shader working
+- [OK] Stencil-based outline rendering
+- [OK] Per-category visual effects (outline vs dark halo)
+- [OK] Distance-based thickness scaling with min/max clamping
+- [OK] Through-wall visibility
+- [OK] Self-outline prevention

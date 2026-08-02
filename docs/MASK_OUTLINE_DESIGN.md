@@ -14,9 +14,9 @@ Any architectural approach is acceptable. The existing 3-pass stencil code is pr
 
 The depth buffer doesn't distinguish "wall pixel" from "player pixel." After a frame is rendered, there's no way to know which depth values came from static geometry vs units. This makes pure post-process approaches (mask + edge detection in EndScene) unable to satisfy requirements 1 and 2 simultaneously:
 
-- If you depth-test the mask render against the full depth buffer → walls occlude (✓) but players also occlude (✗)
-- If you skip depth testing → players don't occlude (✓) but walls also don't occlude (✗)
-- If you composite in EndScene after all rendering → outlines are on top of everything, including walls (✗)
+- If you depth-test the mask render against the full depth buffer → walls occlude ([OK]) but players also occlude ([X])
+- If you skip depth testing → players don't occlude ([OK]) but walls also don't occlude ([X])
+- If you composite in EndScene after all rendering → outlines are on top of everything, including walls ([X])
 
 **You need depth information from BEFORE players/NPCs have rendered, but AFTER terrain/WMOs have rendered.** This is only available at a specific point during the frame - when M2 model batches begin processing.
 
@@ -26,9 +26,9 @@ The depth buffer doesn't distinguish "wall pixel" from "player pixel." After a f
 
 **How it satisfies the requirements:**
 
-1. **Batch reordering** moves outline targets to render first in the M2 batch list. At that point, only terrain + WMO depth exists in the depth buffer. The outline pass (pass 2) uses `ZENABLE=TRUE` → terrain/WMOs occlude the outline. ✓
-2. **Stencil bit** (`STENCIL_BIT_OUTLINE=0x02`) is written where outline pixels are drawn. Subsequent player/NPC batches test against this bit and fail where outline exists → players can't paint over outlines. ✓
-3. **Dead players** use `ZENABLE=FALSE` in pass 2 → outline ignores all depth → visible through walls. ✓
+1. **Batch reordering** moves outline targets to render first in the M2 batch list. At that point, only terrain + WMO depth exists in the depth buffer. The outline pass (pass 2) uses `ZENABLE=TRUE` → terrain/WMOs occlude the outline. [OK]
+2. **Stencil bit** (`STENCIL_BIT_OUTLINE=0x02`) is written where outline pixels are drawn. Subsequent player/NPC batches test against this bit and fail where outline exists → players can't paint over outlines. [OK]
+3. **Dead players** use `ZENABLE=FALSE` in pass 2 → outline ignores all depth → visible through walls. [OK]
 
 **Downsides:**
 - 3 DIP calls per outline target (stencil mark + outline + normal redraw)
@@ -79,9 +79,9 @@ This is what the current code already does, just cleaned up.
 
 Given the requirements, the 3-pass stencil with batch reordering is the only approach that works without exotic depth buffer tricks. The key properties it provides:
 
-1. **Outline renders when only static-world depth exists** (via batch reordering) → walls/terrain occlude ✓
-2. **Stencil bit prevents later units from overwriting outline** → players don't occlude ✓
-3. **Per-category depth disable** → dead player outlines through walls ✓
+1. **Outline renders when only static-world depth exists** (via batch reordering) → walls/terrain occlude [OK]
+2. **Stencil bit prevents later units from overwriting outline** → players don't occlude [OK]
+3. **Per-category depth disable** → dead player outlines through walls [OK]
 
 ## Improvements to Implement
 

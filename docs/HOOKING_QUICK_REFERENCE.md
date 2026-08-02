@@ -1,15 +1,15 @@
 # Hooking Quick Reference Guide
 
-## 🚨 Critical Rules (Break These = Crash)
+## Critical Rules (Break These = Crash)
 
 ### 1. NEVER Use PUSHA/POPA Around C Function Calls
 ```asm
-; ❌ WRONG - Will crash
+; [X] WRONG - Will crash
 pusha
 call _MyCFunction    ; This modifies EAX/ECX/EDX
 popa                 ; This RESTORES old values, breaking everything
 
-; ✅ RIGHT - Only save non-volatile registers
+; [OK] RIGHT - Only save non-volatile registers
 pushl %ebx
 pushl %esi
 pushl %edi
@@ -26,18 +26,18 @@ popl %ebx
 typedef void (__fastcall *Func_t)(void* thisPtr, void* edx, int arg);
 
 static void __fastcall MyHook(void* thisPtr, void* edx, int arg) {
-    // thisPtr from ECX ✅
-    // edx is trash ✅
-    // arg from stack ✅
+    // thisPtr from ECX [OK]
+    // edx is trash [OK]
+    // arg from stack [OK]
 }
 ```
 
 ### 3. Steal Complete Instructions Only
 ```cpp
-// ❌ WRONG
+// [X] WRONG
 #define STOLEN_BYTES 6  // No idea if this splits an instruction
 
-// ✅ RIGHT
+// [OK] RIGHT
 // Disassemble: PUSH EBP (1) + MOV EBP,ESP (2) + SUB ESP,0x80 (6) = 9 bytes
 #define STOLEN_BYTES 9  // Documented complete instructions
 ```
@@ -54,7 +54,7 @@ static void __fastcall MyHook(void* thisPtr, void* edx, int arg) {
 
 ---
 
-## 📋 Register Preservation Cheat Sheet
+## Register Preservation Cheat Sheet
 
 | Register | Type | Who Saves It? | Can Hook Modify? |
 |----------|------|---------------|------------------|
@@ -69,7 +69,7 @@ static void __fastcall MyHook(void* thisPtr, void* edx, int arg) {
 
 ---
 
-## 🎯 Calling Convention Quick Reference
+## Calling Convention Quick Reference
 
 ### __stdcall (WINAPI)
 - Args: stack (right to left)
@@ -93,7 +93,7 @@ static void __fastcall MyHook(void* thisPtr, void* edx, int arg) {
 
 ---
 
-## 🔧 Safe Hook Templates
+## Safe Hook Templates
 
 ### Template 1: VTable Hook (Safest)
 ```cpp
@@ -165,7 +165,7 @@ __attribute__((naked)) static void NakedHook() {
 
 ---
 
-## 🛡️ Safety Checklist
+## Safety Checklist
 
 ### Before Installing Hook:
 - [ ] Disassemble target to verify prologue
@@ -190,7 +190,7 @@ __attribute__((naked)) static void NakedHook() {
 
 ---
 
-## 🐛 Common Crash Causes
+## Common Crash Causes
 
 1. **PUSHA/POPA with C calls** → Volatile register corruption
 2. **Wrong calling convention** → ECX/EDX clobbered when needed
@@ -203,7 +203,7 @@ __attribute__((naked)) static void NakedHook() {
 
 ---
 
-## 📚 Research Sources
+## Research Sources
 
 - [How to Hook Functions - Guided Hacking](https://guidedhacking.com/threads/how-to-hook-functions-code-detouring-guide.14185/)
 - [Thiscall Hooking - tresp4sser](https://tresp4sser.wordpress.com/2012/10/06/how-to-hook-thiscall-functions/)
@@ -213,7 +213,7 @@ __attribute__((naked)) static void NakedHook() {
 
 ---
 
-## 💡 Key Insight
+## Key Insight
 
 **Hooking is NOT about blindly copying bytes.**
 

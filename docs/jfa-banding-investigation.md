@@ -47,7 +47,7 @@ Consider alternative approaches:
 - **Screen-space dilation** (iterative morphological expand of silhouette) - simpler, no distance field needed
 - **Gaussian blur difference** - blur silhouette, subtract original, threshold
 - **Sobel/edge detection** on the silhouette RT
-- Docs in `/media/storage/projects/zig/weirdutils/docs/` describe these alternatives
+- Docs in `docs/` describe these alternatives
 - Reference articles: ameye.dev "5 ways to draw an outline", Ben Golus "Quest for Very Wide Outlines"
 
 ## Key Files
@@ -58,7 +58,7 @@ Consider alternative approaches:
 - `reference/c_overlay/d3d9_hook.cpp` - C reference (uses 3-pass shell extrusion, not JFA)
 
 ## Build / Environment
-- `zig build` from `/media/storage/projects/zig/weirdutils/`
+- `zig build` from the repo root
 - Zig 0.15, target x86-windows-msvc (32-bit DLL injected into WoW 3.3.5)
 - Linux host (Arch, kernel 6.16.1), game via Wine/DXVK
 - Git last commit: `661e156` (game object occlusion fix)

@@ -49,7 +49,7 @@ Functions in rendering vtable:
 
 ### World Rendering Orchestration (FOUND!)
 
-#### **ProcessWorldWithFrustum** ⭐ MAIN WORLD ORCHESTRATOR
+#### **ProcessWorldWithFrustum** MAIN WORLD ORCHESTRATOR
 - **Address**: `0x00683000` (called at 0x0068302f)
 - **Signature**: `void __fastcall ProcessWorldWithFrustum(float *frustumBounds)`
 - **Role**: **PRIMARY WORLD RENDERING ORCHESTRATOR** - Coordinates terrain, objects, and models
@@ -65,8 +65,7 @@ Functions in rendering vtable:
      - **`CullObjectsToRenderList(manager, 2)`** - Cull objects type 2
      - `ProcessStaticObjectsCulling()` - Cull static world objects
   4. `PopFrustumStack()` - Restore frustum state
-  5. **`CullAndProcessWorldChunks()`** - Terrain chunk rendering ⭐
-- **Notes**: This is the function that needs to be hooked for complete render order control!
+  5. **`CullAndProcessWorldChunks()`** - Terrain chunk rendering - **Notes**: This is the function that needs to be hooked for complete render order control!
 
 #### **CullObjectsToRenderList**
 - **Address**: `0x00683ab0`
@@ -161,7 +160,7 @@ Functions in rendering vtable:
 
 ### Terrain/Water Rendering
 
-#### **CullAndProcessWorldChunks** ⭐ TERRAIN RENDERER
+#### **CullAndProcessWorldChunks** TERRAIN RENDERER
 - **Address**: `0x00683040`
 - **Called by**: `ProcessWorldWithFrustum` (after object culling)
 - **Signature**: `void CullAndProcessWorldChunks(void)`
@@ -219,7 +218,7 @@ Functions in rendering vtable:
 #### **renderMeshWithLOD**
 - **Called by**: `RenderObjectsWithLOD` (0x00684510)
 - **Role**: **ACTUAL MESH DRAWING FUNCTION** - Likely calls DrawIndexedPrimitive
-- **Status**: ⚠️ Function body not yet located - CRITICAL to find!
+- **Status**: [!] Function body not yet located - CRITICAL to find!
 - **Importance**: This is where the final D3D drawing happens
 
 #### **Function Pointer Rendering (CM2Scene_DrawModelBatch)**
@@ -283,7 +282,7 @@ WoW uses multiple linked lists to manage culled objects that need to be rendered
 - **Data Address**: `DAT_00c7cb18` + offset (indexed by renderListIndex * 0xc)
 - **Indices**: 0, 1, 2 (likely: terrain objects, WMOs, M2 models)
 - **Populated by**: `CullObjectsToRenderList` (0x00683ab0)
-- **Processed by**: Unknown (⚠️ still need to find)
+- **Processed by**: Unknown ([!] still need to find)
 
 #### **Static Object Render Lists (ProcessStaticObjectsCulling)**
 - **List 1 (Normal)**:
@@ -303,7 +302,7 @@ WoW uses multiple linked lists to manage culled objects that need to be rendered
 #### **LOD Object Render List (RenderObjectsWithLOD)**
 - **List Head**: `PTR_00c7cae0`
 - **Offset**: `PTR_00c7cad8`
-- **Populated by**: Unknown (⚠️ likely populated during culling phase)
+- **Populated by**: Unknown ([!] likely populated during culling phase)
 - **Processed by**: `RenderObjectsWithLOD` (0x00684510)
 - **Notes**: Objects are rendered with LOD (Level of Detail) based on distance
 
@@ -336,32 +335,32 @@ WoW uses multiple linked lists to manage culled objects that need to be rendered
 - **Setup**: Per-stage configuration via `SetTextureStage()`
 - **Transforms**: Applied to stages 0 and 1 during model batch rendering
 
-## COMPLETE RENDERING PIPELINE DISCOVERED! ✅
+## COMPLETE RENDERING PIPELINE DISCOVERED! [OK]
 
 ### What We Found
 
-#### ✅ **Main World Orchestrator**: `ProcessWorldWithFrustum` (0x00683000)
+#### [OK] **Main World Orchestrator**: `ProcessWorldWithFrustum` (0x00683000)
 - Coordinates all world rendering
 - Culls objects to 3 render lists (indices 0, 1, 2)
 - Renders terrain chunks last via `CullAndProcessWorldChunks`
 
-#### ✅ **Terrain Renderer**: `CullAndProcessWorldChunks` (0x00683040)
+#### [OK] **Terrain Renderer**: `CullAndProcessWorldChunks` (0x00683040)
 - Primary terrain chunk culling and rendering
 - Processes ADT tiles within camera frustum
 - **Currently renders AFTER objects** (called last in ProcessWorldWithFrustum)
 
-#### ✅ **Object Culling**: `CullObjectsToRenderList` (0x00683ab0)
+#### [OK] **Object Culling**: `CullObjectsToRenderList` (0x00683ab0)
 - Called 3 times with indices: 1, 0, 2
 - Likely represents: terrain objects, WMOs, and M2 models
 - Frustum culls and adds to render lists
 
-#### ✅ **Static Object Culling**: `ProcessStaticObjectsCulling` (0x00683bf0)
+#### [OK] **Static Object Culling**: `ProcessStaticObjectsCulling` (0x00683bf0)
 - Handles WMO groups and static doodads
 - Respects render flags
 
-### ✅ **NEW DISCOVERIES** - Render List Processing Found!
+### [OK] **NEW DISCOVERIES** - Render List Processing Found!
 
-#### ⭐ **RenderObjectsWithLOD** - RENDER LIST PROCESSOR
+#### **RenderObjectsWithLOD** - RENDER LIST PROCESSOR
 - **Address**: `0x00684510`
 - **Role**: **PRIMARY RENDER LIST PROCESSOR** - Iterates through object render list and draws them
 - **Signature**: `void RenderObjectsWithLOD(void)`
@@ -376,14 +375,13 @@ WoW uses multiple linked lists to manage culled objects that need to be rendered
      - Sets render target
      - Calls `ProcessObjectGeometry()` to prepare geometry
      - Calls `UpdateObjectPosition()` to update transform
-     - **Calls `renderMeshWithLOD()` to actually draw the mesh** ⭐
-  5. Checks LOD distance (`_DAT_00867958`) to cull distant objects
+     - **Calls `renderMeshWithLOD()` to actually draw the mesh** 5. Checks LOD distance (`_DAT_00867958`) to cull distant objects
   6. Calls `EndRender()` to finish rendering
 - **Notes**: This is the missing link between culling and rendering!
 - **Calls**: `renderMeshWithLOD()`, `ProcessObjectGeometry()`, `UpdateObjectPosition()`
 - **Status**: No xrefs found - likely called via function pointer or vtable
 
-#### ⭐ **executeRenderCommands** - WMO/STATIC OBJECT RENDERER
+#### **executeRenderCommands** - WMO/STATIC OBJECT RENDERER
 - **Called by**: `ProcessStaticObjectsCulling` (at end of function)
 - **Role**: Renders static objects (WMOs, buildings, doodads) from the culled list
 - **Implementation**: Found inside `ProcessStaticObjectsCulling` as a loop:
@@ -399,24 +397,24 @@ WoW uses multiple linked lists to manage culled objects that need to be rendered
 
 ### Still To Investigate
 
-#### 🟡 **Main Frame/Game Loop**
+#### [~] **Main Frame/Game Loop**
 - **Status**: Need to find what calls `ProcessWorldWithFrustum`
 - **Question**: What is the top-level orchestrator above ProcessWorldWithFrustum?
 - **Hypothesis**: Called from main game loop, possibly via callback or vtable
 - **Search Strategy**: Look for functions that reference ScenePresent vtable or main loop
 
-#### 🟡 **RenderObjectsWithLOD Caller**
+#### [~] **RenderObjectsWithLOD Caller**
 - **Status**: No xrefs found to this function
 - **Question**: Where/how is `RenderObjectsWithLOD` called?
 - **Hypothesis**: Called via function pointer after ProcessWorldWithFrustum completes
 - **Likely**: Part of render list processing phase between culling and present
 
-#### 🟡 **renderMeshWithLOD Implementation**
+#### [~] **renderMeshWithLOD Implementation**
 - **Status**: Called by RenderObjectsWithLOD, but function not yet located
 - **Role**: Actual mesh drawing function - likely calls DrawIndexedPrimitive
 - **Need**: Find this function to understand final rendering stage
 
-#### 🟡 **Connection to M2Scene**
+#### [~] **Connection to M2Scene**
 - **Status**: M2 model rendering chain is clear, but connection to world rendering unclear
 - **Question**: How does `CM2Scene_ExecuteRenderPass` get called in relation to `ProcessWorldWithFrustum`?
 - **Need**: Find the higher-level function that calls both
@@ -544,41 +542,41 @@ Once terrain/WMO renderers are found:
 
 ## Summary
 
-### ✅ MAJOR PROGRESS - Rendering Pipeline Nearly Complete!
+### [OK] MAJOR PROGRESS - Rendering Pipeline Nearly Complete!
 
 This analysis has successfully discovered most of the WoW rendering architecture:
 
 #### **Primary Discoveries**
-1. **✅ World Orchestrator**: `ProcessWorldWithFrustum` (0x00683000)
+1. **[OK] World Orchestrator**: `ProcessWorldWithFrustum` (0x00683000)
    - Coordinates frustum culling for all world objects
    - Processes 32 object managers with 3 render list types
    - Calls terrain renderer last
 
-2. **✅ Terrain Renderer**: `CullAndProcessWorldChunks` (0x00683040)
+2. **[OK] Terrain Renderer**: `CullAndProcessWorldChunks` (0x00683040)
    - Primary ADT terrain chunk culling and rendering
    - Called AFTER object culling (currently renders terrain depth last)
 
-3. **✅ Object Culling**: `CullObjectsToRenderList` (0x00683ab0)
+3. **[OK] Object Culling**: `CullObjectsToRenderList` (0x00683ab0)
    - Frustum culls objects to 3 render lists (indices: 1, 0, 2)
    - Adds to global render lists at PTR_00c7cb14/PTR_00c7cb18
    - Likely: terrain objects, WMOs, M2 models
 
-4. **✅ Static Culling**: `ProcessStaticObjectsCulling` (0x00683bf0)
+4. **[OK] Static Culling**: `ProcessStaticObjectsCulling` (0x00683bf0)
    - Handles WMO groups and static doodads
    - **Contains inline WMO renderer** (`executeRenderCommands` loop at end)
    - Adds to render lists at PTR_00c7cadc/PTR_00c7cb54
 
-5. **⭐ NEW - Render List Processor**: `RenderObjectsWithLOD` (0x00684510)
+5. **NEW - Render List Processor**: `RenderObjectsWithLOD` (0x00684510)
    - **CRITICAL DISCOVERY**: This processes the culled object render list!
    - Iterates through objects at PTR_00c7cae0
    - Calls `renderMeshWithLOD()` for actual drawing
    - Includes LOD distance culling
 
-6. **✅ M2 Model Pipeline**: Complete chain from `CM2Scene_ExecuteRenderPass` → `CM2SceneRenderDraw` → `RenderBatches` → `CM2Scene_DrawModelBatch`
+6. **[OK] M2 Model Pipeline**: Complete chain from `CM2Scene_ExecuteRenderPass` → `CM2SceneRenderDraw` → `RenderBatches` → `CM2Scene_DrawModelBatch`
 
-7. **✅ Render Lists Mapped**: Documented 7+ global render list structures and their usage
+7. **[OK] Render Lists Mapped**: Documented 7+ global render list structures and their usage
 
-### 🎯 Updated Rendering Flow
+### Updated Rendering Flow
 
 Based on discoveries, the likely flow is:
 
@@ -597,7 +595,7 @@ Based on discoveries, the likely flow is:
    - Cursor overlay
    - ISceneEnd → D3D Present
 
-### 🎯 Key Insight for Selective Occlusion
+### Key Insight for Selective Occlusion
 
 The render list processing happens AFTER culling. To control occlusion:
 
@@ -613,10 +611,10 @@ The render list processing happens AFTER culling. To control occlusion:
 4. Normal objects/players
 
 ### Remaining Critical Questions
-- ⚠️ **What calls RenderObjectsWithLOD?** (no xrefs found - likely function pointer or callback system)
-- ✅ **Found rendering mechanism**: Function pointer at `renderContext+0x40+0x11c` in CM2Scene_DrawModelBatch performs actual D3D draw
-- ⚠️ **Main game loop?** (what calls ProcessWorldWithFrustum? - no direct callers found, likely callback/vtable)
-- ⚠️ **Render order?** (do objects render before or after terrain?)
+- [!] **What calls RenderObjectsWithLOD?** (no xrefs found - likely function pointer or callback system)
+- [OK] **Found rendering mechanism**: Function pointer at `renderContext+0x40+0x11c` in CM2Scene_DrawModelBatch performs actual D3D draw
+- [!] **Main game loop?** (what calls ProcessWorldWithFrustum? - no direct callers found, likely callback/vtable)
+- [!] **Render order?** (do objects render before or after terrain?)
 
 ### Latest Discoveries (Session 2)
 
@@ -639,7 +637,7 @@ We now have MOST of the critical hook points for selective occlusion! The missin
 
 ---
 
-## 🎯 COMPLETE HOOK POINT MAPPING (Session 3)
+## COMPLETE HOOK POINT MAPPING (Session 3)
 
 ### Terrain Rendering Pipeline
 **Culling**: `CullAndProcessWorldChunks` (0x00683040)
@@ -702,7 +700,7 @@ We now have MOST of the critical hook points for selective occlusion! The missin
 
 ---
 
-## 📋 RECOMMENDED HOOK STRATEGY FOR SELECTIVE OCCLUSION
+## RECOMMENDED HOOK STRATEGY FOR SELECTIVE OCCLUSION
 
 ### Option A: High-Level (Easiest)
 Hook `ProcessWorldWithFrustum` (0x00683000) to reorder rendering:
@@ -730,27 +728,27 @@ Hook D3D device:
 
 ---
 
-## ✅ FINAL DISCOVERY STATUS
+## [OK] FINAL DISCOVERY STATUS
 
-### Completed ✅
-- ✅ Terrain culling function (CullAndProcessWorldChunks)
-- ✅ WMO culling AND rendering (ProcessStaticObjectsCulling with inline rendering)
-- ✅ Object culling (CullObjectsToRenderList)
-- ✅ Object processing (RenderObjectsWithLOD)
-- ✅ Function pointer rendering system (CM2Scene_DrawModelBatch)
-- ✅ Main world orchestrator (ProcessWorldWithFrustum)
-- ✅ Callback registration system (UpdateRenderCallback)
-- ✅ All render list structures mapped (7+ globals)
+### Completed [OK]
+- [OK] Terrain culling function (CullAndProcessWorldChunks)
+- [OK] WMO culling AND rendering (ProcessStaticObjectsCulling with inline rendering)
+- [OK] Object culling (CullObjectsToRenderList)
+- [OK] Object processing (RenderObjectsWithLOD)
+- [OK] Function pointer rendering system (CM2Scene_DrawModelBatch)
+- [OK] Main world orchestrator (ProcessWorldWithFrustum)
+- [OK] Callback registration system (UpdateRenderCallback)
+- [OK] All render list structures mapped (7+ globals)
 
-### Architecture Understanding ✅
-- ✅ WoW uses callback-based rendering (no direct function calls found)
-- ✅ Rendering is event-driven through vtables and function pointers
-- ✅ Terrain rendering likely invoked through callback (not found statically)
-- ✅ Static analysis limited by callback architecture
+### Architecture Understanding [OK]
+- [OK] WoW uses callback-based rendering (no direct function calls found)
+- [OK] Rendering is event-driven through vtables and function pointers
+- [OK] Terrain rendering likely invoked through callback (not found statically)
+- [OK] Static analysis limited by callback architecture
 
 ### Remaining Unknowns (Acceptable)
-- ⚠️ Exact terrain render list processor (likely callback - can find at runtime)
-- ⚠️ Main game loop that invokes ProcessWorldWithFrustum (callback system)
-- ⚠️ Exact render order (can determine through runtime hooking)
+- [!] Exact terrain render list processor (likely callback - can find at runtime)
+- [!] Main game loop that invokes ProcessWorldWithFrustum (callback system)
+- [!] Exact render order (can determine through runtime hooking)
 
 **Conclusion**: We have ALL the hook points needed for selective occlusion implementation. Runtime debugging can fill in the remaining details if needed.

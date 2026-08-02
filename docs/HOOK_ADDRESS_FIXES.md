@@ -5,62 +5,62 @@
 
 ## Critical Address Fixes
 
-### ❌ ProcessWorldWithFrustum
+### [X] ProcessWorldWithFrustum
 - **Old Address:** `0x00683000` (WRONG - no function at this address)
 - **Correct Address:** `0x00682fa0`
 - **Ghidra Signature:** `undefined __fastcall ProcessWorldWithFrustum(float * frustumBounds)`
 - **First Byte:** `0x57` (PUSH EDI)
 - **Stolen Bytes:** 9 bytes
-- **Status:** ✅ FIXED in discovery_hooks.cpp
+- **Status:** [OK] FIXED in discovery_hooks.cpp
 
-### ❌ RenderObjectsWithLOD
+### [X] RenderObjectsWithLOD
 - **Old Address:** `0x00684600` (WRONG - no function at this address)
 - **Correct Address:** `0x00684510`
 - **Ghidra Signature:** `undefined __stdcall RenderObjectsWithLOD(void)`
 - **First Byte:** `0x55` (PUSH EBP)
 - **Stolen Bytes:** 8 bytes
-- **Status:** ✅ FIXED in discovery_hooks.cpp
+- **Status:** [OK] FIXED in discovery_hooks.cpp
 
 ## Verified Correct Addresses
 
-### ✅ ScenePresent
+### [OK] ScenePresent
 - **Address:** `0x0059a870`
 - **Ghidra Signature:** `void __fastcall CGxDeviceD3d::ScenePresent(CGxDeviceD3d * device)`
 - **First Byte:** `0x55` (PUSH EBP)
 - **Stolen Bytes:** 6 bytes
-- **Calling Convention:** __fastcall (saves ECX+EDX) ✅ Correct in code
+- **Calling Convention:** __fastcall (saves ECX+EDX) [OK] Correct in code
 
-### ✅ CullAndProcessWorldChunks
+### [OK] CullAndProcessWorldChunks
 - **Address:** `0x00683040`
 - **Ghidra Signature:** `undefined __stdcall CullAndProcessWorldChunks(void)`
 - **First Byte:** `0x55` (PUSH EBP)
 - **Stolen Bytes:** 8 bytes
-- **Calling Convention:** __stdcall (no register saves) ✅ Correct in code
+- **Calling Convention:** __stdcall (no register saves) [OK] Correct in code
 
-### ✅ ProcessStaticObjectsCulling
+### [OK] ProcessStaticObjectsCulling
 - **Address:** `0x00683bf0`
 - **Ghidra Signature:** `undefined __fastcall ProcessStaticObjectsCulling(int staticObjectManager)`
 - **First Byte:** `0x55` (PUSH EBP)
 - **Stolen Bytes:** 9 bytes
-- **Calling Convention:** __fastcall (saves ECX+EDX) ✅ Correct in code
+- **Calling Convention:** __fastcall (saves ECX+EDX) [OK] Correct in code
 
-### ✅ CM2Scene_DrawModelBatch
+### [OK] CM2Scene_DrawModelBatch
 - **Address:** `0x0070cf70`
 - **Ghidra Signature:** `undefined __fastcall CM2Scene_DrawModelBatch(void * renderContext)`
 - **First Byte:** `0x55` (PUSH EBP)
 - **Stolen Bytes:** 8 bytes
-- **Calling Convention:** __fastcall (saves ECX+EDX) ✅ Correct in code
+- **Calling Convention:** __fastcall (saves ECX+EDX) [OK] Correct in code
 
 ## Calling Convention Summary
 
 | Function | Ghidra Convention | Code Implementation | Status |
 |----------|------------------|---------------------|--------|
-| ScenePresent | __fastcall | __fastcall (ECX+EDX) | ✅ Correct |
-| ProcessWorldWithFrustum | __fastcall | __fastcall (ECX+EDX) | ✅ Correct |
-| CullAndProcessWorldChunks | __stdcall | __cdecl (no saves) | ✅ OK (both no reg saves) |
-| ProcessStaticObjectsCulling | __fastcall | __fastcall (ECX+EDX) | ✅ Correct |
-| RenderObjectsWithLOD | __stdcall | __cdecl (no saves) | ✅ OK (both no reg saves) |
-| CM2Scene_DrawModelBatch | __fastcall | __fastcall (ECX+EDX) | ✅ Correct |
+| ScenePresent | __fastcall | __fastcall (ECX+EDX) | [OK] Correct |
+| ProcessWorldWithFrustum | __fastcall | __fastcall (ECX+EDX) | [OK] Correct |
+| CullAndProcessWorldChunks | __stdcall | __cdecl (no saves) | OK (both no reg saves) |
+| ProcessStaticObjectsCulling | __fastcall | __fastcall (ECX+EDX) | [OK] Correct |
+| RenderObjectsWithLOD | __stdcall | __cdecl (no saves) | OK (both no reg saves) |
+| CM2Scene_DrawModelBatch | __fastcall | __fastcall (ECX+EDX) | [OK] Correct |
 
 ## Prologue Byte Analysis
 
@@ -87,9 +87,9 @@ The Ghidra MCP `get_bytes` tool only returns 1 byte regardless of the length par
 
 ## Recommendations
 
-1. ✅ **Address fixes have been applied** to discovery_hooks.cpp
-2. ⚠️ **Test the DLL** after recompilation to verify hooks work correctly
-3. ⚠️ **Monitor for crashes** that could indicate incorrect stolen byte counts
+1. [OK] **Address fixes have been applied** to discovery_hooks.cpp
+2. [!] **Test the DLL** after recompilation to verify hooks work correctly
+3. [!] **Monitor for crashes** that could indicate incorrect stolen byte counts
 4. If crashes occur after address fix, use Ghidra GUI to manually count instruction bytes in prologues
 
 ## Next Steps

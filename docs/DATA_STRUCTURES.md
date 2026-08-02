@@ -39,8 +39,8 @@ struct Model {
 
 | Offset | Type | Name | Description | Verified |
 |--------|------|------|-------------|----------|
-| +0x30 | `void*` | dataPtr | Pointer to geometry data container | ✓ |
-| +0x94 | `BoneMatrix*` | boneArray | **Pointer to bone matrix array** | ✓ |
+| +0x30 | `void*` | dataPtr | Pointer to geometry data container | [OK] |
+| +0x94 | `BoneMatrix*` | boneArray | **Pointer to bone matrix array** | [OK] |
 
 ### Nested Structure (Model+0x30)
 
@@ -148,8 +148,8 @@ struct MeshData {
 
 | Offset | Type | Name | Description | Verified |
 |--------|------|------|-------------|----------|
-| +0x04 | `uint16_t` | vertexOffset | Start vertex in global array | ✓ |
-| +0x06 | `uint16_t` | vertexCount | **Loop terminator in applyBoneTransforms** | ✓ |
+| +0x04 | `uint16_t` | vertexOffset | Start vertex in global array | [OK] |
+| +0x06 | `uint16_t` | vertexCount | **Loop terminator in applyBoneTransforms** | [OK] |
 | +0x08 | `uint16_t` | indexOffset | Start index for this submesh | ? |
 | +0x0A | `uint16_t` | indexCount | Number of indices | ? |
 

@@ -1,5 +1,7 @@
 # WeirdUtils
 
+> **This project is no longer actively developed.** The full source is published here, in the public domain (see `LICENSE`), so it can be forked, salvaged, or learned from rather than bit-rotting on a private disk. See [Source Code](#source-code) for details and caveats.
+
 This package provides many pre-built DLLs for enhancing the vanilla 1.12 client WoW gameplay experience, aimed in particular at ease of use and accessibility but also bug fixes.
 
 You may get all features by installing `weirdutils.dll`, or choose any selection of features via individual DLLs.  
