@@ -52,6 +52,27 @@ const luagc_mod = if (build_opts.luagc) @import("luagc/luagc.zig") else struct {
 const module_active = @import("module_active.zig");
 
 const WINAPI = std.builtin.CallingConvention.winapi;
+const safe_variant_core = @import("build_options").safe_variant_core;
+
+// Standalone compatibility helper.
+// Older WeirdUtils cores can replace these two File_FindInArchive branches
+// with NOP NOP. Safe standalone variants restore the original bytes only when
+// that exact legacy patch is present.
+fn restoreLegacyFileFindArchiveGates() void {
+    const gate1: usize = 0x654B5C;
+    const gate2: usize = 0x654B6A;
+    const original1 = [2]u8{ 0x74, 0x25 };
+    const original2 = [2]u8{ 0x75, 0x17 };
+
+    if (hook.readMem(u8, gate1) == 0x90 and hook.readMem(u8, gate1 + 1) == 0x90) {
+        hook.writeProtected(gate1, &original1);
+        log.print("compat: restored File_FindInArchive gate 1\n");
+    }
+    if (hook.readMem(u8, gate2) == 0x90 and hook.readMem(u8, gate2 + 1) == 0x90) {
+        hook.writeProtected(gate2, &original2);
+        log.print("compat: restored File_FindInArchive gate 2\n");
+    }
+}
 
 // =============================================================================
 // Lua Protection Bypass
@@ -676,6 +697,16 @@ fn registerAllSystemCommandsDetour() callconv(hook.cc.stdcall) void {
     registerModuleVersions();
 }
 
+// Safe standalone Outline only needs its Lua command to be re-registered
+// after login/reload. It deliberately does not touch the shared WeirdUtils
+// version table, avoiding nested Lua-table mutations across multiple DLLs.
+fn registerOutlineCommandsDetour() callconv(hook.cc.stdcall) void {
+    register_commands_hook.callOriginal(.{});
+    if (build_opts.outline) {
+        registerLuaFunctions();
+    }
+}
+
 /// Hook for Glue_LoadScriptFunctions (0x46ABB0).
 /// Fires at the login/glue screen — registers version table so addons can query early.
 fn glueLoadScriptFunctionsDetour() callconv(hook.cc.stdcall) void {
@@ -691,6 +722,10 @@ var engine_init_hook: hook.Detour(fn () callconv(hook.cc.stdcall) void) = .{};
 
 fn engineInitDetour() callconv(hook.cc.stdcall) void {
     engine_init_hook.callOriginal(.{});
+
+    if (safe_variant_core and build_opts.outline) {
+        restoreLegacyFileFindArchiveGates();
+    }
 
     if (build_opts.screenshot) {
         screenshot.installHook();
@@ -811,6 +846,41 @@ fn install() void {
     logging.init();
     log = logging.Logger.open("weirdutils", .console);
 
+    if (safe_variant_core) {
+        log.print("Installing minimal standalone core\n");
+
+        // customassets needs only CheckFileExistence for loose Data files.
+        // Do not install embedded-file hooks and do not NOP File_FindInArchive.
+        if (build_opts.customassets) {
+            _ = cfe_hook.attach(0x654DD0, &checkFileExistenceDetour);
+        }
+
+        // Outline needs one Lua registration hook so /outline survives /reload,
+        // plus the engine-init hook for its deferred renderer initialization.
+        if (build_opts.outline) {
+            _ = register_commands_hook.attach(0x490250, &registerOutlineCommandsDetour);
+            _ = engine_init_hook.attach(0x46a400, &engineInitDetour);
+        }
+
+        // Install only the actual module hooks.
+        inline for (modules) |m| {
+            if (m.install) |inst| inst();
+            if (m.name) |name| {
+                if (m.is_active) |active_fn| module_active.register(name, active_fn);
+            }
+        }
+
+        // The user's original WeirdPerformance loads before these variants.
+        // Repair only its legacy MPQ gate NOPs; leave WeirdPerformance itself untouched.
+        if (build_opts.customassets or build_opts.outline) {
+            restoreLegacyFileFindArchiveGates();
+        }
+
+        // No embedded addon registration in minimal variants.
+        // Outline's addon is supplied normally under Interface\\AddOns.
+        return;
+    }
+
     // Core hooks chain safely across multiple DLLs via zhook's E9-detect path:
     // each DLL's trampoline JMPs to the previous DLL's detour, forming a LIFO
     // call chain. Callbacks are additive (Lua registration, file serving) or
@@ -840,6 +910,25 @@ fn install() void {
 }
 
 fn uninstall() void {
+    if (safe_variant_core) {
+        comptime var j = modules.len;
+        inline while (j > 0) {
+            j -= 1;
+            if (modules[j].remove) |rm| rm();
+        }
+
+        if (build_opts.outline) {
+            engine_init_hook.detach();
+            register_commands_hook.detach();
+        }
+        if (build_opts.customassets) {
+            cfe_hook.detach();
+        }
+
+        logging.deinit();
+        return;
+    }
+
     // Remove modules in reverse order
     comptime var i = modules.len;
     inline while (i > 0) {
