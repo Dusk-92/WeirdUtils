@@ -163,45 +163,28 @@ jobs:
           print("outline.dll machine code: registration and callback ABIs verified")
           PY
 
-      - name: Verify UnitGUID native ECX ABI
+      - name: Verify direct player and target GUID path
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          src = Path("src/wow.zig").read_text()
+          wow = Path("src/wow.zig").read_text()
+          offsets = Path("src/offsets.zig").read_text()
           for required in (
-              'pub fn unitGUID',
-              'callconv(.{ .x86_thiscall = .{} }) u64',
-              '@call(.never_tail, f_native, .{unit_id})',
+              'const guid = getPlayerGUID();',
+              'return readGUID(o.LOCKED_TARGET_GUID);',
           ):
-              if required not in src:
-                  raise SystemExit(f"Missing UnitGUID ABI fix piece: {required}")
-          print("source: UnitGUID uses native ECX ABI")
-          PY
-
-          objdump -d -Mintel zig-out/variants/outline.dll > /tmp/outline.disasm
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          lines = Path("/tmp/outline.disasm").read_text(errors="replace").splitlines()
-          sites = []
-          for i, line in enumerate(lines):
-              if re.search(r"mov\s+eax,0x0*515970\b", line, re.I):
-                  block = "\n".join(lines[max(0, i - 5):i + 5])
-                  sites.append(block)
-                  if re.search(r"push\s+0x[0-9a-f]+\s*\n\s*[0-9a-f]+:.*call\s+eax", block, re.I):
-                      raise SystemExit("BAD ABI: UnitGUID argument is still pushed on stack")
-                  if not re.search(r"mov\s+ecx,", block, re.I):
-                      raise SystemExit("BAD ABI: UnitGUID call does not prepare ECX")
-
-          if not sites:
-              raise SystemExit("Could not find UnitGUID call sites in outline.dll")
-
-          print(f"UnitGUID machine code: {len(sites)} call site(s), ECX ABI verified")
-          for block in sites:
-              print(block)
+              if required not in wow:
+                  raise SystemExit(f"Missing direct player/target GUID path: {required}")
+          for required in (
+              'FN_GET_PLAYER_GUID: usize = 0x00468550',
+              'LOCKED_TARGET_GUID: usize = 0x00B4E2D8',
+              'FN_GET_OBJECT_BY_GUID: usize = 0x464870',
+          ):
+              if required not in offsets:
+                  raise SystemExit(f"Missing verified WoW offset: {required}")
+          print("source: player GUID, target GUID and GUID->object path verified")
           PY
 
       - name: Stage package
@@ -222,7 +205,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          This build fixes the x86 ABIs used by the standalone Outline path: FrameScript_RegisterFunction gets name in ECX + callback in EDX, OutlineCommand receives Lua state in ECX, and UnitGUID receives its unit id in ECX without leaking stack space. WoW Lua API calls stay on explicit native register wrappers.
+          This debug build uses ClntObjMgrGetActivePlayer for the local player and the locked target GUID at 0xB4E2D8, matching Nampower's proven object path. WoW Lua API calls stay on explicit native register wrappers.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
