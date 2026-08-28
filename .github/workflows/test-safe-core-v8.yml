@@ -129,6 +129,7 @@ jobs:
               'OutlineDBG en=',
               'debug_unit_player_guid_seen',
               'debug_unit_target_guid_seen',
+              'tracker.setDebugPinnedObjects(player_obj, target_obj)',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
@@ -207,7 +208,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          This debug build now uses the verified GetGUIDFromName("player"/"target") path for live Outline tracking and reports GUID-to-object resolution separately.
+          This debug build captures GetGUIDFromName("player"/"target") and GUID-to-object resolution inside OutlineDebug() on the Lua/main thread, then pins those object pointers for the D3D9 render path.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
