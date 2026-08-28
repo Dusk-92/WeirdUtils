@@ -169,15 +169,11 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
 
     const live = d3d9_hook.getLiveHookState();
 
-    var buf: [448]u8 = undefined;
+    var buf: [320]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG en={d} own={d} mh={d} d3d={d} live={d}/{d} hooks={d}{d}{d} E={x} D={x} end={d} sc={d} post={d} pub={d}/{d} con={d}/{d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        "OutlineDBG live={d}/{d} hooks={d}{d}{d} E={x} D={x} end={d} sc={d} post={d} pub={d}/{d} con={d}/{d} tgt={d} mdl={d} dip={d} odip={d} cache={d} pipe={d}/{d}",
         .{
-            @intFromBool(isEnabled()),
-            @intFromBool(g_is_hook_owner),
-            @intFromBool(g_model_hooks_installed),
-            @intFromBool(d3d9_hook.hooksInstalled()),
             @intFromBool(live.vtable_found),
             @intFromBool(live.same_vtable),
             @intFromBool(live.endscene_ours),
@@ -192,24 +188,11 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
             @intFromBool(tracker.debug_pin_target_published_seen),
             @intFromBool(tracker.debug_pin_player_consumed_seen),
             @intFromBool(tracker.debug_pin_target_consumed_seen),
-            @intFromBool(tracker.debug_in_world_seen),
-            @intFromBool(tracker.debug_object_manager_seen),
-            @intFromBool(tracker.debug_player_guid_seen),
-            @intFromBool(tracker.debug_local_player_seen),
-            @intFromBool(tracker.debug_target_guid_seen),
-            @intFromBool(tracker.debug_target_object_seen),
-            @intFromBool(tracker.debug_unit_player_guid_seen),
-            @intFromBool(tracker.debug_unit_player_object_seen),
-            @intFromBool(tracker.debug_unit_target_guid_seen),
-            @intFromBool(tracker.debug_unit_target_object_seen),
-            @intFromBool(tracker.debug_object_scan_seen),
             @intFromBool(tracker.debug_target_seen),
             @intFromBool(tracker.debug_target_model_seen),
             @intFromBool(d3d9_hook.debug_dip_seen),
             @intFromBool(d3d9_hook.debug_outline_dip_seen),
             @intFromBool(d3d9_hook.debug_cached_draw_seen),
-            @intFromBool(d3d9_hook.debug_shaders_ready_seen),
-            @intFromBool(d3d9_hook.debug_resources_ready_seen),
             @intFromBool(d3d9_hook.debug_pipeline_entered_seen),
             @intFromBool(d3d9_hook.debug_pipeline_ready_seen),
         },
