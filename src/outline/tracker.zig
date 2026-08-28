@@ -207,14 +207,14 @@ pub fn scanObjects() void {
     game_obj_model_count = 0;
     resetDiag();
 
-    // IS_IN_WORLD is kept as a diagnostic only. On this modified client it
-    // reports 0 even while EndScene/DIP are clearly running in-world.
+    // IS_IN_WORLD and OBJECT_MANAGER_PTR are diagnostics only on this client.
+    // Both legacy globals can stay 0 even though WoW's object lookup functions
+    // are fully usable in-world.
     if (wow.isInGame()) debug_in_world_seen = true;
+    if (wow.hasObjectManager()) debug_object_manager_seen = true;
 
-    // Use the object manager as the actual readiness gate for this debug build.
-    if (!wow.hasObjectManager()) return;
-    debug_object_manager_seen = true;
-
+    // Resolve the local player through the engine API instead of the legacy
+    // OBJECT_MANAGER_PTR global. This is also how Nampower resolves objects.
     const local_player = wow.getLocalPlayer();
     if (local_player == 0) return;
     debug_local_player_seen = true;
@@ -240,9 +240,13 @@ pub fn scanObjects() void {
         }
     }
 
-    // Iterate all visible objects
-    var obj = wow.objectFirst();
-    if (obj != 0) debug_object_scan_seen = true;
+    // Iterate all visible objects only when the legacy object-manager global
+    // is available. Target outlining above does not depend on this traversal.
+    var obj: u32 = 0;
+    if (wow.hasObjectManager()) {
+        obj = wow.objectFirst();
+        if (obj != 0) debug_object_scan_seen = true;
+    }
     while (obj != 0) : (obj = wow.objectNext(obj)) {
         const obj_type = wow.getObjectType(obj);
         const guid = wow.getObjectGUID(obj);
