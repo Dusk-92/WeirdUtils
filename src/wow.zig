@@ -203,7 +203,17 @@ pub fn getMapId() u32 {
 
 /// UnitGUID("player") / UnitGUID("target") → 64-bit GUID.
 pub fn unitGUID(unit_id: [*:0]const u8) u64 {
-    return hook.call(fn ([*:0]const u8) callconv(hook.cc.fastcall) u64, o.FN_UNIT_GUID, .{unit_id});
+    // UnitGUID is __fastcall with its single argument in ECX.
+    // hook.call + hook.cc.fastcall is currently miscompiled by Zig 0.16 on x86
+    // as a stack argument. Because the callee consumes no stack argument, that
+    // leaked 4 bytes per call; Outline calls UnitGUID("player"/"target") every
+    // frame, so ESP drifted until execution returned into stack data.
+    //
+    // With a single register argument, x86_thiscall is ABI-compatible here:
+    // ECX=unit_id, no stack args, u64 returned in EDX:EAX.
+    const f_native: *const fn ([*:0]const u8) callconv(.{ .x86_thiscall = .{} }) u64 =
+        @ptrFromInt(o.FN_UNIT_GUID);
+    return @call(.never_tail, f_native, .{unit_id});
 }
 
 /// Resolve a GUID → object pointer via the object manager hash table.
