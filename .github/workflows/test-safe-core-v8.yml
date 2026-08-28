@@ -132,6 +132,7 @@ jobs:
               'tracker.setDebugPinnedObjects(player_obj, target_obj)',
               'debug_pin_target_consumed_seen',
               'debug_scan_called_seen',
+              'debug_scan_after_publish_seen',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
