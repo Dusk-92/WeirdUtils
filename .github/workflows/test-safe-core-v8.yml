@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG24 keeps the stable no-Reset/no-stencil JFA path and makes silhouette replay texture-alpha-aware so transparent M2 carrier polygons do not create long straight outline segments.
+          DEBUG25 keeps the stable no-Reset/no-stencil JFA path and captures each WoW draw's alpha-test/blend state, using ALPHAREF for cutouts and RGB coverage for additive/modulated layers.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
