@@ -1,9 +1,9 @@
-name: Test safe standalone core V8
+name: Test safe standalone core V8 Debug
 
 on:
   push:
     branches:
-      - test/safe-core-v8
+      - test/safe-core-v8-debug
   workflow_dispatch:
 
 permissions:
@@ -123,6 +123,9 @@ jobs:
               '"{edx}"',
               '0x6F39F0',
               'callconv(.{ .x86_thiscall = .{} })',
+              'luaPushStringNative',
+              'pub fn outlineDebug',
+              'OutlineDBG en=',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
@@ -241,12 +244,13 @@ jobs:
           cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/
 
           cat > package/README_TEST.txt <<'EOF'
-          WeirdUtils Safe Standalone Core Test V8
+          WeirdUtils Safe Standalone Core Test V8 DEBUG
 
           This build fixes the x86 ABIs used by the standalone Outline path: FrameScript_RegisterFunction gets name in ECX + callback in EDX, OutlineCommand receives Lua state in ECX, and UnitGUID receives its unit id in ECX without leaking stack space. WoW Lua API calls stay on explicit native register wrappers.
 
           outline.dll
-          - Keeps only the Player_LoadScriptFunctions hook required to register OutlineCommand.
+          - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
+          - Keeps only the Player_LoadScriptFunctions hook required to register OutlineCommand/OutlineDebug.
           - Keeps only the GameEngine_MainInitialize hook required to initialise the renderer.
           - Does not register the shared WeirdUtils version table.
           - Does not install generic MPQ/file hooks.
@@ -271,6 +275,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: safe-core-v8
+          name: safe-core-v8-debug
           path: package/
           if-no-files-found: error
