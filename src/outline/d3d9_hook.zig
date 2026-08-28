@@ -65,6 +65,7 @@ pub var debug_cached_draw_seen: bool = false;
 pub var debug_translucent_skipped_seen: bool = false;
 pub var debug_state_block_seen: bool = false;
 pub var debug_outer_state_restore_seen: bool = false;
+pub var debug_additive_skipped_seen: bool = false;
 pub var debug_shaders_ready_seen: bool = false;
 pub var debug_resources_ready_seen: bool = false;
 pub var debug_pipeline_entered_seen: bool = false;
@@ -731,34 +732,35 @@ const jfa_prop_src =
     "mov oC0.xy, r8.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
-/// JFA decode + composite: compute distance to nearest seed, threshold, output outline.
-/// c0 = (screen_width, screen_height, 4.0, 0.0) set by CPU.
+/// V31 POLISH: 3px outline with a soft 1px feather.
+/// c0 = (screen_width, screen_height, outer_radius_sq=9, inv_feather_sq_range=0.2)
+/// Alpha is 1.0 through ~2px, then fades smoothly to 0 by 3px.
 const jfa_decode_src =
     "ps_3_0\n" ++
     "def c1, 0.0, 1.0, -0.002, 0.0\n" ++
-    "dcl_2d s0\n" ++ // JFA result (nearest seed UV)
-    "dcl_2d s1\n" ++ // silhouette (colour + width-encoded alpha)
+    "dcl_2d s0\n" ++
+    "dcl_2d s1\n" ++
     "dcl_texcoord0 v0\n" ++
-    // Read nearest seed UV
+    // Copy CPU constants to a temp once. This also avoids the old D3DX
+    // restriction on reading multiple constant registers in one instruction.
+    "mov r6, c0\n" ++
+    // Nearest seed and pixel-space squared distance.
     "texld r0, v0, s0\n" ++
-    // Pixel-space squared distance
     "sub r1.xy, v0.xy, r0.xy\n" ++
-    "mul r1.xy, r1.xy, c0.xy\n" ++ // (du*W, dv*H)
-    "dp2add r1.z, r1, r1, c0.w\n" ++ // dist² in pixels
-    // Read seed's silhouette colour + width
+    "mul r1.xy, r1.xy, r6.xy\n" ++
+    "dp2add r1.z, r1, r1, c1.x\n" ++
+    // Seed colour.
     "texld r2, r0, s1\n" ++
-    "mov r3.x, c0.z\n" ++ // fixed outline width in pixels
-    "mul r3.x, r3.x, r3.x\n" ++ // width²
-    // Threshold: inside outline if dist² < width²
-    "sub r3.y, r1.z, r3.x\n" ++ // dist² - width²
-    "mov r6.w, c1.y\n" ++ // temp 1.0: avoid reading c0 + c1 in one instruction
-    "cmp r4.w, r3.y, c0.w, r6.w\n" ++ // >= 0 → 0 (outside), < 0 → 1 (inside)
-    // Exclude silhouette interior (don't draw outline ON the model)
-    "texld r5, v0, s1\n" ++ // silhouette at current pixel
-    "add r5.x, r5.a, c1.z\n" ++ // alpha - 0.002
-    "cmp r4.w, r5.x, c0.w, r4.w\n" ++ // if inside silhouette → 0
-    // Output
-    "mov r4.xyz, r2.xyz\n" ++ // outline colour from seed
+    // Feathered alpha = saturate((9 - dist²) / (9 - 4)).
+    // This yields a solid inner ~2px edge and a softer third pixel.
+    "sub r4.w, r6.z, r1.z\n" ++
+    "mul_sat r4.w, r4.w, r6.w\n" ++
+    // Do not paint over the model interior.
+    "texld r5, v0, s1\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r4.w, r5.x, c1.x, r4.w\n" ++
+    // Output outline colour with feathered alpha.
+    "mov r4.xyz, r2.xyz\n" ++
     "mov oC0, r4\n";
 
 /// Debug: composite silhouette RT directly. Forces alpha to 1.0 where silhouette
@@ -1243,6 +1245,14 @@ fn runJfaPipeline(device: *anyopaque) void {
         for (0..cached_draw_count) |i| {
             const draw = &cached_draws[i];
 
+            // V31 POLISH: don't let additive/emissive passes (spell glows,
+            // bloom-like model layers) expand the selection silhouette.
+            // Normal alpha-blended materials remain included.
+            if (draw.alpha_blend_enable != 0 and draw.dst_blend == types.D3DBLEND_ONE) {
+                debug_additive_skipped_seen = true;
+                continue;
+            }
+
             // 1) Replay this draw with WoW's exact captured D3D state into a
             // transparent scratch RT. A D3DSBT_ALL state block restores pixel
             // shader, PS constants, textures, samplers, texture stages, blend,
@@ -1296,7 +1306,8 @@ fn runJfaPipeline(device: *anyopaque) void {
             var mask_color = argbToFloat4(draw.color);
             mask_color[3] = 1.0;
             deviceSetPSConstF(device, 0, &mask_color);
-            const threshold: [4]f32 = .{ -0.01, 0.0, 0.0, 0.0 };
+            // Trim very faint scratch pixels that otherwise become tiny hooks/noise.
+            const threshold: [4]f32 = .{ -0.03, 0.0, 0.0, 0.0 };
             deviceSetPSConstF(device, 1, &threshold);
             deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), @sizeOf(QuadVertex));
         }
@@ -1408,7 +1419,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        c0 = [4]f32{ fw, fh, 4.0, 0.0 };
+        // V31 POLISH: 2px solid + 1px feathered edge.
+        c0 = [4]f32{ fw, fh, 9.0, 0.2 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
