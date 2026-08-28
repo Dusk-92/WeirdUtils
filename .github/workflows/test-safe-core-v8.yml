@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG28 captures D3DSBT_ALL for each target draw, replays the exact WoW material into a scratch RT, normalizes only pixels actually produced into the silhouette mask, then runs the stable no-Reset/no-stencil JFA outline.
+          DEBUG29 isolates the exact-material replay with a full outer D3DSBT_ALL save/restore and explicitly rebinds cached geometry/VS state after each per-draw state apply to prevent D3D state leakage and stray lines.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
