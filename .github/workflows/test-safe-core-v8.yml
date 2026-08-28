@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG23 restores the real JFA outline while removing all forced D3D9 Reset and stencil dependencies, prioritizing stability on this client.
+          DEBUG24 keeps the stable no-Reset/no-stencil JFA path and makes silhouette replay texture-alpha-aware so transparent M2 carrier polygons do not create long straight outline segments.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
