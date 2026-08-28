@@ -136,13 +136,15 @@ pub fn lateRehookIfLost() bool {
 }
 
 /// True until the first EndScene verifies (and if needed, forces) D24S8 format.
-var need_force_reset: bool = true;
+var need_force_reset: bool = false;
 pub var debug_stencil_ready: bool = false;
 pub var debug_stencil_format: u32 = 0;
 pub var debug_stencil_reset_hr: i32 = 0;
 
 pub fn requestStencilCheck() void {
-    need_force_reset = true;
+    // DEBUG23: intentionally disabled. Forcing IDirect3DDevice9::Reset on this
+    // client can hang the render thread while audio/game logic keeps running.
+    need_force_reset = false;
 }
 
 // =============================================================================
@@ -800,22 +802,8 @@ fn buildFullscreenQuad(w: u32, h: u32) [4]QuadVertex {
 fn hkEndScene(device: *anyopaque) callconv(hook.cc.stdcall) i32 {
     debug_endscene_seen = true;
 
-    // DEBUG22: ensure a stencil-capable depth surface. The old implementation
-    // held COM references across Reset and could invalidate its own hooks.
-    // The safe path releases those refs first, then rehooks immediately after
-    // a successful Reset because D3D9 may restore the original vtable entries.
-    if (need_force_reset) {
-        need_force_reset = false;
-        const did_reset = forceD24S8IfNeeded(device);
-        if (did_reset) {
-            _ = lateRehookIfLost();
-
-            // Skip Outline work on the reset frame. Resources/shaders were
-            // released and will be recreated naturally on the next frame.
-            const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(orig_endscene);
-            return f(device);
-        }
-    }
+    // DEBUG23: no forced D3D9 Reset. The client can hang the render thread
+    // during Reset, so Outline runs without a stencil dependency.
 
     // Per-frame: scan objects for outline tracking
     tracker.scanObjects();
@@ -940,44 +928,9 @@ fn hkDIP(
             debug_cached_draw_seen = true;
         }
 
-        // Mark visible pixels in stencil for this outline target.
-        // At this point (outline targets draw last due to batch reordering),
-        // the game's DS has terrain+WMO+all non-outline M2 model depth.
-        // Pixels that pass the depth test get stencil=1; pixels behind any
-        // scene geometry fail and keep stencil=0.
-        // EndScene uses these marks to gate silhouette rendering.
-        const s_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
-        const s_func = deviceGetRS(device, types.D3DRS.STENCILFUNC);
-        const s_ref = deviceGetRS(device, types.D3DRS.STENCILREF);
-        // (STENCILWRITEMASK not saved - intentionally set to 0 on restore)
-        const s_pass = deviceGetRS(device, types.D3DRS.STENCILPASS);
-        const s_fail = deviceGetRS(device, types.D3DRS.STENCILFAIL);
-        const s_zfail = deviceGetRS(device, types.D3DRS.STENCILZFAIL);
-
-        deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
-        deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_ALWAYS);
-        deviceSetRS(device, types.D3DRS.STENCILREF, 1);
-        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0xFF);
-        deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_REPLACE);
-        deviceSetRS(device, types.D3DRS.STENCILFAIL, types.D3DSTENCILOP_KEEP);
-        deviceSetRS(device, types.D3DRS.STENCILZFAIL, types.D3DSTENCILOP_KEEP);
-
-        const result = origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-
-        // Restore stencil state to match WoW's GxDevice cache, but lock
-        // stencil writes to protect our marks from subsequent draws (other
-        // players' gear, NPCs, etc. that render after outline targets).
-        deviceSetRS(device, types.D3DRS.STENCILENABLE, s_enable);
-        deviceSetRS(device, types.D3DRS.STENCILFUNC, s_func);
-        deviceSetRS(device, types.D3DRS.STENCILREF, s_ref);
-        deviceSetRS(device, types.D3DRS.STENCILPASS, s_pass);
-        deviceSetRS(device, types.D3DRS.STENCILFAIL, s_fail);
-        deviceSetRS(device, types.D3DRS.STENCILZFAIL, s_zfail);
-        // Write mask 0 instead of restoring original - prevents any
-        // subsequent DIP from overwriting our stencil=1 marks.
-        // Restored properly in EndScene before the JFA pipeline.
-        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
-        return result;
+        // DEBUG23: no stencil writes. Preserve WoW's D3D state and draw once.
+        // The cached geometry is replayed later into the silhouette RT.
+        return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
     }
 
     // ---- Normal path ----
@@ -1126,29 +1079,14 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // Per-category stencil logic:
-            // - dead_player: no stencil test (visible through walls for corpse finding)
-            // - target/raid_marked: stencil test gates on terrain visibility
-            if (draw.category == .dead_player) {
-                deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
-            } else {
-                deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
-                deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_EQUAL);
-                deviceSetRS(device, types.D3DRS.STENCILREF, 1);
-                deviceSetRS(device, types.D3DRS.STENCILMASK, 0xFF);
-                deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_KEEP);
-            }
+            // DEBUG23: replay without stencil gating.
+            deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
         }
 
         clearCachedDraws();
 
-        // Clear stencil marks to avoid affecting next frame's rendering
-        deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
-        const clearFn: *const fn (*anyopaque, u32, ?*anyopaque, u32, u32, f32, u32) callconv(hook.cc.stdcall) i32 =
-            @ptrFromInt(vt(device)[types.VT.Clear]);
-        _ = clearFn(device, 0, null, types.D3DCLEAR_STENCIL, 0, 1.0, 0);
     }
 
     // =====================================================================
