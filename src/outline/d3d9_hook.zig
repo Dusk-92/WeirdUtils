@@ -314,6 +314,12 @@ fn deviceGetViewport(dev: *anyopaque, vp_out: *types.D3DVIEWPORT9) void {
     _ = f(dev, vp_out);
 }
 
+fn deviceSetViewport(dev: *anyopaque, vp_in: *const types.D3DVIEWPORT9) void {
+    const f: *const fn (*anyopaque, *const types.D3DVIEWPORT9) callconv(hook.cc.stdcall) i32 =
+        @ptrFromInt(vt(dev)[types.VT.SetViewport]);
+    _ = f(dev, vp_in);
+}
+
 fn deviceSetRenderTarget(dev: *anyopaque, idx: u32, surf: *anyopaque) void {
     const f: *const fn (*anyopaque, u32, *anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetRenderTarget]);
