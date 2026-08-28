@@ -170,7 +170,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     var buf: [352]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} sc={d} pub={d}/{d} con={d}/{d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} sc={d} post={d} pub={d}/{d} con={d}/{d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
         .{
             @intFromBool(isEnabled()),
             @intFromBool(g_is_hook_owner),
@@ -178,6 +178,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
             @intFromBool(d3d9_hook.hooksInstalled()),
             @intFromBool(d3d9_hook.debug_endscene_seen),
             @intFromBool(tracker.debug_scan_called_seen),
+            @intFromBool(tracker.debug_scan_after_publish_seen),
             @intFromBool(tracker.debug_pin_player_published_seen),
             @intFromBool(tracker.debug_pin_target_published_seen),
             @intFromBool(tracker.debug_pin_player_consumed_seen),
