@@ -536,13 +536,17 @@ const jfa_prop_src =
     "def c9, 1.0, 1.0, 0.0, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
+    // D3DX on this client only allows one c# register per arithmetic
+    // instruction. Copy c0.xy (step size) to a temp once, then combine
+    // that temp with c2..c9 in the neighbor MADs.
+    "mov r7.xy, c0.xy\n" ++
     // Self sample - initialize best seed and distance
     "texld r0, v0, s0\n" ++
     "sub r2.xy, v0.xy, r0.xy\n" ++
     "dp2add r9.x, r2, r2, c1.x\n" ++ // best dist²
     "mov r8.xy, r0.xy\n" ++ // best seed UV
     // Neighbor (-1,-1) via c2
-    "mad r4.xy, c2.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c2.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -550,7 +554,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (-1, 0) via c3
-    "mad r4.xy, c3.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c3.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -558,7 +562,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (-1, 1) via c4
-    "mad r4.xy, c4.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c4.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -566,7 +570,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (0, -1) via c5
-    "mad r4.xy, c5.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c5.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -574,7 +578,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (0, 1) via c6
-    "mad r4.xy, c6.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c6.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -582,7 +586,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (1, -1) via c7
-    "mad r4.xy, c7.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c7.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -590,7 +594,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (1, 0) via c8
-    "mad r4.xy, c8.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c8.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
@@ -598,7 +602,7 @@ const jfa_prop_src =
     "cmp r8.xy, r3.x, r8.xy, r5.xy\n" ++
     "cmp r9.x, r3.x, r9.x, r2.z\n" ++
     // Neighbor (1, 1) via c9
-    "mad r4.xy, c9.xy, c0.xy, v0.xy\n" ++
+    "mad r4.xy, c9.xy, r7.xy, v0.xy\n" ++
     "texld r5, r4, s0\n" ++
     "sub r2.xy, v0.xy, r5.xy\n" ++
     "dp2add r2.z, r2, r2, c1.x\n" ++
