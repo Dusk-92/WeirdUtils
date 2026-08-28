@@ -62,6 +62,7 @@ pub var debug_endscene_seen: bool = false;
 pub var debug_dip_seen: bool = false;
 pub var debug_outline_dip_seen: bool = false;
 pub var debug_cached_draw_seen: bool = false;
+pub var debug_translucent_skipped_seen: bool = false;
 pub var debug_shaders_ready_seen: bool = false;
 pub var debug_resources_ready_seen: bool = false;
 pub var debug_pipeline_entered_seen: bool = false;
@@ -930,6 +931,20 @@ fn hkDIP(
             return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
         const category = tracker.getModelCategory(model_ptr);
 
+        // DEBUG26: skip genuinely blended/translucent passes when building the
+        // silhouette mask. These passes often use multi-texture/vertex-alpha/
+        // material shader logic that cannot be reproduced correctly by sampling
+        // Texture0 alone, and their carrier polygons create huge straight edges.
+        //
+        // Keep alpha-tested cutouts: those are discrete visible/hidden texels
+        // and can be replayed cleanly using WoW's ALPHAREF.
+        const cur_alpha_test = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
+        const cur_alpha_blend = deviceGetRS(device, types.D3DRS.ALPHABLENDENABLE);
+        if (cur_alpha_blend != 0 and cur_alpha_test == 0) {
+            debug_translucent_skipped_seen = true;
+            return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
+        }
+
         // Ensure resources will be available for replay in EndScene
         if (!shaders_attempted) ensureShaders(device);
         ensureResources(device);
@@ -1133,37 +1148,15 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // Reproduce WoW's per-draw transparency semantics as closely as
-            // possible while generating the flat silhouette.
-            if (draw.tex0) |tex| {
-                deviceSetTexture(device, 0, tex);
-
-                if (draw.alpha_test_enable != 0 and
-                    (draw.alpha_func == types.D3DCMP_GREATER or draw.alpha_func == types.D3DCMP_GREATEREQUAL))
-                {
-                    // Use WoW's real alpha reference for cutout geometry.
-                    const ref_f = @as(f32, @floatFromInt(draw.alpha_ref & 0xFF)) / 255.0;
-                    const alpha_cut: [4]f32 = .{ -@max(ref_f, 0.01), 0, 0, 0 };
-                    deviceSetPSConstF(device, 1, &alpha_cut);
-                    deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
-                } else if (draw.alpha_blend_enable != 0) {
-                    // Additive/modulated layers often encode coverage in RGB
-                    // rather than alpha. Standard SRCALPHA blending uses alpha.
-                    const cut: [4]f32 = .{ -0.20, 0, 0, 0 };
-                    deviceSetPSConstF(device, 1, &cut);
-                    if (draw.dst_blend == types.D3DBLEND_ONE or
-                        draw.src_blend == types.D3DBLEND_DESTCOLOR or
-                        draw.dst_blend == types.D3DBLEND_DESTCOLOR)
-                    {
-                        deviceSetPtr(device, types.VT.SetPixelShader, outline_rgb_ps.?);
-                    } else {
-                        deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
-                    }
-                } else {
-                    // Opaque textured geometry: don't let texture darkness punch
-                    // holes in the silhouette.
-                    deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
-                }
+            // DEBUG26: only opaque or alpha-tested draws reach the cache.
+            if (draw.tex0 != null and draw.alpha_test_enable != 0 and
+                (draw.alpha_func == types.D3DCMP_GREATER or draw.alpha_func == types.D3DCMP_GREATEREQUAL))
+            {
+                deviceSetTexture(device, 0, draw.tex0);
+                const ref_f = @as(f32, @floatFromInt(draw.alpha_ref & 0xFF)) / 255.0;
+                const alpha_cut: [4]f32 = .{ -@max(ref_f, 0.01), 0, 0, 0 };
+                deviceSetPSConstF(device, 1, &alpha_cut);
+                deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
             } else {
                 deviceSetTexture(device, 0, null);
                 deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
