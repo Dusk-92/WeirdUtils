@@ -141,6 +141,7 @@ jobs:
               'debug_shader_stage',
               'debug_resource_stage',
               'debug_shader_assemble_hr',
+              'debug_shader_error_text',
               'debug_shader_create_hr',
               'debug_texture_create_hr',
               'endscene_ours',
@@ -224,7 +225,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG17 keeps the late D3D9 rehook and reports exact HRESULTs for shader assembly, pixel-shader creation, and render-target texture creation.
+          DEBUG18 captures and prints the exact D3DXAssembleShader error text for the failing JFA propagation shader.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
