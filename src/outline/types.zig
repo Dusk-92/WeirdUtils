@@ -84,6 +84,8 @@ pub const D3DRS = struct {
     pub const DESTBLEND: u32 = 20;
     pub const CULLMODE: u32 = 22;
     pub const ZFUNC: u32 = 23;
+    pub const ALPHAREF: u32 = 24;
+    pub const ALPHAFUNC: u32 = 25;
     pub const ALPHABLENDENABLE: u32 = 27;
     pub const STENCILENABLE: u32 = 52;
     pub const STENCILFAIL: u32 = 53;
@@ -105,6 +107,8 @@ pub const D3DRS = struct {
 pub const D3DCMP_ALWAYS: u32 = 8;
 pub const D3DCMP_EQUAL: u32 = 3;
 pub const D3DCMP_LESSEQUAL: u32 = 4;
+pub const D3DCMP_GREATER: u32 = 5;
+pub const D3DCMP_GREATEREQUAL: u32 = 7;
 
 pub const D3DSTENCILOP_KEEP: u32 = 1;
 pub const D3DSTENCILOP_REPLACE: u32 = 3;
@@ -123,8 +127,12 @@ pub const D3DCLEAR_STENCIL: u32 = 4;
 // D3D9 blend modes
 // =============================================================================
 
+pub const D3DBLEND_ZERO: u32 = 1;
+pub const D3DBLEND_ONE: u32 = 2;
 pub const D3DBLEND_SRCALPHA: u32 = 5;
 pub const D3DBLEND_INVSRCALPHA: u32 = 6;
+pub const D3DBLEND_DESTCOLOR: u32 = 9;
+pub const D3DBLEND_INVDESTCOLOR: u32 = 10;
 
 // =============================================================================
 // D3D9 texture stage state IDs
