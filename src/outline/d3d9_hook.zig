@@ -63,6 +63,7 @@ pub var debug_dip_seen: bool = false;
 pub var debug_outline_dip_seen: bool = false;
 pub var debug_cached_draw_seen: bool = false;
 pub var debug_translucent_skipped_seen: bool = false;
+pub var debug_state_block_seen: bool = false;
 pub var debug_shaders_ready_seen: bool = false;
 pub var debug_resources_ready_seen: bool = false;
 pub var debug_pipeline_entered_seen: bool = false;
@@ -155,6 +156,7 @@ pub fn requestStencilCheck() void {
 var outline_ps: ?*anyopaque = null; // flat-color PS (solid silhouettes)
 var outline_alpha_ps: ?*anyopaque = null; // texture-alpha-aware silhouette PS
 var outline_rgb_ps: ?*anyopaque = null; // additive/modulated texture coverage PS
+var material_mask_ps: ?*anyopaque = null; // exact-material scratch -> binary mask
 var jfa_init_ps: ?*anyopaque = null; // JFA seed init PS
 var jfa_prop_ps: ?*anyopaque = null; // JFA propagation PS
 var jfa_decode_ps: ?*anyopaque = null; // JFA decode + composite PS
@@ -181,7 +183,9 @@ const D3DXAssembleShaderFn = *const fn (
 // Render target resources
 // =============================================================================
 
-var rt_silhouette_tex: ?*anyopaque = null; // A8R8G8B8 silhouette texture
+var rt_material_tex: ?*anyopaque = null; // A8R8G8B8 exact-material scratch
+var rt_material_surf: ?*anyopaque = null;
+var rt_silhouette_tex: ?*anyopaque = null; // A8R8G8B8 normalized silhouette mask
 var rt_silhouette_surf: ?*anyopaque = null;
 var rt_jfa_a_tex: ?*anyopaque = null; // G16R16F JFA ping texture
 var rt_jfa_a_surf: ?*anyopaque = null;
@@ -224,6 +228,7 @@ const CachedDraw = struct {
     vertex_shader: ?*anyopaque = null,
     tex: [4]?*anyopaque = .{ null, null, null, null },
     pixel_shader: ?*anyopaque = null,
+    state_block: ?*anyopaque = null,
     alpha_op: [4]u32 = .{ 1, 1, 1, 1 },
     alpha_arg1: [4]u32 = .{ 0, 0, 0, 0 },
     alpha_arg2: [4]u32 = .{ 0, 0, 0, 0 },
@@ -340,6 +345,20 @@ fn deviceSetTSS(dev: *anyopaque, stage: u32, state_type: u32, value: u32) void {
     const f: *const fn (*anyopaque, u32, u32, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetTextureStageState]);
     _ = f(dev, stage, state_type, value);
+}
+
+fn deviceCreateStateBlock(dev: *anyopaque) ?*anyopaque {
+    var out: ?*anyopaque = null;
+    const f: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
+        @ptrFromInt(vt(dev)[types.VT.CreateStateBlock]);
+    if (f(dev, types.D3DSBT_ALL, &out) < 0) return null;
+    return out;
+}
+
+fn stateBlockApply(sb: *anyopaque) bool {
+    const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 =
+        @ptrFromInt(vt(sb)[4]);
+    return f(sb) >= 0;
 }
 
 fn deviceSetFVF(dev: *anyopaque, fvf: u32) void {
@@ -469,14 +488,25 @@ fn ensureResources(device: *anyopaque) void {
 
     // Check if resources already match current dimensions
     if (vp.Width == resource_width and vp.Height == resource_height and
-        rt_silhouette_tex != null) return;
+        rt_material_tex != null and rt_silhouette_tex != null) return;
 
     // Release old and create new
     releaseResources();
     resource_width = vp.Width;
     resource_height = vp.Height;
 
-    // Silhouette RT (A8R8G8B8)
+    // Exact-material scratch RT (A8R8G8B8)
+    if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_A8R8G8B8, types.D3DPOOL_DEFAULT, &rt_material_tex) < 0) {
+        releaseResources();
+        return;
+    }
+    rt_material_surf = textureGetSurfaceLevel(rt_material_tex.?);
+    if (rt_material_surf == null) {
+        releaseResources();
+        return;
+    }
+
+    // Normalized silhouette RT (A8R8G8B8)
     if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_A8R8G8B8, types.D3DPOOL_DEFAULT, &rt_silhouette_tex) < 0) {
         releaseResources();
         return;
@@ -520,7 +550,7 @@ fn ensureResources(device: *anyopaque) void {
 
 fn releaseResources() void {
     inline for (.{
-        &rt_silhouette_surf, &rt_jfa_a_surf, &rt_jfa_b_surf,
+        &rt_material_surf, &rt_silhouette_surf, &rt_jfa_a_surf, &rt_jfa_b_surf,
     }) |surf_ptr| {
         if (surf_ptr.*) |s| {
             comRelease(s);
@@ -528,7 +558,7 @@ fn releaseResources() void {
         }
     }
     inline for (.{
-        &rt_silhouette_tex, &rt_jfa_a_tex, &rt_jfa_b_tex,
+        &rt_material_tex, &rt_silhouette_tex, &rt_jfa_a_tex, &rt_jfa_b_tex,
     }) |tex_ptr| {
         if (tex_ptr.*) |t| {
             comRelease(t);
@@ -566,6 +596,22 @@ const ps_rgb_src =
     "texld r0, v0, s0\n" ++
     "max r1.x, r0.r, r0.g\n" ++
     "max r1.x, r1.x, r0.b\n" ++
+    "add r1, r1.xxxx, c1.xxxx\n" ++
+    "texkill r1\n" ++
+    "mov oC0, c0\n";
+
+/// Normalize the exact-material scratch into the uniform outline mask.
+/// c0 = outline colour (alpha forced to 1), c1.x = -coverage threshold.
+/// Coverage accepts either alpha or RGB, so opaque dark materials and additive
+/// effects both survive while untouched transparent pixels remain discarded.
+const material_mask_src =
+    "ps_3_0\n" ++
+    "dcl_2d s0\n" ++
+    "dcl_texcoord0 v0\n" ++
+    "texld r0, v0, s0\n" ++
+    "max r1.x, r0.r, r0.g\n" ++
+    "max r1.x, r1.x, r0.b\n" ++
+    "max r1.x, r1.x, r0.a\n" ++
     "add r1, r1.xxxx, c1.xxxx\n" ++
     "texkill r1\n" ++
     "mov oC0, c0\n";
@@ -745,7 +791,11 @@ fn ensureShaders(device: *anyopaque) void {
         releaseShaders();
         return;
     };
-    debug_shader_stage = 4; // silhouette PS variants ready
+    material_mask_ps = assemblePS(device, assemble, material_mask_src, material_mask_src.len) orelse {
+        releaseShaders();
+        return;
+    };
+    debug_shader_stage = 4; // silhouette/material-mask PS variants ready
 
     // --- JFA Init PS ---
     jfa_init_ps = assemblePS(device, assemble, jfa_init_src, jfa_init_src.len) orelse {
@@ -832,7 +882,7 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 }
 
 fn releaseShaders() void {
-    inline for (.{ &outline_ps, &outline_alpha_ps, &outline_rgb_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
+    inline for (.{ &outline_ps, &outline_alpha_ps, &outline_rgb_ps, &material_mask_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
         if (ps.*) |p| {
             comRelease(p);
             ps.* = null;
@@ -988,6 +1038,8 @@ fn hkDIP(
                 draw.alpha_arg2[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2);
             }
             draw.pixel_shader = deviceGetPtr(device, types.VT.GetPixelShader);
+            draw.state_block = deviceCreateStateBlock(device);
+            if (draw.state_block != null) debug_state_block_seen = true;
             draw.alpha_test_enable = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
             draw.alpha_ref = deviceGetRS(device, types.D3DRS.ALPHAREF);
             draw.alpha_func = deviceGetRS(device, types.D3DRS.ALPHAFUNC);
@@ -1036,6 +1088,10 @@ fn clearCachedDraws() void {
             comRelease(obj);
             draw.pixel_shader = null;
         }
+        if (draw.state_block) |obj| {
+            comRelease(obj);
+            draw.state_block = null;
+        }
         for (0..4) |stage| {
             if (draw.tex[stage]) |obj| {
                 comRelease(obj);
@@ -1054,10 +1110,10 @@ fn runJfaPipeline(device: *anyopaque) void {
     debug_pipeline_entered_seen = true;
 
     // Verify all resources and shaders
-    if (rt_silhouette_tex == null or rt_jfa_a_surf == null or rt_jfa_b_surf == null) return;
+    if (rt_material_tex == null or rt_material_surf == null or rt_silhouette_tex == null or rt_jfa_a_surf == null or rt_jfa_b_surf == null) return;
     if (!shaders_attempted) ensureShaders(device);
     if (jfa_init_ps == null or jfa_prop_ps == null or jfa_decode_ps == null) return;
-    if (outline_ps == null or rt_silhouette_surf == null) return;
+    if (outline_ps == null or material_mask_ps == null or rt_silhouette_surf == null) return;
 
     debug_pipeline_ready_seen = true;
 
@@ -1157,74 +1213,71 @@ fn runJfaPipeline(device: *anyopaque) void {
     if (cached_draw_count > 0) {
         const origFn: *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(hook.cc.stdcall) i32 =
             @ptrFromInt(orig_dip);
+        const quad = buildFullscreenQuad(vp.Width, vp.Height);
 
+        // Accumulate normalized per-draw coverage into the silhouette mask.
         deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
         clearRenderTarget(device, 0x00000000);
-
-        // Keep game's DS bound - it has stencil marks from DIP hook where
-        // outline targets passed the terrain depth test (stencil=1 = visible).
-        // Don't write depth or stencil during replay.
-        deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
-        deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
-        deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
-
-        deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
-        deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
 
         for (0..cached_draw_count) |i| {
             const draw = &cached_draws[i];
 
-            deviceSetStreamSource(device, 0, draw.vb, draw.vb_offset, draw.vb_stride);
-            deviceSetIndices(device, draw.ib);
-            deviceSetPtrOrNull(device, types.VT.SetVertexDeclaration, draw.vertex_decl);
-            deviceSetPtrOrNull(device, types.VT.SetVertexShader, draw.vertex_shader);
-            deviceSetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
-
-            var color_f4 = argbToFloat4(draw.color);
-            color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
-            deviceSetPSConstF(device, 0, &color_f4);
-
-            // DEBUG27: if WoW used the fixed-function pixel pipeline, let
-            // D3D9 rebuild the original material alpha itself. We override only
-            // the colour chain with TEXTUREFACTOR/CURRENT, while preserving the
-            // original ALPHAOP/ALPHAARG chain and alpha-test states.
-            if (draw.pixel_shader == null) {
-                deviceSetPtrOrNull(device, types.VT.SetPixelShader, null);
-                deviceSetRS(device, types.D3DRS.TEXTUREFACTOR, draw.color);
-                for (0..4) |stage| {
-                    deviceSetTexture(device, @intCast(stage), draw.tex[stage]);
-                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP, draw.alpha_op[stage]);
-                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1, draw.alpha_arg1[stage]);
-                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2, draw.alpha_arg2[stage]);
-                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLOROP, types.D3DTOP_SELECTARG1);
-                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLORARG1,
-                        if (stage == 0) types.D3DTA_TFACTOR else types.D3DTA_CURRENT);
-                }
-                deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, draw.alpha_test_enable);
-                deviceSetRS(device, types.D3DRS.ALPHAREF, draw.alpha_ref);
-                deviceSetRS(device, types.D3DRS.ALPHAFUNC, draw.alpha_func);
+            // 1) Replay this draw with WoW's exact captured D3D state into a
+            // transparent scratch RT. A D3DSBT_ALL state block restores pixel
+            // shader, PS constants, textures, samplers, texture stages, blend,
+            // alpha-test, vertex state and stream bindings.
+            if (draw.state_block) |sb| {
+                _ = stateBlockApply(sb);
             } else {
-                // Custom-PS fallback: Texture0 alpha cutout remains safer than
-                // filling the entire carrier polygon.
-                deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
-                if (draw.tex[0]) |tex0| {
-                    deviceSetTexture(device, 0, tex0);
-                    const cut: [4]f32 = .{ -0.05, 0, 0, 0 };
-                    deviceSetPSConstF(device, 1, &cut);
-                    deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
-                } else {
-                    deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
-                }
+                // Safe fallback for a failed state-block capture.
+                deviceSetStreamSource(device, 0, draw.vb, draw.vb_offset, draw.vb_stride);
+                deviceSetIndices(device, draw.ib);
+                deviceSetPtrOrNull(device, types.VT.SetVertexDeclaration, draw.vertex_decl);
+                deviceSetPtrOrNull(device, types.VT.SetVertexShader, draw.vertex_shader);
+                deviceSetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
             }
 
-            // DEBUG24: still no stencil/reset dependency.
+            deviceSetRenderTarget(device, 0, rt_material_surf.?);
+            clearRenderTarget(device, 0x00000000);
+            deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+            deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
             deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+            deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
+
+            // 2) Convert only pixels actually produced by that exact material
+            // into the uniform outline mask, preserving the draw/category colour.
+            deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
+            deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
+            deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
+            deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
+            deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
+            deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
+            deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+            deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
+            deviceSetRS(device, types.D3DRS.CULLMODE, types.D3DCULL_NONE);
+            deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
+            deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
+            deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
+            deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
+            deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
+            deviceSetTexture(device, 0, rt_material_tex);
+            deviceSetPtr(device, types.VT.SetPixelShader, material_mask_ps.?);
+
+            var mask_color = argbToFloat4(draw.color);
+            mask_color[3] = 1.0;
+            deviceSetPSConstF(device, 0, &mask_color);
+            const threshold: [4]f32 = .{ -0.01, 0.0, 0.0, 0.0 };
+            deviceSetPSConstF(device, 1, &threshold);
+            deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), @sizeOf(QuadVertex));
         }
 
         clearCachedDraws();
-
     }
 
     // =====================================================================
