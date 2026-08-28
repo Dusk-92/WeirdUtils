@@ -703,10 +703,12 @@ fn buildFullscreenQuad(w: u32, h: u32) [4]QuadVertex {
 fn hkEndScene(device: *anyopaque) callconv(hook.cc.stdcall) i32 {
     debug_endscene_seen = true;
 
-    // One-time: check if depth/stencil surface has stencil bits.
+    // DEBUG14: do NOT force a D3D9 Reset here.
+    // Previous diagnostics show all three vtable hooks disappear after the
+    // first EndScene. forceD24S8IfNeeded() is the only first-frame path that
+    // deliberately calls IDirect3DDevice9::Reset, so isolate it.
     if (need_force_reset) {
         need_force_reset = false;
-        forceD24S8IfNeeded(device);
     }
 
     // Per-frame: scan objects for outline tracking
