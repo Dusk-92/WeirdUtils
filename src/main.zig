@@ -129,6 +129,7 @@ fn registerLuaFunctions() void {
     }
     if (build_opts.outline) {
         registerFunction("OutlineCommand", @intFromPtr(&outline.outlineCommand));
+        registerFunction("OutlineDebug", @intFromPtr(&outline.outlineDebug));
     }
     if (build_opts.logsessions) {
         registerFunction("GetCombatLogPath", @intFromPtr(&logsessions.luaGetCombatLogPath));
