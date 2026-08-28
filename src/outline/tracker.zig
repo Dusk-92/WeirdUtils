@@ -201,6 +201,11 @@ fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 /// back-pointers without any pointer dereferencing.
 pub fn scanObjects() void {
     debug_scan_called_seen = true;
+    const gen = @atomicRmw(u32, &debug_scan_generation, .Add, 1, .seq_cst) + 1;
+    const published_at = @atomicLoad(u32, &debug_publish_scan_generation, .seq_cst);
+    if (published_at != 0 and gen > published_at) {
+        debug_scan_after_publish_seen = true;
+    }
 
     // Clear per-frame sets
     frame_outline_count = 0;
@@ -297,6 +302,9 @@ pub var debug_pin_player_published_seen: bool = false;
 pub var debug_pin_target_published_seen: bool = false;
 pub var debug_pin_player_consumed_seen: bool = false;
 pub var debug_pin_target_consumed_seen: bool = false;
+var debug_scan_generation: u32 = 0;
+var debug_publish_scan_generation: u32 = 0;
+pub var debug_scan_after_publish_seen: bool = false;
 
 // DEBUG9: objects captured explicitly from OutlineDebug() while executing in
 // WoW's Lua/main-thread context. This lets us test the render/classification
@@ -305,6 +313,8 @@ var debug_pinned_player_obj: u32 = 0;
 var debug_pinned_target_obj: u32 = 0;
 
 pub fn setDebugPinnedObjects(player_obj: u32, target_obj: u32) void {
+    const gen = @atomicLoad(u32, &debug_scan_generation, .seq_cst);
+    @atomicStore(u32, &debug_publish_scan_generation, gen, .seq_cst);
     @atomicStore(u32, &debug_pinned_player_obj, player_obj, .seq_cst);
     @atomicStore(u32, &debug_pinned_target_obj, target_obj, .seq_cst);
     if (player_obj != 0) debug_pin_player_published_seen = true;
