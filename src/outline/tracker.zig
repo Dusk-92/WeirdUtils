@@ -200,6 +200,8 @@ fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 /// Stores object pointers directly so classifyModel can match model
 /// back-pointers without any pointer dereferencing.
 pub fn scanObjects() void {
+    debug_scan_called_seen = true;
+
     // Clear per-frame sets
     frame_outline_count = 0;
     tracked_obj_count = 0;
@@ -210,14 +212,16 @@ pub fn scanObjects() void {
     // DEBUG10: EndScene must not call WoW object/game functions. On this client
     // those functions only behave correctly from the Lua/main-thread context.
     // Consume atomically published object pointers captured by OutlineDebug().
-    const local_player = @atomicLoad(u32, &debug_pinned_player_obj, .acquire);
+    const local_player = @atomicLoad(u32, &debug_pinned_player_obj, .seq_cst);
+    if (local_player != 0) debug_pin_player_consumed_seen = true;
     if (local_player != 0 and game_obj_ptr_count < MAX_TRACKED_OBJS) {
         game_obj_ptrs[game_obj_ptr_count] = local_player;
         game_obj_ptr_count += 1;
     }
 
-    const target_obj = @atomicLoad(u32, &debug_pinned_target_obj, .acquire);
+    const target_obj = @atomicLoad(u32, &debug_pinned_target_obj, .seq_cst);
     if (target_obj != 0) {
+        debug_pin_target_consumed_seen = true;
         addTrackedObj(target_obj, .target, 0);
     }
 
@@ -288,6 +292,11 @@ pub var debug_target_object_seen: bool = false;
 pub var debug_unit_target_guid_seen: bool = false;
 pub var debug_unit_target_object_seen: bool = false;
 pub var debug_object_scan_seen: bool = false;
+pub var debug_scan_called_seen: bool = false;
+pub var debug_pin_player_published_seen: bool = false;
+pub var debug_pin_target_published_seen: bool = false;
+pub var debug_pin_player_consumed_seen: bool = false;
+pub var debug_pin_target_consumed_seen: bool = false;
 
 // DEBUG9: objects captured explicitly from OutlineDebug() while executing in
 // WoW's Lua/main-thread context. This lets us test the render/classification
@@ -296,8 +305,10 @@ var debug_pinned_player_obj: u32 = 0;
 var debug_pinned_target_obj: u32 = 0;
 
 pub fn setDebugPinnedObjects(player_obj: u32, target_obj: u32) void {
-    @atomicStore(u32, &debug_pinned_player_obj, player_obj, .release);
-    @atomicStore(u32, &debug_pinned_target_obj, target_obj, .release);
+    @atomicStore(u32, &debug_pinned_player_obj, player_obj, .seq_cst);
+    @atomicStore(u32, &debug_pinned_target_obj, target_obj, .seq_cst);
+    if (player_obj != 0) debug_pin_player_published_seen = true;
+    if (target_obj != 0) debug_pin_target_published_seen = true;
     if (player_obj != 0) {
         debug_unit_player_object_seen = true;
         debug_local_player_seen = true;
