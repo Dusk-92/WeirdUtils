@@ -251,8 +251,10 @@ pub fn getPlayerGUID() u64 {
 }
 
 /// Get the local player's object pointer.
+/// Use ClntObjMgrGetActivePlayer (0x468550) instead of UnitGUID("player").
+/// This matches the path used by Nampower and does not depend on legacy globals.
 pub fn getLocalPlayer() u32 {
-    const guid = unitGUID("player");
+    const guid = getPlayerGUID();
     if (guid == 0) return 0;
     return getObjectByGUID(guid);
 }
@@ -337,8 +339,9 @@ pub fn getNameByObject(obj: u32) [*:0]const u8 {
 }
 
 /// Get the current target's GUID.
+/// Read the locked target GUID directly (0xB4E2D8), as Nampower does.
 pub fn getTargetGUID() u64 {
-    return unitGUID("target");
+    return readGUID(o.LOCKED_TARGET_GUID);
 }
 
 /// Check if a unit is friendly to the local player.
