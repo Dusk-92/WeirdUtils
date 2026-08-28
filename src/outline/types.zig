@@ -141,11 +141,18 @@ pub const D3DBLEND_INVDESTCOLOR: u32 = 10;
 pub const D3DTSS = struct {
     pub const COLOROP: u32 = 1;
     pub const COLORARG1: u32 = 2;
+    pub const COLORARG2: u32 = 3;
     pub const ALPHAOP: u32 = 4;
     pub const ALPHAARG1: u32 = 5;
+    pub const ALPHAARG2: u32 = 6;
 };
 
+pub const D3DTOP_DISABLE: u32 = 1;
 pub const D3DTOP_SELECTARG1: u32 = 2;
+
+pub const D3DTA_DIFFUSE: u32 = 0;
+pub const D3DTA_CURRENT: u32 = 1;
+pub const D3DTA_TEXTURE: u32 = 2;
 pub const D3DTA_TFACTOR: u32 = 3;
 
 // =============================================================================
@@ -224,6 +231,7 @@ pub const VT = struct {
     pub const GetRenderState: usize = 58;
     pub const GetTexture: usize = 64;
     pub const SetTexture: usize = 65;
+    pub const GetTextureStageState: usize = 66;
     pub const SetTextureStageState: usize = 67;
     pub const GetSamplerState: usize = 68;
     pub const SetSamplerState: usize = 69;
