@@ -92,8 +92,24 @@ pub const lua = @import("lua.zig");
 // Game function wrappers
 // =============================================================================
 
-fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
-    hook.call(fn ([*:0]const u8, usize) callconv(hook.cc.fastcall) void, 0x704120, .{ name, func_addr });
+noinline fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
+    // FrameScript_RegisterFunction is __fastcall:
+    //   ECX = const char *name
+    //   EDX = lua_CFunction func
+    //
+    // Do not route this through hook.call here. With the current Zig/zhook
+    // combination that path was emitted as two stack pushes, so the engine
+    // consumed stale ECX/EDX values left by the previous hook in the chain.
+    // Force the verified WoW 1.12.1 ABI explicitly.
+    var eax_clobber: usize = undefined;
+    asm volatile (
+        \\mov $0x704120, %%eax
+        \\call *%%eax
+        : [eax] "={eax}" (eax_clobber),
+        : [name] "{ecx}" (@intFromPtr(name)),
+          [func] "{edx}" (func_addr),
+    );
+    _ = eax_clobber;
 }
 
 fn allocateGameBuffer(size: u32) ?[*]u8 {
