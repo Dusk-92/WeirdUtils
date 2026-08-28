@@ -1,0 +1,160 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing Git tag to publish'
+        required: true
+        default: '0.7.3'
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: '0.16.0'
+  CUSTOM_WEIRDPERFORMANCE_TAG: '0.7.3'
+
+jobs:
+  release:
+    name: Build DLLs and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "RELEASE_TAG=${{ inputs.release_tag }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build public DLL variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dframecrash=true \
+            -Ddpslog=true
+
+      - name: Collect release DLLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          dlls=(
+            bigcursor.dll
+            clickthrough.dll
+            customassets.dll
+            dpslog.dll
+            framecrash.dll
+            healtextfix.dll
+            interact.dll
+            logsessions.dll
+            minimapicons.dll
+            outline.dll
+            pngscreenshots.dll
+            transmogfix.dll
+            worldmarkers.dll
+          )
+
+          for dll in "${dlls[@]}"; do
+            src="zig-out/variants/$dll"
+            if [[ ! -s "$src" ]]; then
+              echo "Missing expected DLL: $src" >&2
+              exit 1
+            fi
+            cp "$src" "release/$dll"
+          done
+
+      - name: Add custom WeirdPerformance v0.7.3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api_url="https://codeberg.org/api/v1/repos/Dusk92/WeirdUtils/releases/tags/${CUSTOM_WEIRDPERFORMANCE_TAG}"
+          release_json="$(curl --retry 3 --retry-all-errors -fsSL "$api_url")"
+
+          download_url="$(printf '%s' "$release_json" | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          for asset in data.get("assets", []):
+              if asset.get("name", "").lower() == "weirdperformance.dll":
+                  print(asset.get("browser_download_url", ""))
+                  break
+          ')"
+
+          if [[ -z "$download_url" ]]; then
+            echo "Could not find weirdperformance.dll in Codeberg release ${CUSTOM_WEIRDPERFORMANCE_TAG}" >&2
+            exit 1
+          fi
+
+          curl --retry 3 --retry-all-errors -fsSL "$download_url" -o release/weirdperformance.dll
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('release/weirdperformance.dll')
+          data = p.read_bytes()
+          if len(data) < 1024 or data[:2] != b'MZ':
+              raise SystemExit('Downloaded weirdperformance.dll is not a valid-looking Windows DLL')
+          print(f'Custom WeirdPerformance: {len(data)} bytes, PE header OK')
+          PY
+
+      - name: Create checksums and ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            sha256sum *.dll > SHA256SUMS.txt
+          )
+          zip -j "WeirdUtils-${RELEASE_TAG}.zip" release/*.dll release/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<EOF
+          WeirdUtils ${RELEASE_TAG}
+
+          - Standard module DLLs are compiled from Git tag `${RELEASE_TAG}` with Zig ${ZIG_VERSION} in ReleaseSmall mode.
+          - The upstream WeirdPerformance variant is intentionally excluded.
+          - `weirdperformance.dll` is the custom Dusk-92 v${CUSTOM_WEIRDPERFORMANCE_TAG} build, copied from the Codeberg release with the same version.
+          - `SHA256SUMS.txt` is included for integrity checks.
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; replacing assets."
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "WeirdUtils ${RELEASE_TAG}" \
+              --notes-file release-notes.md
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            release/*.dll \
+            release/SHA256SUMS.txt \
+            "WeirdUtils-${RELEASE_TAG}.zip" \
+            --clobber
