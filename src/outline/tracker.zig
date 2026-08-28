@@ -207,8 +207,13 @@ pub fn scanObjects() void {
     game_obj_model_count = 0;
     resetDiag();
 
-    if (!wow.isInGame()) return;
-    debug_in_world_seen = true;
+    // IS_IN_WORLD is kept as a diagnostic only. On this modified client it
+    // reports 0 even while EndScene/DIP are clearly running in-world.
+    if (wow.isInGame()) debug_in_world_seen = true;
+
+    // Use the object manager as the actual readiness gate for this debug build.
+    if (!wow.hasObjectManager()) return;
+    debug_object_manager_seen = true;
 
     const local_player = wow.getLocalPlayer();
     if (local_player == 0) return;
@@ -324,6 +329,7 @@ pub var diag: Diag = .{};
 // Sticky diagnostics for the debug build. They turn true once the corresponding
 // stage has been observed and stay true for the whole process lifetime.
 pub var debug_in_world_seen: bool = false;
+pub var debug_object_manager_seen: bool = false;
 pub var debug_local_player_seen: bool = false;
 pub var debug_target_guid_seen: bool = false;
 pub var debug_target_object_seen: bool = false;
