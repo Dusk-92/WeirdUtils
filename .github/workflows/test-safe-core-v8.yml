@@ -1,0 +1,167 @@
+name: Test safe standalone core V8
+
+on:
+  push:
+    branches:
+      - test/safe-core-v8
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build safe standalone variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true
+
+      - name: Verify minimal core layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("zig-out/variants")
+
+          addr = {
+              "lua_protection": 0x42A320,
+              "register_commands": 0x490250,
+              "glue_commands": 0x46ABB0,
+              "engine_init": 0x46A400,
+              "logout": 0x491180,
+              "shutdown": 0x490BD0,
+              "file_fallback": 0x648620,
+              "open_file": 0x6477C0,
+              "file_size": 0x6487F0,
+              "read_file": 0x648460,
+              "cleanup_file": 0x648730,
+              "model_load": 0x71D4E0,
+              "check_file": 0x654DD0,
+          }
+
+          def has(data, value):
+              return value.to_bytes(4, "little") in data
+
+          outline = (root / "outline.dll").read_bytes()
+          custom = (root / "customassets.dll").read_bytes()
+          transmog = (root / "transmogfix.dll").read_bytes()
+
+          # Outline: only its Lua registration + engine init core hooks are allowed.
+          required_outline = ("register_commands", "engine_init")
+          forbidden_outline = tuple(k for k in addr if k not in required_outline)
+          for k in required_outline:
+              if not has(outline, addr[k]):
+                  raise SystemExit(f"outline.dll missing required {k}")
+          bad = [k for k in forbidden_outline if has(outline, addr[k])]
+          if bad:
+              raise SystemExit(f"outline.dll still contains unwanted core hooks: {bad}")
+          print("outline.dll: minimal core verified")
+
+          # CustomAssets: only CheckFileExistence is allowed from the generic core.
+          if not has(custom, addr["check_file"]):
+              raise SystemExit("customassets.dll missing CheckFileExistence")
+          bad = [k for k,v in addr.items() if k != "check_file" and has(custom, v)]
+          if bad:
+              raise SystemExit(f"customassets.dll still contains unwanted core hooks: {bad}")
+          print("customassets.dll: minimal core verified")
+
+          # TransmogFix: none of the generic core hook target addresses should remain.
+          bad = [k for k,v in addr.items() if has(transmog, v)]
+          if bad:
+              raise SystemExit(f"transmogfix.dll still contains unwanted core hooks: {bad}")
+          print("transmogfix.dll: minimal core verified")
+
+          # Compatibility repair must exist in customassets and outline.
+          for name, data in (("outline.dll", outline), ("customassets.dll", custom)):
+              for gate in (0x654B5C, 0x654B6A):
+                  if not has(data, gate):
+                      raise SystemExit(f"{name} missing MPQ gate restore address 0x{gate:X}")
+              for seq in (bytes([0x74,0x25]), bytes([0x75,0x17])):
+                  if seq not in data:
+                      raise SystemExit(f"{name} missing original MPQ branch bytes {seq.hex()}")
+          print("legacy MPQ gate repair verified")
+          PY
+
+      - name: Verify Outline native Lua asm wrappers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path("src/outline/outline.zig").read_text()
+          for required in (
+              'luaGetTopNative',
+              'luaIsStringNative',
+              'luaToStringNative',
+              'luaPushBooleanNative',
+              '"{ecx}"',
+              '"{edx}"',
+              '0x6F39F0',
+          ):
+              if required not in src:
+                  raise SystemExit(f"Missing native register wrapper piece: {required}")
+          print("outline.dll source: native x86 register wrappers present")
+          PY
+
+      - name: Stage package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package/DLL
+          mkdir -p package/Interface/AddOns/WeirdUtils_Outline
+
+          cp zig-out/variants/outline.dll package/DLL/
+          cp zig-out/variants/customassets.dll package/DLL/
+          cp zig-out/variants/transmogfix.dll package/DLL/
+
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/
+
+          cat > package/README_TEST.txt <<'EOF'
+          WeirdUtils Safe Standalone Core Test V8
+
+          This build forces OutlineCommand's WoW Lua calls through x86 register assembly wrappers.
+
+          outline.dll
+          - Keeps only the Player_LoadScriptFunctions hook required to register OutlineCommand.
+          - Keeps only the GameEngine_MainInitialize hook required to initialise the renderer.
+          - Does not register the shared WeirdUtils version table.
+          - Does not install generic MPQ/file hooks.
+          - Uses the external WeirdUtils_Outline addon included here.
+
+          customassets.dll
+          - Keeps only CheckFileExistence from the shared file core.
+          - No shared Lua registration hooks.
+          - No shared engine/logout/shutdown hooks.
+          - Repairs legacy File_FindInArchive NOPs if present.
+
+          transmogfix.dll
+          - Installs only TransmogFix's own module hooks.
+          - No shared Lua/file/engine/logout/shutdown hooks.
+
+          weirdperformance.dll
+          - Not built here.
+          - The final ZIP will use the user's original binary unchanged.
+          EOF
+
+          sha256sum package/DLL/*.dll > package/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: safe-core-v8
+          path: package/
+          if-no-files-found: error
