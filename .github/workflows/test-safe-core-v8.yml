@@ -137,6 +137,7 @@ jobs:
               'endscene_ours',
               'dip_ours',
               'reset_ours',
+              'DEBUG14: do NOT force a D3D9 Reset here.',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
@@ -215,7 +216,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          This debug build captures GetGUIDFromName("player"/"target") and GUID-to-object resolution inside OutlineDebug() on the Lua/main thread, then pins those object pointers for the D3D9 render path.
+          DEBUG14 disables Outline's first-frame forced IDirect3DDevice9::Reset to test whether that reset is what restores the original D3D9 vtable and removes all Outline hooks.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
