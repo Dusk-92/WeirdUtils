@@ -139,6 +139,8 @@ jobs:
               'debug_scan_after_publish_seen',
               'getLiveHookState()',
               'lateRehookIfLost()',
+              'debug_shader_stage',
+              'debug_resource_stage',
               'endscene_ours',
               'dip_ours',
               'reset_ours',
@@ -220,7 +222,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG15 re-applies the D3D9 hooks from OutlineDebug() after the client is fully loaded, to test whether the original hook installation simply happens too early.
+          DEBUG16 keeps the late D3D9 rehook and reports exact shader/render-target creation stages before draw caching.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
