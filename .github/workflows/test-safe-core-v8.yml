@@ -126,7 +126,7 @@ jobs:
               'callconv(.{ .x86_thiscall = .{} })',
               'luaPushStringNative',
               'pub fn outlineDebug',
-              'OutlineDBG en=',
+              'OutlineDBG live=',
               'debug_unit_player_guid_seen',
               'debug_unit_target_guid_seen',
               'tracker.setDebugPinnedObjects(player_obj, target_obj)',
