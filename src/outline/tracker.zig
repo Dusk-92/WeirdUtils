@@ -208,8 +208,11 @@ pub fn scanObjects() void {
     resetDiag();
 
     if (!wow.isInGame()) return;
+    debug_in_world_seen = true;
+
     const local_player = wow.getLocalPlayer();
     if (local_player == 0) return;
+    debug_local_player_seen = true;
 
     // Local player renders before outline targets (occludes outlines) unless
     // the local player IS an outline target (partition logic checks outline first).
@@ -224,14 +227,17 @@ pub fn scanObjects() void {
     // Resolve target to object pointer (highest priority - added first)
     const target_guid = wow.getTargetGUID();
     if (target_guid != 0) {
+        debug_target_guid_seen = true;
         const target_obj = wow.getObjectByGUID(target_guid);
         if (target_obj != 0) {
+            debug_target_object_seen = true;
             addTrackedObj(target_obj, .target, 0);
         }
     }
 
     // Iterate all visible objects
     var obj = wow.objectFirst();
+    if (obj != 0) debug_object_scan_seen = true;
     while (obj != 0) : (obj = wow.objectNext(obj)) {
         const obj_type = wow.getObjectType(obj);
         const guid = wow.getObjectGUID(obj);
@@ -317,6 +323,11 @@ pub var diag: Diag = .{};
 
 // Sticky diagnostics for the debug build. They turn true once the corresponding
 // stage has been observed and stay true for the whole process lifetime.
+pub var debug_in_world_seen: bool = false;
+pub var debug_local_player_seen: bool = false;
+pub var debug_target_guid_seen: bool = false;
+pub var debug_target_object_seen: bool = false;
+pub var debug_object_scan_seen: bool = false;
 pub var debug_target_seen: bool = false;
 pub var debug_target_model_seen: bool = false;
 
