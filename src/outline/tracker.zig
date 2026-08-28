@@ -207,76 +207,22 @@ pub fn scanObjects() void {
     game_obj_model_count = 0;
     resetDiag();
 
-    // IS_IN_WORLD and OBJECT_MANAGER_PTR are diagnostics only on this client.
-    // Both legacy globals can stay 0 even though WoW's object lookup functions
-    // are fully usable in-world.
-    if (wow.isInGame()) debug_in_world_seen = true;
-    if (wow.hasObjectManager()) debug_object_manager_seen = true;
-
-    // Keep the legacy paths only as diagnostics.
-    const legacy_player_guid = wow.getPlayerGUID();
-    if (legacy_player_guid != 0) debug_player_guid_seen = true;
-
-    const legacy_target_guid = wow.getTargetGUID();
-    if (legacy_target_guid != 0) debug_target_guid_seen = true;
-
-    // DEBUG9: use objects captured by OutlineDebug() on WoW's Lua/main thread.
-    // Calling GetGUIDFromName/GetObjectPtr from EndScene returns zero on this
-    // client, so the D3D9 hook must consume cached data instead.
-    const local_player = debug_pinned_player_obj;
-    if (local_player != 0) {
-        if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
-            game_obj_ptrs[game_obj_ptr_count] = local_player;
-            game_obj_ptr_count += 1;
-        }
+    // DEBUG10: EndScene must not call WoW object/game functions. On this client
+    // those functions only behave correctly from the Lua/main-thread context.
+    // Consume atomically published object pointers captured by OutlineDebug().
+    const local_player = @atomicLoad(u32, &debug_pinned_player_obj, .acquire);
+    if (local_player != 0 and game_obj_ptr_count < MAX_TRACKED_OBJS) {
+        game_obj_ptrs[game_obj_ptr_count] = local_player;
+        game_obj_ptr_count += 1;
     }
 
-    const target_obj = debug_pinned_target_obj;
+    const target_obj = @atomicLoad(u32, &debug_pinned_target_obj, .acquire);
     if (target_obj != 0) {
         addTrackedObj(target_obj, .target, 0);
     }
 
-    // Cache raid target GUIDs for optional secondary outline categories.
-    wow.cacheRaidTargets();
-
-    // Iterate all visible objects only when the legacy object-manager global
-    // is available. Target outlining above does not depend on this traversal.
-    var obj: u32 = 0;
-    if (wow.hasObjectManager()) {
-        obj = wow.objectFirst();
-        if (obj != 0) debug_object_scan_seen = true;
-    }
-    while (obj != 0) : (obj = wow.objectNext(obj)) {
-        const obj_type = wow.getObjectType(obj);
-        const guid = wow.getObjectGUID(obj);
-        if (guid == 0) continue;
-
-        switch (obj_type) {
-            .player => {
-                if (local_player != 0 and wow.isUnitDead(obj) and wow.isUnitFriendly(obj, local_player)) {
-                    addTrackedObj(obj, .dead_player, 0);
-                }
-                const mark = wow.getRaidMarkForGUID(guid);
-                if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
-            },
-            .unit => {
-                const mark = wow.getRaidMarkForGUID(guid);
-                if (mark != 0) addTrackedObj(obj, .raid_marked, mark);
-            },
-            .corpse => {
-                if (!wow.isSkeletonCorpse(obj)) {
-                    addTrackedObj(obj, .dead_player, 0);
-                }
-            },
-            .game_object => {
-                if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
-                    game_obj_ptrs[game_obj_ptr_count] = obj;
-                    game_obj_ptr_count += 1;
-                }
-            },
-            else => {},
-        }
-    }
+    // Secondary categories (raid marks/dead players/game objects) are disabled
+    // in this diagnostic build until the target-only path is proven stable.
 }
 
 fn addTrackedObj(obj_ptr: u32, cat: types.ModelCategory, mark: u8) void {
@@ -350,8 +296,8 @@ var debug_pinned_player_obj: u32 = 0;
 var debug_pinned_target_obj: u32 = 0;
 
 pub fn setDebugPinnedObjects(player_obj: u32, target_obj: u32) void {
-    debug_pinned_player_obj = player_obj;
-    debug_pinned_target_obj = target_obj;
+    @atomicStore(u32, &debug_pinned_player_obj, player_obj, .release);
+    @atomicStore(u32, &debug_pinned_target_obj, target_obj, .release);
     if (player_obj != 0) {
         debug_unit_player_object_seen = true;
         debug_local_player_seen = true;
