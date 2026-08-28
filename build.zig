@@ -66,6 +66,7 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     addModuleOptionsFromArray(b, build_options, &module_enabled);
+    build_options.addOption(bool, "safe_variant_core", false);
     // transform_capture: records game-x87 transformMatrix4x4 state to disk for
     // offline bench parity. Mutually exclusive with bone_sse64 (capture needs
     // the real game output; bone_sse64 replaces it).
@@ -324,6 +325,7 @@ pub fn build(b: *std.Build) void {
             if (comptime std.mem.eql(u8, m.name, "weirdperformance")) noperf_enabled[i] = false;
         }
         addModuleOptionsFromArray(b, noperf_opts, &noperf_enabled);
+        noperf_opts.addOption(bool, "safe_variant_core", false);
 
         const noperf_lib = b.addLibrary(.{
             .name = "weirdutils_noperf",
@@ -357,6 +359,12 @@ pub fn build(b: *std.Build) void {
             inline for (module_list) |m| {
                 opts.addOption(bool, "enable_" ++ m.name, std.mem.eql(u8, m.name, variant_mod.name));
             }
+            const safe_variant_core = comptime (
+                std.mem.eql(u8, variant_mod.name, "outline") or
+                std.mem.eql(u8, variant_mod.name, "customassets") or
+                std.mem.eql(u8, variant_mod.name, "transmogfix")
+            );
+            opts.addOption(bool, "safe_variant_core", safe_variant_core);
             addFileListOptions(b, opts);
             const names: []const []const u8 = comptime blk: {
                 var n: [module_list.len][]const u8 = undefined;
