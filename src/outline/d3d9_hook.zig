@@ -137,6 +137,13 @@ pub fn lateRehookIfLost() bool {
 
 /// True until the first EndScene verifies (and if needed, forces) D24S8 format.
 var need_force_reset: bool = true;
+pub var debug_stencil_ready: bool = false;
+pub var debug_stencil_format: u32 = 0;
+pub var debug_stencil_reset_hr: i32 = 0;
+
+pub fn requestStencilCheck() void {
+    need_force_reset = true;
+}
 
 // =============================================================================
 // Shader resources
@@ -152,7 +159,7 @@ var shaders_attempted: bool = false;
 // Debug: set to true to skip JFA and composite raw silhouette RT to backbuffer.
 // Used to diagnose whether banding artifacts originate in the silhouette (Phase 1
 // replay / stale VB) or in the JFA pipeline (Phase 2 shader bug).
-const DEBUG_SHOW_SILHOUETTE = true;
+const DEBUG_SHOW_SILHOUETTE = false;
 
 // D3DXAssembleShader function pointer (loaded dynamically)
 const D3DXAssembleShaderFn = *const fn (
@@ -793,12 +800,21 @@ fn buildFullscreenQuad(w: u32, h: u32) [4]QuadVertex {
 fn hkEndScene(device: *anyopaque) callconv(hook.cc.stdcall) i32 {
     debug_endscene_seen = true;
 
-    // DEBUG14: do NOT force a D3D9 Reset here.
-    // Previous diagnostics show all three vtable hooks disappear after the
-    // first EndScene. forceD24S8IfNeeded() is the only first-frame path that
-    // deliberately calls IDirect3DDevice9::Reset, so isolate it.
+    // DEBUG22: ensure a stencil-capable depth surface. The old implementation
+    // held COM references across Reset and could invalidate its own hooks.
+    // The safe path releases those refs first, then rehooks immediately after
+    // a successful Reset because D3D9 may restore the original vtable entries.
     if (need_force_reset) {
         need_force_reset = false;
+        const did_reset = forceD24S8IfNeeded(device);
+        if (did_reset) {
+            _ = lateRehookIfLost();
+
+            // Skip Outline work on the reset frame. Resources/shaders were
+            // released and will be recreated naturally on the next frame.
+            const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 = @ptrFromInt(orig_endscene);
+            return f(device);
+        }
     }
 
     // Per-frame: scan objects for outline tracking
@@ -1110,11 +1126,18 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // DEBUG21: bypass stencil completely. Since DEBUG14 disabled
-            // the forced D24S8 reset, the current depth surface may have no
-            // usable stencil bits. This test isolates geometry replay +
-            // silhouette RT/compositing from stencil availability.
-            deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+            // Per-category stencil logic:
+            // - dead_player: no stencil test (visible through walls for corpse finding)
+            // - target/raid_marked: stencil test gates on terrain visibility
+            if (draw.category == .dead_player) {
+                deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
+            } else {
+                deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
+                deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_EQUAL);
+                deviceSetRS(device, types.D3DRS.STENCILREF, 1);
+                deviceSetRS(device, types.D3DRS.STENCILMASK, 0xFF);
+                deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_KEEP);
+            }
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
         }
@@ -1313,42 +1336,65 @@ fn hasStencilBits(fmt: u32) bool {
         fmt == types.D3DFMT_D24X4S4 or fmt == types.D3DFMT_D15S1;
 }
 
-fn forceD24S8IfNeeded(device: *anyopaque) void {
+fn queryStencilFormat(device: *anyopaque) u32 {
     var pDS: ?*anyopaque = null;
     const getDS: *const fn (*anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.GetDepthStencilSurface]);
-    if (getDS(device, &pDS) < 0) return;
-    const ds = pDS orelse return;
-    defer comRelease(ds);
+    if (getDS(device, &pDS) < 0) return 0;
+    const ds = pDS orelse return 0;
 
     var desc: types.D3DSURFACE_DESC = .{};
     const getDesc: *const fn (*anyopaque, *types.D3DSURFACE_DESC) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(ds)[12]);
-    if (getDesc(ds, &desc) < 0) return;
+    const hr = getDesc(ds, &desc);
+    comRelease(ds);
+    if (hr < 0) return 0;
+    return desc.Format;
+}
 
-    if (hasStencilBits(desc.Format)) return;
+fn forceD24S8IfNeeded(device: *anyopaque) bool {
+    const current_fmt = queryStencilFormat(device);
+    debug_stencil_format = current_fmt;
+    if (hasStencilBits(current_fmt)) {
+        debug_stencil_ready = true;
+        debug_stencil_reset_hr = 0;
+        return false;
+    }
 
     var pSwap: ?*anyopaque = null;
     const getSC: *const fn (*anyopaque, u32, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.GetSwapChain]);
-    if (getSC(device, 0, &pSwap) < 0) return;
-    const swap = pSwap orelse return;
-    defer comRelease(swap);
+    if (getSC(device, 0, &pSwap) < 0) return false;
+    const swap = pSwap orelse return false;
 
     var pp: types.D3DPRESENT_PARAMETERS = .{};
     const getPP: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(swap)[9]);
-    if (getPP(swap, &pp) < 0) return;
+    const pp_hr = getPP(swap, &pp);
+    // IMPORTANT: do not hold a swap-chain COM reference across Reset.
+    comRelease(swap);
+    if (pp_hr < 0) return false;
 
     pp.AutoDepthStencilFormat = types.D3DFMT_D24S8;
     pp.EnableAutoDepthStencil = 1;
 
+    clearCachedDraws();
     releaseShaders();
     releaseResources();
 
     const resetFn: *const fn (*anyopaque, *types.D3DPRESENT_PARAMETERS) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.Reset]);
-    _ = resetFn(device, &pp);
+    const reset_hr = resetFn(device, &pp);
+    debug_stencil_reset_hr = reset_hr;
+    if (reset_hr < 0) {
+        debug_stencil_ready = false;
+        return false;
+    }
+
+    const new_fmt = queryStencilFormat(device);
+    debug_stencil_format = new_fmt;
+    debug_stencil_ready = hasStencilBits(new_fmt);
+    return true;
 }
 
 // =============================================================================
