@@ -120,7 +120,7 @@ pub fn isEnabled() bool {
 ///   OutlineCommand()          → returns (enabled: bool)
 ///   OutlineCommand("on")      → enable outlines
 ///   OutlineCommand("off")     → disable outlines
-pub fn outlineCommand(L: lua.State) callconv(.c) u32 {
+pub fn outlineCommand(L: lua.State) callconv(.{ .x86_fastcall = .{} }) u32 {
     const nargs = luaGetTopNative(L);
 
     if (nargs >= 1 and luaIsStringNative(L, 1)) {
