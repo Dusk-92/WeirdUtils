@@ -633,7 +633,8 @@ const jfa_decode_src =
     "mul r3.x, r3.x, r3.x\n" ++ // width²
     // Threshold: inside outline if dist² < width²
     "sub r3.y, r1.z, r3.x\n" ++ // dist² - width²
-    "cmp r4.w, r3.y, c0.w, c1.y\n" ++ // >= 0 → 0 (outside), < 0 → 1 (inside)
+    "mov r6.w, c1.y\n" ++ // temp 1.0: avoid reading c0 + c1 in one instruction
+    "cmp r4.w, r3.y, c0.w, r6.w\n" ++ // >= 0 → 0 (outside), < 0 → 1 (inside)
     // Exclude silhouette interior (don't draw outline ON the model)
     "texld r5, v0, s1\n" ++ // silhouette at current pixel
     "add r5.x, r5.a, c1.z\n" ++ // alpha - 0.002
