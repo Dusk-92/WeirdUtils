@@ -4,7 +4,7 @@
 //! and a Lua C callback for `/wu outline` commands.
 
 const std = @import("std");
-const hook = @import("zhook");
+const lua = @import("../lua.zig");
 const logging = @import("../logging.zig");
 const tracker = @import("tracker.zig");
 const model_hook = @import("model_hook.zig");
@@ -74,28 +74,21 @@ pub fn isEnabled() bool {
 ///   OutlineCommand()          → returns (enabled: bool)
 ///   OutlineCommand("on")      → enable outlines
 ///   OutlineCommand("off")     → disable outlines
-pub fn outlineCommand(L: *anyopaque) callconv(.c) u32 {
-    const nargs = hook.call(fn (usize) callconv(hook.cc.fastcall) i32, 0x6F3070, .{@intFromPtr(L)}); // lua_gettop
+pub fn outlineCommand(L: lua.State) callconv(.c) u32 {
+    const nargs = lua.gettop(L);
 
-    if (nargs >= 1) {
-        // Check if first arg is a string
-        const is_str = hook.call(fn (usize, u32) callconv(hook.cc.fastcall) u32, 0x6F3510, .{ @intFromPtr(L), 1 }); // lua_isstring
-        if (is_str != 0) {
-            const str_ptr = hook.call(fn (usize, u32) callconv(hook.cc.fastcall) u32, 0x6F3690, .{ @intFromPtr(L), 1 }); // lua_tostring
-            if (str_ptr != 0) {
-                const s: [*:0]const u8 = @ptrFromInt(str_ptr);
-                const span = @import("std").mem.span(s);
-                if (eql(span, "on") or eql(span, "enable")) {
-                    setEnabled(true);
-                } else if (eql(span, "off") or eql(span, "disable")) {
-                    setEnabled(false);
-                }
+    if (nargs >= 1 and lua.isstring(L, 1)) {
+        if (lua.tostring(L, 1)) |s| {
+            const span = std.mem.span(s);
+            if (eql(span, "on") or eql(span, "enable")) {
+                setEnabled(true);
+            } else if (eql(span, "off") or eql(span, "disable")) {
+                setEnabled(false);
             }
         }
     }
 
-    // Push current state as boolean
-    hook.call(fn (usize, u32) callconv(hook.cc.fastcall) void, 0x6F39F0, .{ @intFromPtr(L), @as(u32, if (isEnabled()) 1 else 0) }); // lua_pushboolean
+    lua.pushboolean(L, if (isEnabled()) 1 else 0);
     return 1;
 }
 
