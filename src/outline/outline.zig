@@ -156,16 +156,10 @@ pub fn outlineCommand(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
 /// Usage:
 ///   /run DEFAULT_CHAT_FRAME:AddMessage(OutlineDebug())
 pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
-    // One-shot diagnostic only: test WoW's GetGUIDFromName path when the user
-    // explicitly runs OutlineDebug(). We deliberately do NOT call this every
-    // frame while debugging stability.
-    const unit_guid_player = wow.unitGUID("player");
-    const unit_guid_target = wow.unitGUID("target");
-
     var buf: [320]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} ugt={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
         .{
             @intFromBool(isEnabled()),
             @intFromBool(g_is_hook_owner),
@@ -178,8 +172,10 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
             @intFromBool(tracker.debug_local_player_seen),
             @intFromBool(tracker.debug_target_guid_seen),
             @intFromBool(tracker.debug_target_object_seen),
-            @intFromBool(unit_guid_player != 0),
-            @intFromBool(unit_guid_target != 0),
+            @intFromBool(tracker.debug_unit_player_guid_seen),
+            @intFromBool(tracker.debug_unit_player_object_seen),
+            @intFromBool(tracker.debug_unit_target_guid_seen),
+            @intFromBool(tracker.debug_unit_target_object_seen),
             @intFromBool(tracker.debug_object_scan_seen),
             @intFromBool(tracker.debug_target_seen),
             @intFromBool(tracker.debug_target_model_seen),
