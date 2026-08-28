@@ -221,7 +221,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG19 fixes the JFA propagation shader so each arithmetic instruction reads at most one constant register, while retaining D3DX error diagnostics.
+          DEBUG20 also fixes the JFA decode/composite shader X5584 constant-register restriction, while retaining D3DX error diagnostics.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
