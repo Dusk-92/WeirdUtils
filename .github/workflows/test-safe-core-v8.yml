@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG29 isolates the exact-material replay with a full outer D3DSBT_ALL save/restore and explicitly rebinds cached geometry/VS state after each per-draw state apply to prevent D3D state leakage and stray lines.
+          DEBUG30 fixes IDirect3DStateBlock9::Apply to use vtable slot 5 (slot 4 is Capture), retaining DEBUG29's full outer-state isolation and explicit geometry/VS rebinding.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
