@@ -71,6 +71,32 @@ pub fn hooksInstalled() bool {
     return hooks_installed;
 }
 
+pub const LiveHookState = struct {
+    vtable_found: bool = false,
+    same_vtable: bool = false,
+    endscene_ours: bool = false,
+    dip_ours: bool = false,
+    reset_ours: bool = false,
+    endscene_ptr: usize = 0,
+    dip_ptr: usize = 0,
+    reset_ptr: usize = 0,
+};
+
+/// Read the game's current D3D9 vtable and verify whether our entries are
+/// still installed. This is intentionally queried on demand from OutlineDebug.
+pub fn getLiveHookState() LiveHookState {
+    const cur = getD3D9VTable() orelse return .{};
+    var out: LiveHookState = .{ .vtable_found = true };
+    out.same_vtable = if (d3d9_vtable) |saved| @intFromPtr(saved) == @intFromPtr(cur) else false;
+    out.endscene_ptr = cur[types.VT.EndScene];
+    out.dip_ptr = cur[types.VT.DrawIndexedPrimitive];
+    out.reset_ptr = cur[types.VT.Reset];
+    out.endscene_ours = out.endscene_ptr == @intFromPtr(&hkEndScene);
+    out.dip_ours = out.dip_ptr == @intFromPtr(&hkDIP);
+    out.reset_ours = out.reset_ptr == @intFromPtr(&hkReset);
+    return out;
+}
+
 /// True until the first EndScene verifies (and if needed, forces) D24S8 format.
 var need_force_reset: bool = true;
 
