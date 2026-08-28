@@ -167,7 +167,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     if (player_guid != 0) tracker.debug_unit_player_guid_seen = true;
     if (target_guid != 0) tracker.debug_unit_target_guid_seen = true;
 
-    const rehook_ok = d3d9_hook.lateRehookIfLost();
+    _ = d3d9_hook.lateRehookIfLost();
     const live = d3d9_hook.getLiveHookState();
 
     var buf: [336]u8 = undefined;
