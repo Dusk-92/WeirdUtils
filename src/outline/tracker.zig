@@ -213,32 +213,36 @@ pub fn scanObjects() void {
     if (wow.isInGame()) debug_in_world_seen = true;
     if (wow.hasObjectManager()) debug_object_manager_seen = true;
 
-    // Diagnose player GUID and object resolution separately. The local player
-    // is useful for occlusion/dead-friendly tracking, but it is NOT required
-    // for outlining the current target. Never abort target tracking just
-    // because the player object cannot be resolved.
-    const player_guid = wow.getPlayerGUID();
-    if (player_guid != 0) debug_player_guid_seen = true;
+    // Keep the legacy paths only as diagnostics.
+    const legacy_player_guid = wow.getPlayerGUID();
+    if (legacy_player_guid != 0) debug_player_guid_seen = true;
+
+    const legacy_target_guid = wow.getTargetGUID();
+    if (legacy_target_guid != 0) debug_target_guid_seen = true;
+
+    // Working path on this client: GetGUIDFromName("player"/"target").
+    // unitGUID() uses the verified ECX ABI and does not leak stack space.
+    const player_guid = wow.unitGUID("player");
+    if (player_guid != 0) debug_unit_player_guid_seen = true;
 
     const local_player = if (player_guid != 0) wow.getObjectByGUID(player_guid) else 0;
     if (local_player != 0) {
+        debug_unit_player_object_seen = true;
         debug_local_player_seen = true;
 
-        // Local player renders before outline targets (occludes outlines) unless
-        // the local player IS an outline target.
         if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
             game_obj_ptrs[game_obj_ptr_count] = local_player;
             game_obj_ptr_count += 1;
         }
     }
 
-    // Resolve the selected target independently of local-player resolution.
-    // This must run even when player/object-manager legacy paths are unavailable.
-    const target_guid = wow.getTargetGUID();
+    // Resolve the selected target through the same working UnitGUID path.
+    const target_guid = wow.unitGUID("target");
     if (target_guid != 0) {
-        debug_target_guid_seen = true;
+        debug_unit_target_guid_seen = true;
         const target_obj = wow.getObjectByGUID(target_guid);
         if (target_obj != 0) {
+            debug_unit_target_object_seen = true;
             debug_target_object_seen = true;
             addTrackedObj(target_obj, .target, 0);
         }
@@ -343,8 +347,12 @@ pub var debug_in_world_seen: bool = false;
 pub var debug_object_manager_seen: bool = false;
 pub var debug_player_guid_seen: bool = false;
 pub var debug_local_player_seen: bool = false;
+pub var debug_unit_player_guid_seen: bool = false;
+pub var debug_unit_player_object_seen: bool = false;
 pub var debug_target_guid_seen: bool = false;
 pub var debug_target_object_seen: bool = false;
+pub var debug_unit_target_guid_seen: bool = false;
+pub var debug_unit_target_object_seen: bool = false;
 pub var debug_object_scan_seen: bool = false;
 pub var debug_target_seen: bool = false;
 pub var debug_target_model_seen: bool = false;
