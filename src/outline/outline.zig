@@ -19,6 +19,52 @@ var log: logging.Logger = .{};
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
 
+
+noinline fn luaGetTopNative(L: lua.State) i32 {
+    var result: i32 = undefined;
+    asm volatile (
+        \\mov $0x6F3070, %%eax
+        \\call *%%eax
+        : [ret] "={eax}" (result),
+        : [state] "{ecx}" (@intFromPtr(L)),
+    );
+    return result;
+}
+
+noinline fn luaIsStringNative(L: lua.State, index: i32) bool {
+    var result: u32 = undefined;
+    asm volatile (
+        \\mov $0x6F3510, %%eax
+        \\call *%%eax
+        : [ret] "={eax}" (result),
+        : [state] "{ecx}" (@intFromPtr(L)),
+          [index] "{edx}" (index),
+    );
+    return result != 0;
+}
+
+noinline fn luaToStringNative(L: lua.State, index: i32) ?[*:0]const u8 {
+    var result: usize = undefined;
+    asm volatile (
+        \\mov $0x6F3690, %%eax
+        \\call *%%eax
+        : [ret] "={eax}" (result),
+        : [state] "{ecx}" (@intFromPtr(L)),
+          [index] "{edx}" (index),
+    );
+    return if (result == 0) null else @ptrFromInt(result);
+}
+
+noinline fn luaPushBooleanNative(L: lua.State, value: i32) void {
+    asm volatile (
+        \\mov $0x6F39F0, %%eax
+        \\call *%%eax
+        :
+        : [state] "{ecx}" (@intFromPtr(L)),
+          [value] "{edx}" (value),
+    );
+}
+
 pub fn isActive() bool {
     return g_is_hook_owner;
 }
@@ -75,10 +121,10 @@ pub fn isEnabled() bool {
 ///   OutlineCommand("on")      → enable outlines
 ///   OutlineCommand("off")     → disable outlines
 pub fn outlineCommand(L: lua.State) callconv(.c) u32 {
-    const nargs = lua.gettop(L);
+    const nargs = luaGetTopNative(L);
 
-    if (nargs >= 1 and lua.isstring(L, 1)) {
-        if (lua.tostring(L, 1)) |s| {
+    if (nargs >= 1 and luaIsStringNative(L, 1)) {
+        if (luaToStringNative(L, 1)) |s| {
             const span = std.mem.span(s);
             if (eql(span, "on") or eql(span, "enable")) {
                 setEnabled(true);
@@ -88,7 +134,7 @@ pub fn outlineCommand(L: lua.State) callconv(.c) u32 {
         }
     }
 
-    lua.pushboolean(L, if (isEnabled()) 1 else 0);
+    luaPushBooleanNative(L, if (isEnabled()) 1 else 0);
     return 1;
 }
 
