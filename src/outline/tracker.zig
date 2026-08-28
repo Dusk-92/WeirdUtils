@@ -220,32 +220,20 @@ pub fn scanObjects() void {
     const legacy_target_guid = wow.getTargetGUID();
     if (legacy_target_guid != 0) debug_target_guid_seen = true;
 
-    // Working path on this client: GetGUIDFromName("player"/"target").
-    // unitGUID() uses the verified ECX ABI and does not leak stack space.
-    const player_guid = wow.unitGUID("player");
-    if (player_guid != 0) debug_unit_player_guid_seen = true;
-
-    const local_player = if (player_guid != 0) wow.getObjectByGUID(player_guid) else 0;
+    // DEBUG9: use objects captured by OutlineDebug() on WoW's Lua/main thread.
+    // Calling GetGUIDFromName/GetObjectPtr from EndScene returns zero on this
+    // client, so the D3D9 hook must consume cached data instead.
+    const local_player = debug_pinned_player_obj;
     if (local_player != 0) {
-        debug_unit_player_object_seen = true;
-        debug_local_player_seen = true;
-
         if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
             game_obj_ptrs[game_obj_ptr_count] = local_player;
             game_obj_ptr_count += 1;
         }
     }
 
-    // Resolve the selected target through the same working UnitGUID path.
-    const target_guid = wow.unitGUID("target");
-    if (target_guid != 0) {
-        debug_unit_target_guid_seen = true;
-        const target_obj = wow.getObjectByGUID(target_guid);
-        if (target_obj != 0) {
-            debug_unit_target_object_seen = true;
-            debug_target_object_seen = true;
-            addTrackedObj(target_obj, .target, 0);
-        }
+    const target_obj = debug_pinned_target_obj;
+    if (target_obj != 0) {
+        addTrackedObj(target_obj, .target, 0);
     }
 
     // Cache raid target GUIDs for optional secondary outline categories.
@@ -354,6 +342,25 @@ pub var debug_target_object_seen: bool = false;
 pub var debug_unit_target_guid_seen: bool = false;
 pub var debug_unit_target_object_seen: bool = false;
 pub var debug_object_scan_seen: bool = false;
+
+// DEBUG9: objects captured explicitly from OutlineDebug() while executing in
+// WoW's Lua/main-thread context. This lets us test the render/classification
+// path without calling game object lookup functions from D3D9 EndScene.
+var debug_pinned_player_obj: u32 = 0;
+var debug_pinned_target_obj: u32 = 0;
+
+pub fn setDebugPinnedObjects(player_obj: u32, target_obj: u32) void {
+    debug_pinned_player_obj = player_obj;
+    debug_pinned_target_obj = target_obj;
+    if (player_obj != 0) {
+        debug_unit_player_object_seen = true;
+        debug_local_player_seen = true;
+    }
+    if (target_obj != 0) {
+        debug_unit_target_object_seen = true;
+        debug_target_object_seen = true;
+    }
+}
 pub var debug_target_seen: bool = false;
 pub var debug_target_model_seen: bool = false;
 
