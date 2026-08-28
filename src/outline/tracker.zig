@@ -213,23 +213,27 @@ pub fn scanObjects() void {
     if (wow.isInGame()) debug_in_world_seen = true;
     if (wow.hasObjectManager()) debug_object_manager_seen = true;
 
-    // Resolve the local player through the engine API instead of the legacy
-    // OBJECT_MANAGER_PTR global. This is also how Nampower resolves objects.
-    const local_player = wow.getLocalPlayer();
-    if (local_player == 0) return;
-    debug_local_player_seen = true;
+    // Diagnose player GUID and object resolution separately. The local player
+    // is useful for occlusion/dead-friendly tracking, but it is NOT required
+    // for outlining the current target. Never abort target tracking just
+    // because the player object cannot be resolved.
+    const player_guid = wow.getPlayerGUID();
+    if (player_guid != 0) debug_player_guid_seen = true;
 
-    // Local player renders before outline targets (occludes outlines) unless
-    // the local player IS an outline target (partition logic checks outline first).
-    if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
-        game_obj_ptrs[game_obj_ptr_count] = local_player;
-        game_obj_ptr_count += 1;
+    const local_player = if (player_guid != 0) wow.getObjectByGUID(player_guid) else 0;
+    if (local_player != 0) {
+        debug_local_player_seen = true;
+
+        // Local player renders before outline targets (occludes outlines) unless
+        // the local player IS an outline target.
+        if (game_obj_ptr_count < MAX_TRACKED_OBJS) {
+            game_obj_ptrs[game_obj_ptr_count] = local_player;
+            game_obj_ptr_count += 1;
+        }
     }
 
-    // Cache raid target GUIDs
-    wow.cacheRaidTargets();
-
-    // Resolve target to object pointer (highest priority - added first)
+    // Resolve the selected target independently of local-player resolution.
+    // This must run even when player/object-manager legacy paths are unavailable.
     const target_guid = wow.getTargetGUID();
     if (target_guid != 0) {
         debug_target_guid_seen = true;
@@ -239,6 +243,9 @@ pub fn scanObjects() void {
             addTrackedObj(target_obj, .target, 0);
         }
     }
+
+    // Cache raid target GUIDs for optional secondary outline categories.
+    wow.cacheRaidTargets();
 
     // Iterate all visible objects only when the legacy object-manager global
     // is available. Target outlining above does not depend on this traversal.
@@ -254,7 +261,7 @@ pub fn scanObjects() void {
 
         switch (obj_type) {
             .player => {
-                if (wow.isUnitDead(obj) and wow.isUnitFriendly(obj, local_player)) {
+                if (local_player != 0 and wow.isUnitDead(obj) and wow.isUnitFriendly(obj, local_player)) {
                     addTrackedObj(obj, .dead_player, 0);
                 }
                 const mark = wow.getRaidMarkForGUID(guid);
@@ -334,6 +341,7 @@ pub var diag: Diag = .{};
 // stage has been observed and stay true for the whole process lifetime.
 pub var debug_in_world_seen: bool = false;
 pub var debug_object_manager_seen: bool = false;
+pub var debug_player_guid_seen: bool = false;
 pub var debug_local_player_seen: bool = false;
 pub var debug_target_guid_seen: bool = false;
 pub var debug_target_object_seen: bool = false;
