@@ -130,7 +130,7 @@ jobs:
               'callconv(.{ .x86_thiscall = .{} })',
               'luaPushStringNative',
               'pub fn outlineDebug',
-              'OutlineDBG live=',
+              'OutlineDBG rh=',
               'debug_unit_player_guid_seen',
               'debug_unit_target_guid_seen',
               'tracker.setDebugPinnedObjects(player_obj, target_obj)',
@@ -138,6 +138,7 @@ jobs:
               'debug_scan_called_seen',
               'debug_scan_after_publish_seen',
               'getLiveHookState()',
+              'lateRehookIfLost()',
               'endscene_ours',
               'dip_ours',
               'reset_ours',
@@ -219,7 +220,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG14 disables Outline's first-frame forced IDirect3DDevice9::Reset to test whether that reset is what restores the original D3D9 vtable and removes all Outline hooks.
+          DEBUG15 re-applies the D3D9 hooks from OutlineDebug() after the client is fully loaded, to test whether the original hook installation simply happens too early.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
