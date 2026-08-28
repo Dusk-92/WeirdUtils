@@ -173,7 +173,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     var buf: [336]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG shst={d} hooks={d}{d}{d} tgt={d} mdl={d} sb={d} odip={d} cache={d} pipe={d}/{d}",
+        "OutlineDBG shst={d} hooks={d}{d}{d} tgt={d} mdl={d} sb={d} rs={d} odip={d} cache={d} pipe={d}/{d}",
         .{
             d3d9_hook.debug_shader_stage,
             @intFromBool(live.endscene_ours),
@@ -182,6 +182,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
             @intFromBool(tracker.debug_target_seen),
             @intFromBool(tracker.debug_target_model_seen),
             @intFromBool(d3d9_hook.debug_state_block_seen),
+            @intFromBool(d3d9_hook.debug_outer_state_restore_seen),
             @intFromBool(d3d9_hook.debug_outline_dip_seen),
             @intFromBool(d3d9_hook.debug_cached_draw_seen),
             @intFromBool(d3d9_hook.debug_pipeline_entered_seen),
