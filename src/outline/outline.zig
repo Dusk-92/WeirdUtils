@@ -158,13 +158,18 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} world={d} lp={d} tg={d} to={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
         .{
             @intFromBool(isEnabled()),
             @intFromBool(g_is_hook_owner),
             @intFromBool(g_model_hooks_installed),
             @intFromBool(d3d9_hook.hooksInstalled()),
             @intFromBool(d3d9_hook.debug_endscene_seen),
+            @intFromBool(tracker.debug_in_world_seen),
+            @intFromBool(tracker.debug_local_player_seen),
+            @intFromBool(tracker.debug_target_guid_seen),
+            @intFromBool(tracker.debug_target_object_seen),
+            @intFromBool(tracker.debug_object_scan_seen),
             @intFromBool(tracker.debug_target_seen),
             @intFromBool(tracker.debug_target_model_seen),
             @intFromBool(d3d9_hook.debug_dip_seen),
