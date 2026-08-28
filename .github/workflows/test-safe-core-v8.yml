@@ -95,13 +95,25 @@ jobs:
           print("legacy MPQ gate repair verified")
           PY
 
-      - name: Verify Outline Lua ABI and native wrappers
+      - name: Verify Outline registration + Lua ABI
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          src = Path("src/outline/outline.zig").read_text()
+
+          main = Path("src/main.zig").read_text()
+          outline = Path("src/outline/outline.zig").read_text()
+
+          for required in (
+              'noinline fn registerFunction',
+              '0x704120',
+              '"{ecx}" (@intFromPtr(name))',
+              '"{edx}" (func_addr)',
+          ):
+              if required not in main:
+                  raise SystemExit(f"Missing explicit FrameScript registration ABI piece: {required}")
+
           for required in (
               'luaGetTopNative',
               'luaIsStringNative',
@@ -112,9 +124,10 @@ jobs:
               '0x6F39F0',
               'callconv(.{ .x86_thiscall = .{} })',
           ):
-              if required not in src:
-                  raise SystemExit(f"Missing Outline ABI/native wrapper piece: {required}")
-          print("outline.dll source: ECX callback ABI + native x86 register wrappers present")
+              if required not in outline:
+                  raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
+
+          print("source: FrameScript registration uses ECX/EDX; Outline callback receives L in ECX")
           PY
 
           objdump -d -Mintel zig-out/variants/outline.dll > /tmp/outline.disasm
@@ -124,42 +137,51 @@ jobs:
 
           lines = Path("/tmp/outline.disasm").read_text(errors="replace").splitlines()
 
-          # registerFunction("OutlineCommand", &outlineCommand) compiles near a
-          # mov eax,0x704120 followed by push <callback>; push <name>; call eax.
-          callback = None
+          reg_block = None
           for i, line in enumerate(lines):
               if re.search(r"mov\s+eax,0x0*704120\b", line, re.I):
-                  pushes = []
-                  for nxt in lines[i + 1:i + 8]:
-                      m = re.search(r"\bpush\s+0x([0-9a-f]+)\b", nxt, re.I)
-                      if m:
-                          pushes.append(int(m.group(1), 16))
-                  if len(pushes) >= 2:
-                      callback = pushes[0]
+                  block = lines[max(0, i - 8):i + 4]
+                  text = "\n".join(block)
+                  # The helper must explicitly prepare both fastcall registers
+                  # before calling FrameScript_RegisterFunction.
+                  if (re.search(r"mov\s+ecx,", text, re.I)
+                          and re.search(r"mov\s+edx,", text, re.I)
+                          and re.search(r"call\s+eax\b", text, re.I)):
+                      reg_block = text
                       break
 
-          if callback is None:
-              raise SystemExit("Could not resolve OutlineCommand callback address from registration code")
+          if reg_block is None:
+              raise SystemExit("BAD ABI: no FrameScript_RegisterFunction call with ECX=name and EDX=func found")
 
-          start = None
-          addr_re = re.compile(rf"^\s*{callback:x}:\s", re.I)
+          print("FrameScript_RegisterFunction machine code:")
+          print(reg_block)
+
+          # Regression guard for the exact broken V7/V8 codegen:
+          #   mov eax,0x704120
+          #   push callback
+          #   push name
+          #   call eax
           for i, line in enumerate(lines):
-              if addr_re.search(line):
-                  start = i
-                  break
-          if start is None:
-              raise SystemExit(f"Could not find callback body at 0x{callback:X}")
+              if re.search(r"mov\s+eax,0x0*704120\b", line, re.I):
+                  after = "\n".join(lines[i:i + 5])
+                  if len(re.findall(r"\bpush\s+", after, re.I)) >= 2:
+                      raise SystemExit("BAD ABI: FrameScript registration still passes name/func on the stack")
 
-          block = "\n".join(lines[start:start + 14])
-          print(f"OutlineCommand callback @ 0x{callback:X}")
-          print(block)
+          # OutlineCommand must capture the Lua state from ECX. Search function
+          # prologues for the characteristic saved-ESI form and reject the old
+          # [ebp+8] capture used by the cdecl experiment.
+          good_callback = False
+          for i, line in enumerate(lines):
+              if re.search(r"push\s+ebp\b", line, re.I):
+                  block = "\n".join(lines[i:i + 12])
+                  if re.search(r"mov\s+esi,ecx\b", block, re.I):
+                      good_callback = True
+                      break
 
-          if not re.search(r"mov\s+esi,ecx\b", block, re.I):
-              raise SystemExit("BAD ABI: OutlineCommand does not capture Lua state from ECX")
-          if re.search(r"mov\s+esi,(?:DWORD PTR )?\[ebp\+0x8\]", block, re.I):
-              raise SystemExit("BAD ABI: OutlineCommand still reads Lua state from [ebp+8]")
+          if not good_callback:
+              raise SystemExit("BAD ABI: no callback body captures Lua state from ECX")
 
-          print("outline.dll machine code: Lua state is captured from ECX")
+          print("outline.dll machine code: registration and callback ABIs verified")
           PY
 
       - name: Stage package
@@ -180,7 +202,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8
 
-          This build receives OutlineCommand's Lua state from ECX (x86 thiscall ABI) and keeps the native x86 register wrappers for WoW Lua calls.
+          This build fixes both x86 ABIs: FrameScript_RegisterFunction gets name in ECX + callback in EDX, and OutlineCommand receives the Lua state in ECX. WoW Lua API calls stay on explicit native register wrappers.
 
           outline.dll
           - Keeps only the Player_LoadScriptFunctions hook required to register OutlineCommand.
