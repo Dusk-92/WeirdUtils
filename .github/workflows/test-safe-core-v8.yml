@@ -138,7 +138,6 @@ jobs:
               'debug_stencil_format',
               'debug_stencil_reset_hr',
               'debug_shader_stage',
-              'debug_resource_stage',
               'endscene_ours',
               'dip_ours',
               'reset_ours',
