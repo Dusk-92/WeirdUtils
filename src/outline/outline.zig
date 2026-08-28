@@ -18,6 +18,7 @@ var log: logging.Logger = .{};
 
 var g_mutex: ?*anyopaque = null;
 var g_is_hook_owner: bool = false;
+var g_model_hooks_installed: bool = false;
 
 
 noinline fn luaGetTopNative(L: lua.State) i32 {
@@ -65,6 +66,16 @@ noinline fn luaPushBooleanNative(L: lua.State, value: i32) void {
     );
 }
 
+noinline fn luaPushStringNative(L: lua.State, value: [*:0]const u8) void {
+    asm volatile (
+        \\mov $0x6F3890, %%eax
+        \\call *%%eax
+        :
+        : [state] "{ecx}" (@intFromPtr(L)),
+          [value] "{edx}" (@intFromPtr(value)),
+    );
+}
+
 pub fn isActive() bool {
     return g_is_hook_owner;
 }
@@ -83,6 +94,7 @@ pub fn init() bool {
     log = logging.Logger.open(module_name, .console);
     tracker.initLogger();
     if (!model_hook.installHooks()) return false;
+    g_model_hooks_installed = true;
     return true;
 }
 
@@ -101,6 +113,7 @@ pub fn cleanup() void {
         log.close();
         mod_mutex.release(&g_mutex);
     }
+    g_model_hooks_installed = false;
     g_is_hook_owner = false;
 }
 
@@ -135,6 +148,39 @@ pub fn outlineCommand(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     }
 
     luaPushBooleanNative(L, if (isEnabled()) 1 else 0);
+    return 1;
+}
+
+/// Return a compact sticky diagnostic line for in-game testing.
+/// Usage:
+///   /run DEFAULT_CHAT_FRAME:AddMessage(OutlineDebug())
+pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrintZ(
+        &buf,
+        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        .{
+            @intFromBool(isEnabled()),
+            @intFromBool(g_is_hook_owner),
+            @intFromBool(g_model_hooks_installed),
+            @intFromBool(d3d9_hook.hooksInstalled()),
+            @intFromBool(d3d9_hook.debug_endscene_seen),
+            @intFromBool(tracker.debug_target_seen),
+            @intFromBool(tracker.debug_target_model_seen),
+            @intFromBool(d3d9_hook.debug_dip_seen),
+            @intFromBool(d3d9_hook.debug_outline_dip_seen),
+            @intFromBool(d3d9_hook.debug_cached_draw_seen),
+            @intFromBool(d3d9_hook.debug_shaders_ready_seen),
+            @intFromBool(d3d9_hook.debug_resources_ready_seen),
+            @intFromBool(d3d9_hook.debug_pipeline_entered_seen),
+            @intFromBool(d3d9_hook.debug_pipeline_ready_seen),
+        },
+    ) catch {
+        luaPushStringNative(L, "OutlineDBG format error");
+        return 1;
+    };
+
+    luaPushStringNative(L, msg.ptr);
     return 1;
 }
 
