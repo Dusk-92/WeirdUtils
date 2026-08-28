@@ -156,7 +156,18 @@ pub fn outlineCommand(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
 /// Usage:
 ///   /run DEFAULT_CHAT_FRAME:AddMessage(OutlineDebug())
 pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
-    var buf: [320]u8 = undefined;
+    // Capture player/target from the context where GetGUIDFromName is known to
+    // work on this client, then pin the resolved objects for the render thread.
+    const player_guid = wow.unitGUID("player");
+    const target_guid = wow.unitGUID("target");
+    const player_obj = if (player_guid != 0) wow.getObjectByGUID(player_guid) else 0;
+    const target_obj = if (target_guid != 0) wow.getObjectByGUID(target_guid) else 0;
+    tracker.setDebugPinnedObjects(player_obj, target_obj);
+
+    if (player_guid != 0) tracker.debug_unit_player_guid_seen = true;
+    if (target_guid != 0) tracker.debug_unit_target_guid_seen = true;
+
+    var buf: [352]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
         "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
