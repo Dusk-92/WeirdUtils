@@ -127,6 +127,8 @@ jobs:
               'luaPushStringNative',
               'pub fn outlineDebug',
               'OutlineDBG en=',
+              'unit_guid_player = wow.unitGUID("player")',
+              'unit_guid_target = wow.unitGUID("target")',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
@@ -205,7 +207,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          This debug build diagnoses player GUID separately and tracks the selected target independently from local-player resolution. It uses ClntObjMgrGetActivePlayer and the locked target GUID at 0xB4E2D8. WoW Lua API calls stay on explicit native register wrappers.
+          This debug build also probes GetGUIDFromName("player"/"target") only when OutlineDebug() is manually invoked, so we can compare it against the zero-valued legacy globals without adding another per-frame call.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
