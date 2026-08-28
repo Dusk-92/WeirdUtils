@@ -363,8 +363,12 @@ fn deviceCreateStateBlock(dev: *anyopaque) ?*anyopaque {
 }
 
 fn stateBlockApply(sb: *anyopaque) bool {
+    // IDirect3DStateBlock9 vtable:
+    // 0 QI, 1 AddRef, 2 Release, 3 GetDevice, 4 Capture, 5 Apply.
+    // DEBUG28/29 accidentally called Capture here, so no captured state was
+    // ever restored. Use the real Apply slot.
     const f: *const fn (*anyopaque) callconv(hook.cc.stdcall) i32 =
-        @ptrFromInt(vt(sb)[4]);
+        @ptrFromInt(vt(sb)[5]);
     return f(sb) >= 0;
 }
 
