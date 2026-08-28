@@ -166,6 +166,8 @@ pub const FN_UNIT_REACTION: usize = 0x6061E0;
 
 /// __fastcall(), no params, returns EAX(low):EDX(high).
 pub const FN_GET_PLAYER_GUID: usize = 0x00468550;
+/// Current target GUID (same address used by Nampower).
+pub const LOCKED_TARGET_GUID: usize = 0x00B4E2D8;
 
 /// __fastcall(obj_ECX) → bool. GO interactability check.
 pub const FN_CALL_SPELL_CAST_HANDLER: usize = 0x5F8800;
