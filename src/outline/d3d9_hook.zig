@@ -57,6 +57,20 @@ var orig_reset: usize = 0;
 var d3d9_vtable: ?[*]usize = null;
 var hooks_installed: bool = false;
 
+// Sticky diagnostics for the in-game OutlineDebug() command.
+pub var debug_endscene_seen: bool = false;
+pub var debug_dip_seen: bool = false;
+pub var debug_outline_dip_seen: bool = false;
+pub var debug_cached_draw_seen: bool = false;
+pub var debug_shaders_ready_seen: bool = false;
+pub var debug_resources_ready_seen: bool = false;
+pub var debug_pipeline_entered_seen: bool = false;
+pub var debug_pipeline_ready_seen: bool = false;
+
+pub fn hooksInstalled() bool {
+    return hooks_installed;
+}
+
 /// True until the first EndScene verifies (and if needed, forces) D24S8 format.
 var need_force_reset: bool = true;
 
@@ -390,6 +404,8 @@ fn ensureResources(device: *anyopaque) void {
         releaseResources();
         return;
     }
+
+    debug_resources_ready_seen = true;
 }
 
 fn releaseResources() void {
@@ -602,6 +618,8 @@ fn ensureShaders(device: *anyopaque) void {
             return;
         };
     }
+
+    debug_shaders_ready_seen = true;
 }
 
 /// Assemble a pixel shader from source text, create device PS object.
@@ -657,6 +675,8 @@ fn buildFullscreenQuad(w: u32, h: u32) [4]QuadVertex {
 // =============================================================================
 
 fn hkEndScene(device: *anyopaque) callconv(hook.cc.stdcall) i32 {
+    debug_endscene_seen = true;
+
     // One-time: check if depth/stencil surface has stencil bits.
     if (need_force_reset) {
         need_force_reset = false;
@@ -732,11 +752,14 @@ fn hkDIP(
     start_idx: u32,
     prim_count: u32,
 ) callconv(hook.cc.stdcall) i32 {
+    debug_dip_seen = true;
+
     const OrigDIP = *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(hook.cc.stdcall) i32;
     const origFn: OrigDIP = @ptrFromInt(orig_dip);
 
     // ---- Cache outline draws for EndScene replay ----
     if (model_hook.rendering_outline) {
+        debug_outline_dip_seen = true;
         const model_ptr = model_hook.current_model;
         const color = tracker.getModelColor(model_ptr) orelse
             return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
@@ -780,6 +803,7 @@ fn hkDIP(
 
             cached_draw_count = idx + 1;
             frame_has_outlines = true;
+            debug_cached_draw_seen = true;
         }
 
         // Mark visible pixels in stencil for this outline target.
@@ -855,11 +879,15 @@ fn clearCachedDraws() void {
 // =============================================================================
 
 fn runJfaPipeline(device: *anyopaque) void {
+    debug_pipeline_entered_seen = true;
+
     // Verify all resources and shaders
     if (rt_silhouette_tex == null or rt_jfa_a_surf == null or rt_jfa_b_surf == null) return;
     if (!shaders_attempted) ensureShaders(device);
     if (jfa_init_ps == null or jfa_prop_ps == null or jfa_decode_ps == null) return;
     if (outline_ps == null or rt_silhouette_surf == null) return;
+
+    debug_pipeline_ready_seen = true;
 
     var vp: types.D3DVIEWPORT9 = .{};
     deviceGetViewport(device, &vp);
