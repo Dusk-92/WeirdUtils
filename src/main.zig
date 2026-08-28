@@ -109,7 +109,6 @@ noinline fn registerFunction(name: [*:0]const u8, func_addr: usize) void {
         : [name] "{ecx}" (@intFromPtr(name)),
           [func] "{edx}" (func_addr),
     );
-    _ = eax_clobber;
 }
 
 fn allocateGameBuffer(size: u32) ?[*]u8 {
