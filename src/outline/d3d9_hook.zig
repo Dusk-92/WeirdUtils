@@ -222,7 +222,11 @@ const CachedDraw = struct {
     ib: ?*anyopaque = null,
     vertex_decl: ?*anyopaque = null,
     vertex_shader: ?*anyopaque = null,
-    tex0: ?*anyopaque = null,
+    tex: [4]?*anyopaque = .{ null, null, null, null },
+    pixel_shader: ?*anyopaque = null,
+    alpha_op: [4]u32 = .{ 1, 1, 1, 1 },
+    alpha_arg1: [4]u32 = .{ 0, 0, 0, 0 },
+    alpha_arg2: [4]u32 = .{ 0, 0, 0, 0 },
     alpha_test_enable: u32 = 0,
     alpha_ref: u32 = 0,
     alpha_func: u32 = types.D3DCMP_ALWAYS,
@@ -322,6 +326,20 @@ fn deviceSetTexture(dev: *anyopaque, stage: u32, tex: ?*anyopaque) void {
     const f: *const fn (*anyopaque, u32, ?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.SetTexture]);
     _ = @call(.never_tail, f, .{ dev, stage, tex });
+}
+
+fn deviceGetTSS(dev: *anyopaque, stage: u32, state_type: u32) u32 {
+    var val: u32 = 0;
+    const f: *const fn (*anyopaque, u32, u32, *u32) callconv(hook.cc.stdcall) i32 =
+        @ptrFromInt(vt(dev)[types.VT.GetTextureStageState]);
+    _ = f(dev, stage, state_type, &val);
+    return val;
+}
+
+fn deviceSetTSS(dev: *anyopaque, stage: u32, state_type: u32, value: u32) void {
+    const f: *const fn (*anyopaque, u32, u32, u32) callconv(hook.cc.stdcall) i32 =
+        @ptrFromInt(vt(dev)[types.VT.SetTextureStageState]);
+    _ = f(dev, stage, state_type, value);
 }
 
 fn deviceSetFVF(dev: *anyopaque, fvf: u32) void {
@@ -672,7 +690,7 @@ const jfa_decode_src =
     "dp2add r1.z, r1, r1, c0.w\n" ++ // dist² in pixels
     // Read seed's silhouette colour + width
     "texld r2, r0, s1\n" ++
-    "mul r3.x, r2.a, c0.z\n" ++ // outline_width = alpha * 4.0
+    "mov r3.x, c0.z\n" ++ // fixed outline width in pixels
     "mul r3.x, r3.x, r3.x\n" ++ // width²
     // Threshold: inside outline if dist² < width²
     "sub r3.y, r1.z, r3.x\n" ++ // dist² - width²
@@ -931,20 +949,6 @@ fn hkDIP(
             return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
         const category = tracker.getModelCategory(model_ptr);
 
-        // DEBUG26: skip genuinely blended/translucent passes when building the
-        // silhouette mask. These passes often use multi-texture/vertex-alpha/
-        // material shader logic that cannot be reproduced correctly by sampling
-        // Texture0 alone, and their carrier polygons create huge straight edges.
-        //
-        // Keep alpha-tested cutouts: those are discrete visible/hidden texels
-        // and can be replayed cleanly using WoW's ALPHAREF.
-        const cur_alpha_test = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
-        const cur_alpha_blend = deviceGetRS(device, types.D3DRS.ALPHABLENDENABLE);
-        if (cur_alpha_blend != 0 and cur_alpha_test == 0) {
-            debug_translucent_skipped_seen = true;
-            return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-        }
-
         // Ensure resources will be available for replay in EndScene
         if (!shaders_attempted) ensureShaders(device);
         ensureResources(device);
@@ -977,8 +981,13 @@ fn hkDIP(
             // GetVertexDeclaration AddRef's
             draw.vertex_shader = deviceGetPtr(device, types.VT.GetVertexShader);
             // GetVertexShader AddRef's
-            draw.tex0 = deviceGetTexture(device, 0);
-            // GetTexture AddRef's
+            for (0..4) |stage| {
+                draw.tex[stage] = deviceGetTexture(device, @intCast(stage));
+                draw.alpha_op[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP);
+                draw.alpha_arg1[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1);
+                draw.alpha_arg2[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2);
+            }
+            draw.pixel_shader = deviceGetPtr(device, types.VT.GetPixelShader);
             draw.alpha_test_enable = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
             draw.alpha_ref = deviceGetRS(device, types.D3DRS.ALPHAREF);
             draw.alpha_func = deviceGetRS(device, types.D3DRS.ALPHAFUNC);
@@ -1023,9 +1032,15 @@ fn clearCachedDraws() void {
             comRelease(obj);
             draw.vertex_shader = null;
         }
-        if (draw.tex0) |obj| {
+        if (draw.pixel_shader) |obj| {
             comRelease(obj);
-            draw.tex0 = null;
+            draw.pixel_shader = null;
+        }
+        for (0..4) |stage| {
+            if (draw.tex[stage]) |obj| {
+                comRelease(obj);
+                draw.tex[stage] = null;
+            }
         }
     }
     cached_draw_count = 0;
@@ -1082,7 +1097,28 @@ fn runJfaPipeline(device: *anyopaque) void {
     const saved_dstblend = deviceGetRS(device, types.D3DRS.DESTBLEND);
     const saved_cull = deviceGetRS(device, types.D3DRS.CULLMODE);
     const saved_atest = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
+    const saved_aref = deviceGetRS(device, types.D3DRS.ALPHAREF);
+    const saved_afunc = deviceGetRS(device, types.D3DRS.ALPHAFUNC);
+    const saved_tfactor = deviceGetRS(device, types.D3DRS.TEXTUREFACTOR);
     const saved_cwrite = deviceGetRS(device, types.D3DRS.COLORWRITEENABLE);
+
+    const SavedTSS = struct {
+        colorop: u32,
+        colorarg1: u32,
+        alphaop: u32,
+        alphaarg1: u32,
+        alphaarg2: u32,
+    };
+    var saved_tss: [4]SavedTSS = undefined;
+    for (0..4) |stage| {
+        saved_tss[stage] = .{
+            .colorop = deviceGetTSS(device, @intCast(stage), types.D3DTSS.COLOROP),
+            .colorarg1 = deviceGetTSS(device, @intCast(stage), types.D3DTSS.COLORARG1),
+            .alphaop = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP),
+            .alphaarg1 = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1),
+            .alphaarg2 = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2),
+        };
+    }
 
     // Stencil states (Phase 1 reads stencil marks written by DIP hook)
     const saved_stencil_enable = deviceGetRS(device, types.D3DRS.STENCILENABLE);
@@ -1148,18 +1184,37 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // DEBUG26: only opaque or alpha-tested draws reach the cache.
-            if (draw.tex0 != null and draw.alpha_test_enable != 0 and
-                (draw.alpha_func == types.D3DCMP_GREATER or draw.alpha_func == types.D3DCMP_GREATEREQUAL))
-            {
-                deviceSetTexture(device, 0, draw.tex0);
-                const ref_f = @as(f32, @floatFromInt(draw.alpha_ref & 0xFF)) / 255.0;
-                const alpha_cut: [4]f32 = .{ -@max(ref_f, 0.01), 0, 0, 0 };
-                deviceSetPSConstF(device, 1, &alpha_cut);
-                deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+            // DEBUG27: if WoW used the fixed-function pixel pipeline, let
+            // D3D9 rebuild the original material alpha itself. We override only
+            // the colour chain with TEXTUREFACTOR/CURRENT, while preserving the
+            // original ALPHAOP/ALPHAARG chain and alpha-test states.
+            if (draw.pixel_shader == null) {
+                deviceSetPtrOrNull(device, types.VT.SetPixelShader, null);
+                deviceSetRS(device, types.D3DRS.TEXTUREFACTOR, draw.color);
+                for (0..4) |stage| {
+                    deviceSetTexture(device, @intCast(stage), draw.tex[stage]);
+                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP, draw.alpha_op[stage]);
+                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1, draw.alpha_arg1[stage]);
+                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2, draw.alpha_arg2[stage]);
+                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLOROP, types.D3DTOP_SELECTARG1);
+                    deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLORARG1,
+                        if (stage == 0) types.D3DTA_TFACTOR else types.D3DTA_CURRENT);
+                }
+                deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, draw.alpha_test_enable);
+                deviceSetRS(device, types.D3DRS.ALPHAREF, draw.alpha_ref);
+                deviceSetRS(device, types.D3DRS.ALPHAFUNC, draw.alpha_func);
             } else {
-                deviceSetTexture(device, 0, null);
-                deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
+                // Custom-PS fallback: Texture0 alpha cutout remains safer than
+                // filling the entire carrier polygon.
+                deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
+                if (draw.tex[0]) |tex0| {
+                    deviceSetTexture(device, 0, tex0);
+                    const cut: [4]f32 = .{ -0.05, 0, 0, 0 };
+                    deviceSetPSConstF(device, 1, &cut);
+                    deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+                } else {
+                    deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
+                }
             }
 
             // DEBUG24: still no stencil/reset dependency.
@@ -1298,7 +1353,17 @@ fn runJfaPipeline(device: *anyopaque) void {
     deviceSetRS(device, types.D3DRS.DESTBLEND, saved_dstblend);
     deviceSetRS(device, types.D3DRS.CULLMODE, saved_cull);
     deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, saved_atest);
+    deviceSetRS(device, types.D3DRS.ALPHAREF, saved_aref);
+    deviceSetRS(device, types.D3DRS.ALPHAFUNC, saved_afunc);
+    deviceSetRS(device, types.D3DRS.TEXTUREFACTOR, saved_tfactor);
     deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, saved_cwrite);
+    for (0..4) |stage| {
+        deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLOROP, saved_tss[stage].colorop);
+        deviceSetTSS(device, @intCast(stage), types.D3DTSS.COLORARG1, saved_tss[stage].colorarg1);
+        deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP, saved_tss[stage].alphaop);
+        deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1, saved_tss[stage].alphaarg1);
+        deviceSetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2, saved_tss[stage].alphaarg2);
+    }
 
     // Stencil states
     deviceSetRS(device, types.D3DRS.STENCILENABLE, saved_stencil_enable);
