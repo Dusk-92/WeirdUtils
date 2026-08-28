@@ -151,7 +151,8 @@ pub fn requestStencilCheck() void {
 // Shader resources
 // =============================================================================
 
-var outline_ps: ?*anyopaque = null; // flat-color PS (silhouettes)
+var outline_ps: ?*anyopaque = null; // flat-color PS (solid silhouettes)
+var outline_alpha_ps: ?*anyopaque = null; // texture-alpha-aware silhouette PS
 var jfa_init_ps: ?*anyopaque = null; // JFA seed init PS
 var jfa_prop_ps: ?*anyopaque = null; // JFA propagation PS
 var jfa_decode_ps: ?*anyopaque = null; // JFA decode + composite PS
@@ -219,6 +220,7 @@ const CachedDraw = struct {
     ib: ?*anyopaque = null,
     vertex_decl: ?*anyopaque = null,
     vertex_shader: ?*anyopaque = null,
+    tex0: ?*anyopaque = null,
     // Per-model outline info
     color: u32 = 0,
     category: types.ModelCategory = .none,
@@ -518,6 +520,20 @@ fn releaseResources() void {
 /// Flat colour pixel shader - outputs PS constant c0.
 const ps_flat_src = "ps_3_0\nmov oC0, c0\n";
 
+/// Alpha-aware silhouette shader. Many WoW M2 effects (hair/fins/wings)
+/// are large textured polygons with transparent texels. A flat shader fills
+/// the whole polygon, producing long straight outline segments. Sample s0
+/// and discard nearly-transparent texels before writing the silhouette colour.
+/// c0 = outline colour/encoded width, c1.x = -alpha threshold.
+const ps_alpha_src =
+    "ps_3_0\n" ++
+    "dcl_2d s0\n" ++
+    "dcl_texcoord0 v0\n" ++
+    "texld r0, v0, s0\n" ++
+    "add r1, r0.aaaa, c1.xxxx\n" ++
+    "texkill r1\n" ++
+    "mov oC0, c0\n";
+
 /// JFA init: sample silhouette, output own UV as seed or sentinel (-1,-1).
 /// Sentinel must be outside [0,1] UV space so it never wins distance comparisons.
 const jfa_init_src =
@@ -681,9 +697,15 @@ fn ensureShaders(device: *anyopaque) void {
     debug_shader_stage = 3; // assembler found
     const assemble: D3DXAssembleShaderFn = @ptrCast(assemble_ptr);
 
-    // --- Flat-colour PS (for silhouettes) ---
+    // --- Flat-colour PS (for solid silhouettes) ---
     outline_ps = assemblePS(device, assemble, ps_flat_src, ps_flat_src.len) orelse return;
-    debug_shader_stage = 4; // flat silhouette PS ready
+
+    // --- Alpha-aware silhouette PS (for textured cutout/translucent planes) ---
+    outline_alpha_ps = assemblePS(device, assemble, ps_alpha_src, ps_alpha_src.len) orelse {
+        releaseShaders();
+        return;
+    };
+    debug_shader_stage = 4; // both silhouette PS variants ready
 
     // --- JFA Init PS ---
     jfa_init_ps = assemblePS(device, assemble, jfa_init_src, jfa_init_src.len) orelse {
@@ -770,7 +792,7 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 }
 
 fn releaseShaders() void {
-    inline for (.{ &outline_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
+    inline for (.{ &outline_ps, &outline_alpha_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
         if (ps.*) |p| {
             comRelease(p);
             ps.* = null;
@@ -919,6 +941,8 @@ fn hkDIP(
             // GetVertexDeclaration AddRef's
             draw.vertex_shader = deviceGetPtr(device, types.VT.GetVertexShader);
             // GetVertexShader AddRef's
+            draw.tex0 = deviceGetTexture(device, 0);
+            // GetTexture AddRef's
 
             // Capture VS constants (bone matrices, world/view/proj transforms)
             deviceGetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
@@ -956,6 +980,10 @@ fn clearCachedDraws() void {
         if (draw.vertex_shader) |obj| {
             comRelease(obj);
             draw.vertex_shader = null;
+        }
+        if (draw.tex0) |obj| {
+            comRelease(obj);
+            draw.tex0 = null;
         }
     }
     cached_draw_count = 0;
@@ -1062,7 +1090,6 @@ fn runJfaPipeline(device: *anyopaque) void {
         deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
         deviceSetRS(device, types.D3DRS.STENCILWRITEMASK, 0);
 
-        deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
         deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
 
@@ -1079,7 +1106,20 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // DEBUG23: replay without stencil gating.
+            // Respect the visible alpha shape of textured geometry. This avoids
+            // outlining the full rectangular/triangular carrier polygons used
+            // for fins, hair, wings, foliage-like effects, etc.
+            if (draw.tex0) |tex| {
+                deviceSetTexture(device, 0, tex);
+                const alpha_cut: [4]f32 = .{ -0.05, -0.05, -0.05, -0.05 };
+                deviceSetPSConstF(device, 1, &alpha_cut);
+                deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+            } else {
+                deviceSetTexture(device, 0, null);
+                deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
+            }
+
+            // DEBUG24: still no stencil/reset dependency.
             deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
