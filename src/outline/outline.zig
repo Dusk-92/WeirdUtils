@@ -168,17 +168,13 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     if (target_guid != 0) tracker.debug_unit_target_guid_seen = true;
 
     _ = d3d9_hook.lateRehookIfLost();
-    d3d9_hook.requestStencilCheck();
     const live = d3d9_hook.getLiveHookState();
 
     var buf: [336]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG st={d} fmt={x} rst={x} shst={d} hooks={d}{d}{d} tgt={d} mdl={d} odip={d} cache={d} pipe={d}/{d}",
+        "OutlineDBG shst={d} hooks={d}{d}{d} tgt={d} mdl={d} odip={d} cache={d} pipe={d}/{d}",
         .{
-            @intFromBool(d3d9_hook.debug_stencil_ready),
-            d3d9_hook.debug_stencil_format,
-            @as(u32, @bitCast(d3d9_hook.debug_stencil_reset_hr)),
             d3d9_hook.debug_shader_stage,
             @intFromBool(live.endscene_ours),
             @intFromBool(live.dip_ours),
