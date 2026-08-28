@@ -167,15 +167,24 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     if (player_guid != 0) tracker.debug_unit_player_guid_seen = true;
     if (target_guid != 0) tracker.debug_unit_target_guid_seen = true;
 
-    var buf: [352]u8 = undefined;
+    const live = d3d9_hook.getLiveHookState();
+
+    var buf: [448]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG en={d} own={d} mh={d} d3d={d} end={d} sc={d} post={d} pub={d}/{d} con={d}/{d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
+        "OutlineDBG en={d} own={d} mh={d} d3d={d} live={d}/{d} hooks={d}{d}{d} E={x} D={x} end={d} sc={d} post={d} pub={d}/{d} con={d}/{d} world={d} om={d} pg={d} lp={d} tg={d} to={d} ugp={d} upo={d} ugt={d} uto={d} scan={d} tgt={d} mdl={d} dip={d} odip={d} cache={d} sh={d} rt={d} pipe={d}/{d}",
         .{
             @intFromBool(isEnabled()),
             @intFromBool(g_is_hook_owner),
             @intFromBool(g_model_hooks_installed),
             @intFromBool(d3d9_hook.hooksInstalled()),
+            @intFromBool(live.vtable_found),
+            @intFromBool(live.same_vtable),
+            @intFromBool(live.endscene_ours),
+            @intFromBool(live.dip_ours),
+            @intFromBool(live.reset_ours),
+            live.endscene_ptr,
+            live.dip_ptr,
             @intFromBool(d3d9_hook.debug_endscene_seen),
             @intFromBool(tracker.debug_scan_called_seen),
             @intFromBool(tracker.debug_scan_after_publish_seen),
