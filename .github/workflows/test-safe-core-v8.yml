@@ -205,7 +205,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          This debug build uses ClntObjMgrGetActivePlayer for the local player and the locked target GUID at 0xB4E2D8, matching Nampower's proven object path. WoW Lua API calls stay on explicit native register wrappers.
+          This debug build diagnoses player GUID separately and tracks the selected target independently from local-player resolution. It uses ClntObjMgrGetActivePlayer and the locked target GUID at 0xB4E2D8. WoW Lua API calls stay on explicit native register wrappers.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
