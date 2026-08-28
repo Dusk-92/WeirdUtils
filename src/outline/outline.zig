@@ -173,7 +173,7 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     var buf: [336]u8 = undefined;
     const msg = std.fmt.bufPrintZ(
         &buf,
-        "OutlineDBG rh={d} live={d}/{d} hooks={d}{d}{d} shst={d} rtst={d} end={d} post={d} con={d}/{d} tgt={d} mdl={d} dip={d} odip={d} cache={d} pipe={d}/{d}",
+        "OutlineDBG rh={d} live={d}/{d} hooks={d}{d}{d} shst={d} rtst={d} sha={x} shc={x} tex={x} end={d} post={d} con={d}/{d} tgt={d} mdl={d} dip={d} odip={d} cache={d} pipe={d}/{d}",
         .{
             @intFromBool(rehook_ok),
             @intFromBool(live.vtable_found),
@@ -183,6 +183,9 @@ pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
             @intFromBool(live.reset_ours),
             d3d9_hook.debug_shader_stage,
             d3d9_hook.debug_resource_stage,
+            @as(u32, @bitCast(d3d9_hook.debug_shader_assemble_hr)),
+            @as(u32, @bitCast(d3d9_hook.debug_shader_create_hr)),
+            @as(u32, @bitCast(d3d9_hook.debug_texture_create_hr)),
             @intFromBool(d3d9_hook.debug_endscene_seen),
             @intFromBool(tracker.debug_scan_after_publish_seen),
             @intFromBool(tracker.debug_pin_player_consumed_seen),
