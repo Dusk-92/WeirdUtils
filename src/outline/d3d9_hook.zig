@@ -97,6 +97,38 @@ pub fn getLiveHookState() LiveHookState {
     return out;
 }
 
+pub var debug_late_rehook_attempted: bool = false;
+pub var debug_late_rehook_succeeded: bool = false;
+
+/// DEBUG15: re-apply the D3D9 hooks on demand after the client is fully loaded.
+/// If the current entries are no longer ours, chain whatever is there now as
+/// the new originals, then patch the three entries again.
+pub fn lateRehookIfLost() bool {
+    debug_late_rehook_attempted = true;
+
+    const cur = getD3D9VTable() orelse return false;
+    d3d9_vtable = cur;
+
+    const ours_end = @intFromPtr(&hkEndScene);
+    const ours_dip = @intFromPtr(&hkDIP);
+    const ours_reset = @intFromPtr(&hkReset);
+
+    if (cur[types.VT.EndScene] != ours_end) {
+        if (!patchVtableEntry(cur, types.VT.EndScene, ours_end, &orig_endscene)) return false;
+    }
+    if (cur[types.VT.DrawIndexedPrimitive] != ours_dip) {
+        if (!patchVtableEntry(cur, types.VT.DrawIndexedPrimitive, ours_dip, &orig_dip)) return false;
+    }
+    if (cur[types.VT.Reset] != ours_reset) {
+        if (!patchVtableEntry(cur, types.VT.Reset, ours_reset, &orig_reset)) return false;
+    }
+
+    hooks_installed = true;
+    const live = getLiveHookState();
+    debug_late_rehook_succeeded = live.endscene_ours and live.dip_ours and live.reset_ours;
+    return debug_late_rehook_succeeded;
+}
+
 /// True until the first EndScene verifies (and if needed, forces) D24S8 format.
 var need_force_reset: bool = true;
 
