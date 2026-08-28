@@ -57,6 +57,12 @@ pub fn isInGame() bool {
     return hook.readMem(u32, o.IS_IN_WORLD) != 0;
 }
 
+/// The object manager is a more useful runtime readiness signal for the
+/// standalone Outline path than IS_IN_WORLD on modified 1.12.1 clients.
+pub fn hasObjectManager() bool {
+    return hook.readMem(u32, o.OBJECT_MANAGER_PTR) != 0;
+}
+
 pub fn objectFirst() u32 {
     const obj_mgr = hook.readMem(u32, o.OBJECT_MANAGER_PTR);
     if (obj_mgr == 0) return 0;
