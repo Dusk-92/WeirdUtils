@@ -182,7 +182,10 @@ fn addOutlineEntry(model_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 
     // Diagnostic: count classified models by category
     switch (cat) {
-        .target => diag.classify_target += 1,
+        .target => {
+            diag.classify_target += 1;
+            debug_target_model_seen = true;
+        },
         .raid_marked => diag.classify_raid_mark += 1,
         .dead_player => diag.classify_dead_player += 1,
         .none => {},
@@ -283,7 +286,10 @@ fn addTrackedObj(obj_ptr: u32, cat: types.ModelCategory, mark: u8) void {
 
     // Diagnostic: count tracked objects by category
     switch (cat) {
-        .target => diag.scan_targets += 1,
+        .target => {
+            diag.scan_targets += 1;
+            debug_target_seen = true;
+        },
         .raid_marked => diag.scan_raid_marks += 1,
         .dead_player => diag.scan_dead_players += 1,
         .none => {},
@@ -308,6 +314,12 @@ pub const Diag = struct {
 };
 
 pub var diag: Diag = .{};
+
+// Sticky diagnostics for the debug build. They turn true once the corresponding
+// stage has been observed and stay true for the whole process lifetime.
+pub var debug_target_seen: bool = false;
+pub var debug_target_model_seen: bool = false;
+
 var log: logging.Logger = .{};
 
 pub fn initLogger() void {
