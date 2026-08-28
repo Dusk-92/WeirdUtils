@@ -133,6 +133,10 @@ jobs:
               'debug_pin_target_consumed_seen',
               'debug_scan_called_seen',
               'debug_scan_after_publish_seen',
+              'getLiveHookState()',
+              'endscene_ours',
+              'dip_ours',
+              'reset_ours',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
