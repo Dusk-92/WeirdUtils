@@ -943,11 +943,11 @@ pub export fn DllMain(
     _: ?*anyopaque,
     reason: u32,
     _: ?*anyopaque,
-) callconv(WINAPI) i32 {
+) callconv(WINAPI) std.os.windows.BOOL {
     switch (reason) {
         1 => install(),
         0 => uninstall(),
         else => {},
     }
-    return 1;
+    return @enumFromInt(1);
 }
