@@ -66,6 +66,8 @@ pub var debug_shaders_ready_seen: bool = false;
 pub var debug_resources_ready_seen: bool = false;
 pub var debug_pipeline_entered_seen: bool = false;
 pub var debug_pipeline_ready_seen: bool = false;
+pub var debug_shader_stage: u32 = 0;
+pub var debug_resource_stage: u32 = 0;
 
 pub fn hooksInstalled() bool {
     return hooks_installed;
@@ -420,6 +422,7 @@ fn ensureResources(device: *anyopaque) void {
     var vp: types.D3DVIEWPORT9 = .{};
     deviceGetViewport(device, &vp);
     if (vp.Width == 0 or vp.Height == 0) return;
+    debug_resource_stage = 1; // viewport valid
 
     // Check if resources already match current dimensions
     if (vp.Width == resource_width and vp.Height == resource_height and
@@ -435,33 +438,39 @@ fn ensureResources(device: *anyopaque) void {
         releaseResources();
         return;
     }
+    debug_resource_stage = 2; // silhouette texture ready
     rt_silhouette_surf = textureGetSurfaceLevel(rt_silhouette_tex.?);
     if (rt_silhouette_surf == null) {
         releaseResources();
         return;
     }
+    debug_resource_stage = 3; // silhouette surface ready
 
     // JFA A RT (G16R16F)
     if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT, &rt_jfa_a_tex) < 0) {
         releaseResources();
         return;
     }
+    debug_resource_stage = 4; // JFA A texture ready
     rt_jfa_a_surf = textureGetSurfaceLevel(rt_jfa_a_tex.?);
     if (rt_jfa_a_surf == null) {
         releaseResources();
         return;
     }
+    debug_resource_stage = 5; // JFA A surface ready
 
     // JFA B RT (G16R16F)
     if (deviceCreateTexture(device, vp.Width, vp.Height, 1, types.D3DUSAGE_RENDERTARGET, types.D3DFMT_G16R16F, types.D3DPOOL_DEFAULT, &rt_jfa_b_tex) < 0) {
         releaseResources();
         return;
     }
+    debug_resource_stage = 6; // JFA B texture ready
     rt_jfa_b_surf = textureGetSurfaceLevel(rt_jfa_b_tex.?);
     if (rt_jfa_b_surf == null) {
         releaseResources();
         return;
     }
+    debug_resource_stage = 7; // all RT surfaces ready
 
     debug_resources_ready_seen = true;
 }
@@ -641,33 +650,41 @@ const debug_sil_src =
 
 fn ensureShaders(device: *anyopaque) void {
     shaders_attempted = true;
+    debug_shader_stage = 1; // entered
 
     const d3dx = LoadLibraryA("d3dx9_43.dll") orelse
         LoadLibraryA("d3dx9_42.dll") orelse
         LoadLibraryA("d3dx9_41.dll") orelse return;
+    debug_shader_stage = 2; // D3DX loaded
+
     const assemble_ptr = GetProcAddress(d3dx, "D3DXAssembleShader") orelse return;
+    debug_shader_stage = 3; // assembler found
     const assemble: D3DXAssembleShaderFn = @ptrCast(assemble_ptr);
 
     // --- Flat-colour PS (for silhouettes) ---
     outline_ps = assemblePS(device, assemble, ps_flat_src, ps_flat_src.len) orelse return;
+    debug_shader_stage = 4; // flat silhouette PS ready
 
     // --- JFA Init PS ---
     jfa_init_ps = assemblePS(device, assemble, jfa_init_src, jfa_init_src.len) orelse {
         releaseShaders();
         return;
     };
+    debug_shader_stage = 5; // JFA init ready
 
     // --- JFA Propagation PS ---
     jfa_prop_ps = assemblePS(device, assemble, jfa_prop_src, jfa_prop_src.len) orelse {
         releaseShaders();
         return;
     };
+    debug_shader_stage = 6; // JFA propagation ready
 
     // --- JFA Decode + Composite PS ---
     jfa_decode_ps = assemblePS(device, assemble, jfa_decode_src, jfa_decode_src.len) orelse {
         releaseShaders();
         return;
     };
+    debug_shader_stage = 7; // JFA decode ready
 
     // --- Debug silhouette composite PS (only when diagnostic enabled) ---
     if (DEBUG_SHOW_SILHOUETTE) {
@@ -677,6 +694,7 @@ fn ensureShaders(device: *anyopaque) void {
         };
     }
 
+    debug_shader_stage = 8; // complete
     debug_shaders_ready_seen = true;
 }
 
