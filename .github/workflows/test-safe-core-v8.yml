@@ -6,6 +6,7 @@ on:
       - test/safe-core-v8-debug
   workflow_dispatch:
 
+# V8 debug diagnostics build
 permissions:
   contents: read
 
