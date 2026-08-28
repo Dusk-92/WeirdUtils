@@ -153,6 +153,7 @@ pub fn requestStencilCheck() void {
 
 var outline_ps: ?*anyopaque = null; // flat-color PS (solid silhouettes)
 var outline_alpha_ps: ?*anyopaque = null; // texture-alpha-aware silhouette PS
+var outline_rgb_ps: ?*anyopaque = null; // additive/modulated texture coverage PS
 var jfa_init_ps: ?*anyopaque = null; // JFA seed init PS
 var jfa_prop_ps: ?*anyopaque = null; // JFA propagation PS
 var jfa_decode_ps: ?*anyopaque = null; // JFA decode + composite PS
@@ -221,6 +222,12 @@ const CachedDraw = struct {
     vertex_decl: ?*anyopaque = null,
     vertex_shader: ?*anyopaque = null,
     tex0: ?*anyopaque = null,
+    alpha_test_enable: u32 = 0,
+    alpha_ref: u32 = 0,
+    alpha_func: u32 = types.D3DCMP_ALWAYS,
+    alpha_blend_enable: u32 = 0,
+    src_blend: u32 = types.D3DBLEND_ONE,
+    dst_blend: u32 = types.D3DBLEND_ZERO,
     // Per-model outline info
     color: u32 = 0,
     category: types.ModelCategory = .none,
@@ -520,17 +527,27 @@ fn releaseResources() void {
 /// Flat colour pixel shader - outputs PS constant c0.
 const ps_flat_src = "ps_3_0\nmov oC0, c0\n";
 
-/// Alpha-aware silhouette shader. Many WoW M2 effects (hair/fins/wings)
-/// are large textured polygons with transparent texels. A flat shader fills
-/// the whole polygon, producing long straight outline segments. Sample s0
-/// and discard nearly-transparent texels before writing the silhouette colour.
-/// c0 = outline colour/encoded width, c1.x = -alpha threshold.
+/// Texture-alpha-aware silhouette shader.
+/// c0 = outline colour/encoded width, c1.x = -coverage threshold.
 const ps_alpha_src =
     "ps_3_0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
     "texld r0, v0, s0\n" ++
     "add r1, r0.aaaa, c1.xxxx\n" ++
+    "texkill r1\n" ++
+    "mov oC0, c0\n";
+
+/// Coverage shader for additive/modulated M2 layers where transparency can be
+/// encoded as black RGB rather than useful texture alpha.
+const ps_rgb_src =
+    "ps_3_0\n" ++
+    "dcl_2d s0\n" ++
+    "dcl_texcoord0 v0\n" ++
+    "texld r0, v0, s0\n" ++
+    "max r1.x, r0.r, r0.g\n" ++
+    "max r1.x, r1.x, r0.b\n" ++
+    "add r1, r1.xxxx, c1.xxxx\n" ++
     "texkill r1\n" ++
     "mov oC0, c0\n";
 
@@ -705,7 +722,11 @@ fn ensureShaders(device: *anyopaque) void {
         releaseShaders();
         return;
     };
-    debug_shader_stage = 4; // both silhouette PS variants ready
+    outline_rgb_ps = assemblePS(device, assemble, ps_rgb_src, ps_rgb_src.len) orelse {
+        releaseShaders();
+        return;
+    };
+    debug_shader_stage = 4; // silhouette PS variants ready
 
     // --- JFA Init PS ---
     jfa_init_ps = assemblePS(device, assemble, jfa_init_src, jfa_init_src.len) orelse {
@@ -792,7 +813,7 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 }
 
 fn releaseShaders() void {
-    inline for (.{ &outline_ps, &outline_alpha_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
+    inline for (.{ &outline_ps, &outline_alpha_ps, &outline_rgb_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
         if (ps.*) |p| {
             comRelease(p);
             ps.* = null;
@@ -943,6 +964,12 @@ fn hkDIP(
             // GetVertexShader AddRef's
             draw.tex0 = deviceGetTexture(device, 0);
             // GetTexture AddRef's
+            draw.alpha_test_enable = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
+            draw.alpha_ref = deviceGetRS(device, types.D3DRS.ALPHAREF);
+            draw.alpha_func = deviceGetRS(device, types.D3DRS.ALPHAFUNC);
+            draw.alpha_blend_enable = deviceGetRS(device, types.D3DRS.ALPHABLENDENABLE);
+            draw.src_blend = deviceGetRS(device, types.D3DRS.SRCBLEND);
+            draw.dst_blend = deviceGetRS(device, types.D3DRS.DESTBLEND);
 
             // Capture VS constants (bone matrices, world/view/proj transforms)
             deviceGetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
@@ -1106,14 +1133,37 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // Respect the visible alpha shape of textured geometry. This avoids
-            // outlining the full rectangular/triangular carrier polygons used
-            // for fins, hair, wings, foliage-like effects, etc.
+            // Reproduce WoW's per-draw transparency semantics as closely as
+            // possible while generating the flat silhouette.
             if (draw.tex0) |tex| {
                 deviceSetTexture(device, 0, tex);
-                const alpha_cut: [4]f32 = .{ -0.05, -0.05, -0.05, -0.05 };
-                deviceSetPSConstF(device, 1, &alpha_cut);
-                deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+
+                if (draw.alpha_test_enable != 0 and
+                    (draw.alpha_func == types.D3DCMP_GREATER or draw.alpha_func == types.D3DCMP_GREATEREQUAL))
+                {
+                    // Use WoW's real alpha reference for cutout geometry.
+                    const ref_f = @as(f32, @floatFromInt(draw.alpha_ref & 0xFF)) / 255.0;
+                    const alpha_cut: [4]f32 = .{ -@max(ref_f, 0.01), 0, 0, 0 };
+                    deviceSetPSConstF(device, 1, &alpha_cut);
+                    deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+                } else if (draw.alpha_blend_enable != 0) {
+                    // Additive/modulated layers often encode coverage in RGB
+                    // rather than alpha. Standard SRCALPHA blending uses alpha.
+                    const cut: [4]f32 = .{ -0.20, 0, 0, 0 };
+                    deviceSetPSConstF(device, 1, &cut);
+                    if (draw.dst_blend == types.D3DBLEND_ONE or
+                        draw.src_blend == types.D3DBLEND_DESTCOLOR or
+                        draw.dst_blend == types.D3DBLEND_DESTCOLOR)
+                    {
+                        deviceSetPtr(device, types.VT.SetPixelShader, outline_rgb_ps.?);
+                    } else {
+                        deviceSetPtr(device, types.VT.SetPixelShader, outline_alpha_ps.?);
+                    }
+                } else {
+                    // Opaque textured geometry: don't let texture darkness punch
+                    // holes in the silhouette.
+                    deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
+                }
             } else {
                 deviceSetTexture(device, 0, null);
                 deviceSetPtr(device, types.VT.SetPixelShader, outline_ps.?);
