@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG27 keeps the stable no-Reset/no-stencil JFA path and replays WoW's original fixed-function ALPHAOP/ALPHAARG chain and alpha-test state, overriding only colour; outline width is fixed at 4 px.
+          DEBUG28 captures D3DSBT_ALL for each target draw, replays the exact WoW material into a scratch RT, normalizes only pixels actually produced into the silhouette mask, then runs the stable no-Reset/no-stencil JFA outline.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
