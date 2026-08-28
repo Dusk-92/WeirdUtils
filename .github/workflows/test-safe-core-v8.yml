@@ -130,16 +130,18 @@ jobs:
               'callconv(.{ .x86_thiscall = .{} })',
               'luaPushStringNative',
               'pub fn outlineDebug',
-              'OutlineDBG shst=',
+              'OutlineDBG st=',
               'debug_unit_player_guid_seen',
               'debug_unit_target_guid_seen',
               'tracker.setDebugPinnedObjects(player_obj, target_obj)',
               'getLiveHookState()',
               'lateRehookIfLost()',
+              'requestStencilCheck()',
+              'debug_stencil_ready',
+              'debug_stencil_format',
+              'debug_stencil_reset_hr',
               'debug_shader_stage',
               'debug_resource_stage',
-              'debug_shader_assemble_hr',
-              'debug_shader_error_text',
               'endscene_ours',
               'dip_ours',
               'reset_ours',
@@ -221,7 +223,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG21 composites the raw silhouette directly and disables the replay stencil test to isolate whether the remaining invisible output is caused by missing/invalid stencil support.
+          DEBUG22 restores the real JFA outline and stencil gate, safely forces D24S8 without holding COM references across Reset, then immediately rehooks D3D9 after Reset.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
