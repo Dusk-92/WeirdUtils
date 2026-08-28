@@ -64,6 +64,7 @@ pub var debug_outline_dip_seen: bool = false;
 pub var debug_cached_draw_seen: bool = false;
 pub var debug_translucent_skipped_seen: bool = false;
 pub var debug_state_block_seen: bool = false;
+pub var debug_outer_state_restore_seen: bool = false;
 pub var debug_shaders_ready_seen: bool = false;
 pub var debug_resources_ready_seen: bool = false;
 pub var debug_pipeline_entered_seen: bool = false;
@@ -1109,6 +1110,16 @@ fn clearCachedDraws() void {
 fn runJfaPipeline(device: *anyopaque) void {
     debug_pipeline_entered_seen = true;
 
+    // DEBUG29: capture the complete WoW D3D state before any replay/JFA work.
+    // The manual save/restore below remains as fallback, but this state block
+    // restores states that are easy to miss (extra samplers/TSS, scissor,
+    // shaders/constants, streams, declarations, etc.).
+    const outer_state = deviceCreateStateBlock(device);
+    defer if (outer_state) |sb| {
+        if (stateBlockApply(sb)) debug_outer_state_restore_seen = true;
+        comRelease(sb);
+    };
+
     // Verify all resources and shaders
     if (rt_material_tex == null or rt_material_surf == null or rt_silhouette_tex == null or rt_jfa_a_surf == null or rt_jfa_b_surf == null) return;
     if (!shaders_attempted) ensureShaders(device);
@@ -1228,16 +1239,18 @@ fn runJfaPipeline(device: *anyopaque) void {
             // alpha-test, vertex state and stream bindings.
             if (draw.state_block) |sb| {
                 _ = stateBlockApply(sb);
-            } else {
-                // Safe fallback for a failed state-block capture.
-                deviceSetStreamSource(device, 0, draw.vb, draw.vb_offset, draw.vb_stride);
-                deviceSetIndices(device, draw.ib);
-                deviceSetPtrOrNull(device, types.VT.SetVertexDeclaration, draw.vertex_decl);
-                deviceSetPtrOrNull(device, types.VT.SetVertexShader, draw.vertex_shader);
-                deviceSetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
             }
 
+            // Never rely on D3DSBT_ALL to restore geometry bindings correctly
+            // across drivers/wrappers. Rebind the cached draw explicitly.
+            deviceSetStreamSource(device, 0, draw.vb, draw.vb_offset, draw.vb_stride);
+            deviceSetIndices(device, draw.ib);
+            deviceSetPtrOrNull(device, types.VT.SetVertexDeclaration, draw.vertex_decl);
+            deviceSetPtrOrNull(device, types.VT.SetVertexShader, draw.vertex_shader);
+            deviceSetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
+
             deviceSetRenderTarget(device, 0, rt_material_surf.?);
+            deviceSetViewport(device, &vp);
             clearRenderTarget(device, 0x00000000);
             deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
             deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
@@ -1249,6 +1262,7 @@ fn runJfaPipeline(device: *anyopaque) void {
             // 2) Convert only pixels actually produced by that exact material
             // into the uniform outline mask, preserving the draw/category colour.
             deviceSetRenderTarget(device, 0, rt_silhouette_surf.?);
+            deviceSetViewport(device, &vp);
             deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
             deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
             deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
