@@ -215,7 +215,7 @@ jobs:
           cat > package/README_TEST.txt <<'EOF'
           WeirdUtils Safe Standalone Core Test V8 DEBUG
 
-          DEBUG30 fixes IDirect3DStateBlock9::Apply to use vtable slot 5 (slot 4 is Capture), retaining DEBUG29's full outer-state isolation and explicit geometry/VS rebinding.
+          V31 POLISH keeps DEBUG30's corrected state-block replay, uses a 2px solid + 1px feathered outline, filters additive dst=ONE glow passes, and raises the material-mask threshold slightly to reduce small edge noise.
 
           outline.dll
           - Adds OutlineDebug() sticky in-game diagnostics for the render pipeline.
