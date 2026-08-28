@@ -67,7 +67,6 @@ jobs:
             -Ddpslog=true
 
       - name: Collect release DLLs
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           set -euo pipefail
@@ -99,7 +98,6 @@ jobs:
           done
 
       - name: Add custom WeirdPerformance v0.7.3
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           set -euo pipefail
@@ -133,7 +131,6 @@ jobs:
           PY
 
       - name: Create checksums and ZIP
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           set -euo pipefail
