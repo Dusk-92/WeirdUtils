@@ -68,6 +68,9 @@ pub var debug_pipeline_entered_seen: bool = false;
 pub var debug_pipeline_ready_seen: bool = false;
 pub var debug_shader_stage: u32 = 0;
 pub var debug_resource_stage: u32 = 0;
+pub var debug_shader_assemble_hr: i32 = 0;
+pub var debug_shader_create_hr: i32 = 0;
+pub var debug_texture_create_hr: i32 = 0;
 
 pub fn hooksInstalled() bool {
     return hooks_installed;
@@ -376,7 +379,9 @@ fn deviceDrawPrimitiveUP(dev: *anyopaque, prim_type: u32, prim_count: u32, data:
 fn deviceCreateTexture(dev: *anyopaque, w: u32, h: u32, levels: u32, usage: u32, fmt: u32, pool: u32, out: *?*anyopaque) i32 {
     const f: *const fn (*anyopaque, u32, u32, u32, u32, u32, u32, *?*anyopaque, u32) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(dev)[types.VT.CreateTexture]);
-    return f(dev, w, h, levels, usage, fmt, pool, out, 0);
+    const hr = f(dev, w, h, levels, usage, fmt, pool, out, 0);
+    if (hr < 0) debug_texture_create_hr = hr;
+    return hr;
 }
 
 /// Get surface level 0 from a texture. Returns AddRef'd surface or null.
@@ -702,7 +707,9 @@ fn ensureShaders(device: *anyopaque) void {
 fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const u8, len: usize) ?*anyopaque {
     var code: ?*anyopaque = null;
     var err_buf: ?*anyopaque = null;
-    if (assemble(src, @intCast(len), null, null, 0, &code, &err_buf) < 0 or code == null) {
+    const assemble_hr = assemble(src, @intCast(len), null, null, 0, &code, &err_buf);
+    if (assemble_hr < 0 or code == null) {
+        debug_shader_assemble_hr = assemble_hr;
         if (err_buf) |e| comRelease(e);
         return null;
     }
@@ -716,7 +723,11 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
     var ps_out: ?*anyopaque = null;
     const create: *const fn (*anyopaque, *anyopaque, *?*anyopaque) callconv(hook.cc.stdcall) i32 =
         @ptrFromInt(vt(device)[types.VT.CreatePixelShader]);
-    if (create(device, buf_ptr, &ps_out) < 0) return null;
+    const create_hr = create(device, buf_ptr, &ps_out);
+    if (create_hr < 0) {
+        debug_shader_create_hr = create_hr;
+        return null;
+    }
     return ps_out;
 }
 
