@@ -152,7 +152,7 @@ var shaders_attempted: bool = false;
 // Debug: set to true to skip JFA and composite raw silhouette RT to backbuffer.
 // Used to diagnose whether banding artifacts originate in the silhouette (Phase 1
 // replay / stale VB) or in the JFA pipeline (Phase 2 shader bug).
-const DEBUG_SHOW_SILHOUETTE = false;
+const DEBUG_SHOW_SILHOUETTE = true;
 
 // D3DXAssembleShader function pointer (loaded dynamically)
 const D3DXAssembleShaderFn = *const fn (
@@ -1110,18 +1110,11 @@ fn runJfaPipeline(device: *anyopaque) void {
             color_f4[3] = tracker.getOutlinePixels(draw.category) / 4.0;
             deviceSetPSConstF(device, 0, &color_f4);
 
-            // Per-category stencil logic:
-            // - dead_player: no stencil test (visible through walls for corpse finding)
-            // - target/raid_marked: stencil test gates on terrain visibility
-            if (draw.category == .dead_player) {
-                deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
-            } else {
-                deviceSetRS(device, types.D3DRS.STENCILENABLE, 1);
-                deviceSetRS(device, types.D3DRS.STENCILFUNC, types.D3DCMP_EQUAL);
-                deviceSetRS(device, types.D3DRS.STENCILREF, 1);
-                deviceSetRS(device, types.D3DRS.STENCILMASK, 0xFF);
-                deviceSetRS(device, types.D3DRS.STENCILPASS, types.D3DSTENCILOP_KEEP);
-            }
+            // DEBUG21: bypass stencil completely. Since DEBUG14 disabled
+            // the forced D24S8 reset, the current depth surface may have no
+            // usable stencil bits. This test isolates geometry replay +
+            // silhouette RT/compositing from stencil availability.
+            deviceSetRS(device, types.D3DRS.STENCILENABLE, 0);
 
             _ = origFn(device, draw.prim_type, draw.base_vtx, draw.min_vtx, draw.num_verts, draw.start_idx, draw.prim_count);
         }
