@@ -71,6 +71,7 @@ pub var debug_resource_stage: u32 = 0;
 pub var debug_shader_assemble_hr: i32 = 0;
 pub var debug_shader_create_hr: i32 = 0;
 pub var debug_texture_create_hr: i32 = 0;
+pub var debug_shader_error_text: [160]u8 = [_]u8{0} ** 160;
 
 pub fn hooksInstalled() bool {
     return hooks_installed;
@@ -704,13 +705,36 @@ fn ensureShaders(device: *anyopaque) void {
 }
 
 /// Assemble a pixel shader from source text, create device PS object.
+fn captureD3DXError(buf: *anyopaque) void {
+    @memset(&debug_shader_error_text, 0);
+
+    const get_ptr: *const fn (*anyopaque) callconv(hook.cc.stdcall) usize =
+        @ptrFromInt(vt(buf)[3]);
+    const get_size: *const fn (*anyopaque) callconv(hook.cc.stdcall) usize =
+        @ptrFromInt(vt(buf)[4]);
+
+    const ptr_val = get_ptr(buf);
+    const size = get_size(buf);
+    if (ptr_val == 0 or size == 0) return;
+
+    const src_ptr: [*]const u8 = @ptrFromInt(ptr_val);
+    const n = @min(size, debug_shader_error_text.len - 1);
+    @memcpy(debug_shader_error_text[0..n], src_ptr[0..n]);
+
+    // Make sure the chat string ends cleanly even if the D3DX buffer does not.
+    debug_shader_error_text[n] = 0;
+}
+
 fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const u8, len: usize) ?*anyopaque {
     var code: ?*anyopaque = null;
     var err_buf: ?*anyopaque = null;
     const assemble_hr = assemble(src, @intCast(len), null, null, 0, &code, &err_buf);
     if (assemble_hr < 0 or code == null) {
         debug_shader_assemble_hr = assemble_hr;
-        if (err_buf) |e| comRelease(e);
+        if (err_buf) |e| {
+            captureD3DXError(e);
+            comRelease(e);
+        }
         return null;
     }
     defer comRelease(code.?);
