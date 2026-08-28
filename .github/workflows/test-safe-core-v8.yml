@@ -105,6 +105,10 @@ jobs:
 
           main = Path("src/main.zig").read_text()
           outline = Path("src/outline/outline.zig").read_text()
+          d3d9 = Path("src/outline/d3d9_hook.zig").read_text()
+
+          if 'DEBUG14: do NOT force a D3D9 Reset here.' not in d3d9:
+              raise SystemExit("Missing DEBUG14 no-reset isolation in d3d9_hook.zig")
 
           for required in (
               'noinline fn registerFunction',
@@ -137,7 +141,6 @@ jobs:
               'endscene_ours',
               'dip_ours',
               'reset_ours',
-              'DEBUG14: do NOT force a D3D9 Reset here.',
           ):
               if required not in outline:
                   raise SystemExit(f"Missing Outline callback/native wrapper ABI piece: {required}")
