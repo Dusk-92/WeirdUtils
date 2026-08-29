@@ -42,6 +42,19 @@ var draw_batch_hook: hook.Detour(DrawBatchFn) = .{};
 /// a dummy D3D9 device during engine init corrupts the proxy's state.
 var d3d9_deferred_pending: bool = true;
 
+/// AutoFix: periodically verify that the game's live D3D9 vtable still points
+/// at our hooks. OutlineDebug() used to do this manually; keeping it here makes
+/// the renderer self-healing if another proxy/mod rewrites the vtable later.
+var d3d9_health_tick: u8 = 29;
+
+fn autoRepairD3D9Hooks() void {
+    d3d9_health_tick +%= 1;
+    if (d3d9_health_tick < 30) return;
+    d3d9_health_tick = 0;
+    _ = d3d9_hook.lateRehookIfLost();
+}
+
+
 // =============================================================================
 // Volatile flags shared with d3d9_hook (read by DIP hook)
 // =============================================================================
@@ -80,6 +93,10 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         d3d9_deferred_pending = false;
         api.initD3D9Deferred();
     }
+
+    // AutoFix: OutlineDebug() previously performed lateRehookIfLost() by hand.
+    // Check periodically from this always-active native model hook instead.
+    autoRepairD3D9Hooks();
 
     // Skip reordering if nothing to outline or too many batches
     if (!tracker.enabled or !tracker.hasTargets() or batch_count == 0 or batch_count > MAX_REORDER) {
