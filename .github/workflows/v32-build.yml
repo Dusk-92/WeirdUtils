@@ -1,0 +1,101 @@
+name: Build V32 test package
+
+on:
+  push:
+    branches:
+      - test/safe-core-v8-polish32
+
+permissions:
+  contents: write
+
+jobs:
+  build-v32:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout V32 branch
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build standalone variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+
+      - name: Assemble V32 test package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL
+          mkdir -p package/Interface/AddOns/WeirdUtils_Outline
+          mkdir -p dist
+
+          cp zig-out/variants/customassets.dll package/DLL/customassets.dll
+          cp zig-out/variants/transmogfix.dll package/DLL/transmogfix.dll
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/Bindings.xml
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/Outline.lua
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/WeirdUtils_Outline.toc
+
+          cat > package/README_TEST.txt <<'EOF'
+          WeirdUtils Safe Standalone Core Test V8 POLISH32
+
+          V32 = DEBUG30 stable exact-material pipeline
+              + V31 additive/glow pass filtering
+              + material-mask threshold -0.03
+              + hard 3px JFA decode edge
+              - V31 feather/soft edge
+
+          outline.dll
+          - Hard 3px outline; no feather.
+          - StateBlock Apply remains on IDirect3DStateBlock9 vtable slot 5.
+          - Explicit geometry / VS rebind retained.
+          - Exact-material replay retained.
+          - Additive/glow passes with DESTBLEND=ONE are skipped.
+          - Material scratch -> silhouette threshold remains -0.03.
+          - Forced Reset remains disabled.
+
+          customassets.dll / transmogfix.dll
+          - Same safe standalone variants as the V8 DEBUG branch.
+
+          weirdperformance.dll
+          - Not built or modified here.
+          - Keep the user's original WeirdPerformance binary unchanged.
+          EOF
+
+          (
+            cd package
+            sha256sum DLL/*.dll > SHA256SUMS.txt
+          )
+
+          (
+            cd package
+            zip -r "../dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip" \
+              DLL Interface README_TEST.txt SHA256SUMS.txt
+          )
+
+          sha256sum dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip \
+            > dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip.sha256
+
+      - name: Commit compiled package to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip
+          git add -f dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip.sha256
+          git commit -m "Build V32 test package [skip ci]"
+          git push
