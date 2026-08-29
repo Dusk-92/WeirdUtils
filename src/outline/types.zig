@@ -175,6 +175,7 @@ pub const D3DTADDRESS_CLAMP: u32 = 3;
 
 pub const D3DTEXF_NONE: u32 = 0;
 pub const D3DTEXF_POINT: u32 = 1;
+pub const D3DTEXF_LINEAR: u32 = 2;
 
 // =============================================================================
 // D3D9 surface/texture formats
