@@ -1,0 +1,73 @@
+name: V40 Attached Model Outline Test
+
+on:
+  push:
+    branches:
+      - test/v40-attached-model-outline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-v40:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout V40 branch
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build standalone variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+
+      - name: Assemble V40 outline-only test package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL
+          mkdir -p package/Interface/AddOns/WeirdUtils_Outline
+          mkdir -p dist
+
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/Bindings.xml
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/Outline.lua
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/WeirdUtils_Outline.toc
+
+          printf '%s\n' \
+            'WeirdUtils V40 Attached Model Outline' \
+            'Base: exact V38 Retail Polish + AutoTarget + AutoRehook + ExitFix.' \
+            'main is untouched.' \
+            'WeirdPerformance is disabled in this standalone build and not modified.' \
+            'Engine-proven WoW 1.12.1 attachment layout from 0x712F70:' \
+            '- child +0x1CC = parent/root CM2Model' \
+            '- child +0x1D0 = attachment id' \
+            '- root +0x1DC = child-list head' \
+            '- child +0x1E4 = next sibling' \
+            'V40 makes direct attached M2 models inherit the root target outline.' \
+            'No new hook, no linked-list traversal, no game-memory writes.' \
+            > package/README_TEST.txt
+
+          (
+            cd package
+            sha256sum DLL/outline.dll > SHA256SUMS.txt
+            zip -r ../dist/WeirdUtils_V40_ATTACHED_MODEL_OUTLINE.zip DLL Interface README_TEST.txt SHA256SUMS.txt
+          )
+
+      - name: Upload V40 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeirdUtils-V40-ATTACHED-MODEL-OUTLINE
+          path: dist/WeirdUtils_V40_ATTACHED_MODEL_OUTLINE.zip
+          if-no-files-found: error
