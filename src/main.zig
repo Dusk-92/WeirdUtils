@@ -1048,11 +1048,17 @@ comptime {
 pub export fn DllMain(
     _: ?*anyopaque,
     reason: u32,
-    _: ?*anyopaque,
+    reserved: ?*anyopaque,
 ) callconv(WINAPI) std.os.windows.BOOL {
     switch (reason) {
         1 => install(),
-        0 => uninstall(),
+        0 => {
+            // ExitFix: when lpReserved is non-null, Windows is terminating the
+            // whole process. Do not call into D3D9/COM or other DLLs from
+            // DLL_PROCESS_DETACH during global teardown; the OS will reclaim
+            // those resources. Keep full uninstall for explicit FreeLibrary.
+            if (reserved == null) uninstall();
+        },
         else => {},
     }
     return @enumFromInt(1);
