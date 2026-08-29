@@ -732,26 +732,40 @@ const jfa_prop_src =
     "mov oC0.xy, r8.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
-/// V36 RETAIL-SOFT: keep the proven V34 JFA, soften only final decode.
+/// V37 RETAIL-FALLOFF: keep the proven V34/V36 JFA and make only the
+/// final alpha profile smoother. Still only two texture reads.
 /// c0 = (screen_width, screen_height, core_radius_px, halo_radius_px).
-/// Uses the same two texture reads as V34: no 17-tap full-screen morphology.
 const jfa_decode_src =
     "ps_3_0\n" ++
-    "def c1, 0.0, 0.22, 0.82, -0.002\n" ++
-    "def c2, 1.0, 0.95, 0.58, 0.0\n" ++
+    // c1 = zero, one, halo alpha, -interior threshold
+    "def c1, 0.0, 1.0, 0.20, -0.002\n" ++
+    // pale Retail-like yellow-green
+    "def c2, 1.0, 0.96, 0.62, 0.0\n" ++
+    // core alpha
+    "def c3, 0.78, 0.0, 0.0, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_2d s1\n" ++
     "dcl_texcoord0 v0\n" ++
+    // Nearest JFA seed and pixel-space squared distance.
     "texld r0, v0, s0\n" ++
     "sub r1.xy, v0.xy, r0.xy\n" ++
     "mul r1.xy, r1.xy, c0.xy\n" ++
     "dp2add r1.z, r1, r1, c1.x\n" ++
+    // Squared core and halo radii.
     "mul r3.x, c0.z, c0.z\n" ++
     "mul r3.y, c0.w, c0.w\n" ++
-    "sub r4.x, r1.z, r3.y\n" ++
-    "cmp r6.w, r4.x, c1.x, c1.y\n" ++
-    "sub r4.x, r1.z, r3.x\n" ++
-    "cmp r6.w, r4.x, r6.w, c1.z\n" ++
+    // Smooth halo factor = saturate((halo² - dist²) / (halo² - core²)).
+    "sub r3.z, r3.y, r3.x\n" ++
+    "rcp r3.z, r3.z\n" ++
+    "sub r4.x, r3.y, r1.z\n" ++
+    "mul r4.x, r4.x, r3.z\n" ++
+    "max r4.x, r4.x, c1.x\n" ++
+    "min r4.x, r4.x, c1.y\n" ++
+    "mul r6.w, r4.x, c1.z\n" ++
+    // Solid-but-soft core inside the inner radius.
+    "sub r4.y, r1.z, r3.x\n" ++
+    "cmp r6.w, r4.y, r6.w, c3.x\n" ++
+    // Never paint over the original model interior.
     "texld r5, v0, s1\n" ++
     "add r5.x, r5.a, c1.w\n" ++
     "cmp r6.w, r5.x, c1.x, r6.w\n" ++
@@ -1414,8 +1428,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V36: thin 1.5px core plus a subtle 3px halo.
-        c0 = [4]f32{ fw, fh, 1.5, 3.0 };
+        // V37: slightly finer core with a longer continuous falloff.
+        c0 = [4]f32{ fw, fh, 1.35, 3.20 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
