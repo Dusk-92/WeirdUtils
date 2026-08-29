@@ -741,17 +741,17 @@ const jfa_prop_src =
     "mov oC0.xy, r8.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
-/// V37 RETAIL-FALLOFF: keep the proven V34/V36 JFA and make only the
-/// final alpha profile smoother. Still only two texture reads.
+/// V38 RETAIL-POLISH: keep the proven V34/V36/V37 JFA and refine only
+/// the final alpha profile. Still only two texture reads.
 /// c0 = (screen_width, screen_height, core_radius_px, halo_radius_px).
 const jfa_decode_src =
     "ps_3_0\n" ++
     // c1 = zero, one, halo alpha, -interior threshold
-    "def c1, 0.0, 1.0, 0.20, -0.002\n" ++
+    "def c1, 0.0, 1.0, 0.17, -0.002\n" ++
     // pale Retail-like yellow-green
     "def c2, 1.0, 0.96, 0.62, 0.0\n" ++
     // core alpha
-    "def c3, 0.78, 0.0, 0.0, 0.0\n" ++
+    "def c3, 0.84, 0.0, 0.0, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_2d s1\n" ++
     "dcl_texcoord0 v0\n" ++
@@ -1437,8 +1437,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V37: slightly finer core with a longer continuous falloff.
-        c0 = [4]f32{ fw, fh, 1.35, 3.20 };
+        // V38: slightly stronger 1.5px core with a subtler 3.1px falloff.
+        c0 = [4]f32{ fw, fh, 1.50, 3.10 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
