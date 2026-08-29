@@ -1,0 +1,51 @@
+name: V37A Radii Only
+
+on:
+  push:
+    branches:
+      - test/v37a-radii-only
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL package/Interface/AddOns/WeirdUtils_Outline dist
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/
+          printf '%s\n' \
+            'V37A isolation test.' \
+            'Base: V36 + ExitFix (stable in user test).' \
+            'Only runtime change: radii 1.5/3.0 -> 1.35/3.20.' \
+            'V36 decode shader remains unchanged.' \
+            'main branch untouched; WeirdPerformance not modified.' \
+            > package/README_TEST.txt
+          (cd package && sha256sum DLL/outline.dll > SHA256SUMS.txt && zip -r ../dist/WeirdUtils_V37A_RADII_ONLY.zip DLL Interface README_TEST.txt SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeirdUtils-V37A-RADII-ONLY
+          path: dist/WeirdUtils_V37A_RADII_ONLY.zip
+          if-no-files-found: error
