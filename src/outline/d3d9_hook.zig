@@ -57,6 +57,14 @@ var orig_reset: usize = 0;
 var d3d9_vtable: ?[*]usize = null;
 var hooks_installed: bool = false;
 
+/// ExitFix: once shutdown begins, no code path may reinstall D3D9 hooks.
+var shutdown_started: bool = false;
+
+pub fn beginShutdown() void {
+    shutdown_started = true;
+}
+
+
 // Sticky diagnostics for the in-game OutlineDebug() command.
 pub var debug_endscene_seen: bool = false;
 pub var debug_dip_seen: bool = false;
@@ -114,6 +122,7 @@ pub var debug_late_rehook_succeeded: bool = false;
 /// If the current entries are no longer ours, chain whatever is there now as
 /// the new originals, then patch the three entries again.
 pub fn lateRehookIfLost() bool {
+    if (shutdown_started) return false;
     debug_late_rehook_attempted = true;
 
     const cur = getD3D9VTable() orelse return false;
@@ -1637,6 +1646,7 @@ fn getD3D9VTable() ?[*]usize {
 
 pub fn installHooks() bool {
     if (hooks_installed) return true;
+    if (shutdown_started) return false;
 
     const vtable_ptr = getD3D9VTable() orelse return false;
     d3d9_vtable = vtable_ptr;
