@@ -94,10 +94,8 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         api.initD3D9Deferred();
     }
 
-    // AutoFix: OutlineDebug() previously performed lateRehookIfLost() by hand.
-    // Check periodically from this always-active native model hook instead.
-    autoRepairD3D9Hooks();
-
+    // Isolation test: keep the initial deferred D3D9 hook install, but do not
+    // repeatedly verify/rewrite the live vtable while rendering.
     // Skip reordering if nothing to outline or too many batches
     if (!tracker.enabled or !tracker.hasTargets() or batch_count == 0 or batch_count > MAX_REORDER) {
         render_draw_hook.callOriginal(.{ this, view_matrix, batch_data, batch_indices, batch_count });
