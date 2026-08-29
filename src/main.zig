@@ -1048,11 +1048,17 @@ comptime {
 pub export fn DllMain(
     _: ?*anyopaque,
     reason: u32,
-    _: ?*anyopaque,
+    reserved: ?*anyopaque,
 ) callconv(WINAPI) std.os.windows.BOOL {
     switch (reason) {
         1 => install(),
-        0 => uninstall(),
+        0 => {
+            // Process-exit safety: when Windows is terminating the whole
+            // process, do not call heavy cleanup from DLL_PROCESS_DETACH.
+            // Resources are reclaimed by the OS. Explicit FreeLibrary still
+            // performs the normal uninstall path.
+            if (reserved == null) uninstall();
+        },
         else => {},
     }
     return @enumFromInt(1);
