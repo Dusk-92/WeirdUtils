@@ -644,7 +644,7 @@ const jfa_init_src =
     "def c7, 1.0, -1.0, 0.0, 0.0\n" ++
     "def c8, 1.0, 0.0, 0.0, 0.0\n" ++
     "def c9, 1.0, 1.0, 0.0, 0.0\n" ++
-    "def c10, -1.0, -1.0, 0.0, 0.0\n" ++
+    "def c10, -1.0, -1.0, -0.5, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
     "mov r7.xy, c0.xy\n" ++
@@ -698,8 +698,10 @@ const jfa_init_src =
     "add r6.x, r6.x, c1.w\n" ++
     "cmp r6.y, r6.x, c1.y, c1.x\n" ++
     "max r6.y, r6.y, r0.x\n" ++
+    // Convert 0/1 to a signed test because cmp treats zero as true.
+    "add r6.z, r6.y, c10.z\n" ++
     // Valid centre/filled pixel becomes its own seed; otherwise sentinel.
-    "cmp oC0.xy, r6.y, v0.xy, c10.xy\n" ++
+    "cmp oC0.xy, r6.z, v0.xy, c10.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
 /// JFA propagation: 9-tap (self + 8 neighbors), keeps nearest seed.
