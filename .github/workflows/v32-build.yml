@@ -89,6 +89,11 @@ jobs:
           sha256sum dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip \
             > dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip.sha256
 
+          # Text transport copy of the newly compiled outline.dll so ChatGPT
+          # can reconstruct the binary without raw GitHub download access.
+          gzip -9 -c package/DLL/outline.dll | base64 -w 76 \
+            > dist/outline_V32.dll.gz.b64
+
       - name: Commit compiled package to branch
         shell: bash
         run: |
@@ -97,5 +102,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip
           git add -f dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip.sha256
+          git add -f dist/outline_V32.dll.gz.b64
           git commit -m "Build V32 test package [skip ci]"
           git push
