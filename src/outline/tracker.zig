@@ -79,6 +79,19 @@ pub fn findOutlineEntry(model_ptr: u32) ?*const types.OutlineEntry {
     return null;
 }
 
+/// V40: resolve a live attached M2 to the already-tracked root model.
+/// 0x712F70 writes the root CM2Model pointer directly to child+0x1CC.
+/// We only read that fixed field and compare the value; the parent pointer is
+/// never dereferenced here.
+pub fn findOutlineEntryIncludingAttachment(model_ptr: u32) ?*const types.OutlineEntry {
+    if (findOutlineEntry(model_ptr)) |entry| return entry;
+    if (model_ptr == 0) return null;
+
+    const parent = hook.readMem(u32, model_ptr + o.MODEL_ATTACHMENT_PARENT);
+    if (parent == 0 or parent == model_ptr) return null;
+    return findOutlineEntry(parent);
+}
+
 /// Check if any outline targets are tracked this frame.
 pub fn hasTargets() bool {
     return tracked_obj_count > 0;
@@ -86,7 +99,7 @@ pub fn hasTargets() bool {
 
 /// Get the outline colour for a model, or null if not tracked.
 pub fn getModelColor(model_ptr: u32) ?u32 {
-    const entry = findOutlineEntry(model_ptr) orelse return null;
+    const entry = findOutlineEntryIncludingAttachment(model_ptr) orelse return null;
     return switch (entry.category) {
         .target => types.COLOR_TARGET,
         .raid_marked => if (entry.raid_mark > 0 and entry.raid_mark <= 8)
@@ -100,7 +113,7 @@ pub fn getModelColor(model_ptr: u32) ?u32 {
 
 /// Get the outline category for a model.
 pub fn getModelCategory(model_ptr: u32) types.ModelCategory {
-    const entry = findOutlineEntry(model_ptr) orelse return .none;
+    const entry = findOutlineEntryIncludingAttachment(model_ptr) orelse return .none;
     return entry.category;
 }
 
@@ -136,6 +149,7 @@ pub fn classifyModel(model_ptr: u32) void {
     // Read the model's back-pointers to its owning game object.
     const owner_direct = hook.readMem(u32, model_ptr + o.MODEL_OWNER_DIRECT);
     const owner_callback = hook.readMem(u32, model_ptr + o.MODEL_OWNER_CALLBACK);
+    const attachment_parent = hook.readMem(u32, model_ptr + o.MODEL_ATTACHMENT_PARENT);
 
     // Match against tracked outline objects (target, raid marks, dead players).
     if (tracked_obj_count > 0 and frame_outline_count < MAX_OUTLINE_MODELS) {
@@ -146,6 +160,16 @@ pub fn classifyModel(model_ptr: u32) void {
                     break;
                 }
             }
+        }
+    }
+
+    // V40: attached weapons, shields and other M2 children inherit the
+    // selected root's outline. This is only a value comparison; no traversal.
+    if (attachment_parent != 0 and attachment_parent != model_ptr and
+        findOutlineEntry(model_ptr) == null and frame_outline_count < MAX_OUTLINE_MODELS)
+    {
+        if (findOutlineEntry(attachment_parent)) |parent_entry| {
+            addOutlineEntry(model_ptr, parent_entry.category, parent_entry.raid_mark);
         }
     }
 
