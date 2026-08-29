@@ -109,8 +109,11 @@ pub fn initD3D9Deferred() void {
 /// Remove all outline hooks. Called during DLL_PROCESS_DETACH.
 pub fn cleanup() void {
     if (g_is_hook_owner) {
-        d3d9_hook.removeHooks();
+        // ExitFix: stop any future self-heal first, then detach the model hooks
+        // that can call lateRehookIfLost(), and only then tear down D3D9.
+        d3d9_hook.beginShutdown();
         model_hook.removeHooks();
+        d3d9_hook.removeHooks();
         log.close();
         mod_mutex.release(&g_mutex);
     }
