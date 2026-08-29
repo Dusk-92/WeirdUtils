@@ -182,6 +182,7 @@ pub const D3DTEXF_POINT: u32 = 1;
 
 pub const D3DFMT_A8R8G8B8: u32 = 21;
 pub const D3DFMT_G16R16F: u32 = 112;
+pub const D3DFMT_G32R32F: u32 = 115;
 
 // =============================================================================
 // D3D9 depth/stencil formats
