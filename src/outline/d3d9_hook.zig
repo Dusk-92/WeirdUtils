@@ -1629,8 +1629,9 @@ pub fn installHooks() bool {
 
     if (!patchVtableEntry(vtable_ptr, types.VT.EndScene, @intFromPtr(&hkEndScene), &orig_endscene)) return false;
     if (!patchVtableEntry(vtable_ptr, types.VT.DrawIndexedPrimitive, @intFromPtr(&hkDIP), &orig_dip)) return false;
-    if (!patchVtableEntry(vtable_ptr, types.VT.Reset, @intFromPtr(&hkReset), &orig_reset)) return false;
 
+    // Isolation test: do not hook IDirect3DDevice9::Reset.
+    // EndScene + DIP remain active so the visible outline pipeline still runs.
     hooks_installed = true;
     return true;
 }
