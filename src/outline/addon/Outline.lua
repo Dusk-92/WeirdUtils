@@ -1,7 +1,7 @@
 -- Outline addon (embedded in DLL, loaded from memory)
 -- Part of WeirdUtils - only loaded when outline module is compiled
 
-OUTLINE_VERSION = 1
+OUTLINE_VERSION = 40
 
 BINDING_HEADER_OUTLINE = "Outline"
 
