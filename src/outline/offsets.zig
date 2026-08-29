@@ -12,6 +12,15 @@ pub const MODEL_OWNER_DIRECT: usize = 0x28;
 /// model + this → render callback owner pointer (set by SetRenderCallbacks).
 pub const MODEL_OWNER_CALLBACK: usize = 0x3C0;
 
+/// V40: parent/root CM2Model for an attached model.
+/// Proven from WoW 1.12.1 build 5875 function 0x712F70:
+/// child+0x1CC = root, child+0x1D0 = attachment id,
+/// root+0x1DC = child-list head, child+0x1E4 = next sibling.
+pub const MODEL_ATTACHMENT_PARENT: usize = 0x1CC;
+pub const MODEL_ATTACHMENT_ID: usize = 0x1D0;
+pub const MODEL_CHILD_HEAD: usize = 0x1DC;
+pub const MODEL_NEXT_SIBLING: usize = 0x1E4;
+
 // =============================================================================
 // Render context
 // =============================================================================
