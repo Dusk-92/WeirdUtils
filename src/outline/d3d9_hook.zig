@@ -732,34 +732,31 @@ const jfa_prop_src =
     "mov oC0.xy, r8.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
-/// V32 POLISH: hard 3px outline, no feather.
-/// c0 = (screen_width, screen_height, radius_px=3, 0).
-/// The shader squares radius_px and emits a binary 0/1 edge alpha.
+/// V36 RETAIL-SOFT: keep the proven V34 JFA, soften only final decode.
+/// c0 = (screen_width, screen_height, core_radius_px, halo_radius_px).
+/// Uses the same two texture reads as V34: no 17-tap full-screen morphology.
 const jfa_decode_src =
     "ps_3_0\n" ++
-    "def c1, 0.0, 1.0, -0.002, 0.0\n" ++
+    "def c1, 0.0, 0.22, 0.82, -0.002\n" ++
+    "def c2, 1.0, 0.95, 0.58, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_2d s1\n" ++
     "dcl_texcoord0 v0\n" ++
-    // Nearest seed and pixel-space squared distance.
     "texld r0, v0, s0\n" ++
     "sub r1.xy, v0.xy, r0.xy\n" ++
     "mul r1.xy, r1.xy, c0.xy\n" ++
-    "dp2add r1.z, r1, r1, c0.w\n" ++
-    // Seed colour.
-    "texld r2, r0, s1\n" ++
-    // Hard radius test: dist² < radius² => alpha 1, otherwise 0.
-    "mov r3.x, c0.z\n" ++
-    "mul r3.x, r3.x, r3.x\n" ++
-    "sub r3.y, r1.z, r3.x\n" ++
-    "mov r6.w, c1.y\n" ++
-    "cmp r4.w, r3.y, c0.w, r6.w\n" ++
-    // Do not paint over the model interior.
+    "dp2add r1.z, r1, r1, c1.x\n" ++
+    "mul r3.x, c0.z, c0.z\n" ++
+    "mul r3.y, c0.w, c0.w\n" ++
+    "sub r4.x, r1.z, r3.y\n" ++
+    "cmp r6.w, r4.x, c1.x, c1.y\n" ++
+    "sub r4.x, r1.z, r3.x\n" ++
+    "cmp r6.w, r4.x, r6.w, c1.z\n" ++
     "texld r5, v0, s1\n" ++
-    "add r5.x, r5.a, c1.z\n" ++
-    "cmp r4.w, r5.x, c0.w, r4.w\n" ++
-    "mov r4.xyz, r2.xyz\n" ++
-    "mov oC0, r4\n";
+    "add r5.x, r5.a, c1.w\n" ++
+    "cmp r6.w, r5.x, c1.x, r6.w\n" ++
+    "mov r6.xyz, c2.xyz\n" ++
+    "mov oC0, r6\n";
 
 /// Debug: composite silhouette RT directly. Forces alpha to 1.0 where silhouette
 /// has any content (alpha >= 0.002), 0.0 elsewhere. Bypasses JFA entirely.
@@ -1417,8 +1414,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V34: hard 3px edge unchanged; JFA seed precision is now full-float.
-        c0 = [4]f32{ fw, fh, 3.0, 0.0 };
+        // V36: thin 1.5px core plus a subtle 3px halo.
+        c0 = [4]f32{ fw, fh, 1.5, 3.0 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
