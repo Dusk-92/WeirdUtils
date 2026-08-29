@@ -996,79 +996,10 @@ fn hkDIP(
 ) callconv(hook.cc.stdcall) i32 {
     debug_dip_seen = true;
 
+    // Isolation test: keep the DIP vtable detour installed, but do no
+    // Outline state capture/resource work here. Call the original directly.
     const OrigDIP = *const fn (*anyopaque, u32, i32, u32, u32, u32, u32) callconv(hook.cc.stdcall) i32;
     const origFn: OrigDIP = @ptrFromInt(orig_dip);
-
-    // ---- Cache outline draws for EndScene replay ----
-    if (model_hook.rendering_outline) {
-        debug_outline_dip_seen = true;
-        const model_ptr = model_hook.current_model;
-        const color = tracker.getModelColor(model_ptr) orelse
-            return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-        const category = tracker.getModelCategory(model_ptr);
-
-        // Ensure resources will be available for replay in EndScene
-        if (!shaders_attempted) ensureShaders(device);
-        ensureResources(device);
-        if (outline_ps == null or rt_silhouette_surf == null)
-            return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-
-        // Cache if room available
-        if (cached_draw_count < MAX_CACHED_DRAWS) {
-            const idx = cached_draw_count;
-            var draw = &cached_draws[idx];
-
-            // Draw parameters
-            draw.prim_type = prim_type;
-            draw.base_vtx = base_vtx;
-            draw.min_vtx = min_vtx;
-            draw.num_verts = num_verts;
-            draw.start_idx = start_idx;
-            draw.prim_count = prim_count;
-
-            // Outline info
-            draw.color = color;
-            draw.category = category;
-
-            // Capture current GPU state (AddRef COM objects to keep them alive)
-            deviceGetStreamSource(device, 0, &draw.vb, &draw.vb_offset, &draw.vb_stride);
-            // GetStreamSource AddRef's the VB - we keep the ref until replay
-            draw.ib = deviceGetIndices(device);
-            // GetIndices AddRef's the IB
-            draw.vertex_decl = deviceGetPtr(device, types.VT.GetVertexDeclaration);
-            // GetVertexDeclaration AddRef's
-            draw.vertex_shader = deviceGetPtr(device, types.VT.GetVertexShader);
-            // GetVertexShader AddRef's
-            for (0..4) |stage| {
-                draw.tex[stage] = deviceGetTexture(device, @intCast(stage));
-                draw.alpha_op[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAOP);
-                draw.alpha_arg1[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG1);
-                draw.alpha_arg2[stage] = deviceGetTSS(device, @intCast(stage), types.D3DTSS.ALPHAARG2);
-            }
-            draw.pixel_shader = deviceGetPtr(device, types.VT.GetPixelShader);
-            draw.state_block = deviceCreateStateBlock(device);
-            if (draw.state_block != null) debug_state_block_seen = true;
-            draw.alpha_test_enable = deviceGetRS(device, types.D3DRS.ALPHATESTENABLE);
-            draw.alpha_ref = deviceGetRS(device, types.D3DRS.ALPHAREF);
-            draw.alpha_func = deviceGetRS(device, types.D3DRS.ALPHAFUNC);
-            draw.alpha_blend_enable = deviceGetRS(device, types.D3DRS.ALPHABLENDENABLE);
-            draw.src_blend = deviceGetRS(device, types.D3DRS.SRCBLEND);
-            draw.dst_blend = deviceGetRS(device, types.D3DRS.DESTBLEND);
-
-            // Capture VS constants (bone matrices, world/view/proj transforms)
-            deviceGetVSConstF(device, 0, &draw.vs_consts, MAX_VS_CONST_REGS);
-
-            cached_draw_count = idx + 1;
-            frame_has_outlines = true;
-            debug_cached_draw_seen = true;
-        }
-
-        // DEBUG23: no stencil writes. Preserve WoW's D3D state and draw once.
-        // The cached geometry is replayed later into the silhouette RT.
-        return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-    }
-
-    // ---- Normal path ----
     return origFn(device, prim_type, base_vtx, min_vtx, num_verts, start_idx, prim_count);
 }
 
@@ -1627,9 +1558,10 @@ pub fn installHooks() bool {
     const vtable_ptr = getD3D9VTable() orelse return false;
     d3d9_vtable = vtable_ptr;
 
-    // Isolation test: hook EndScene only.
-    // DrawIndexedPrimitive and Reset remain untouched.
+    // Isolation test: hook EndScene + DrawIndexedPrimitive.
+    // Reset remains untouched.
     if (!patchVtableEntry(vtable_ptr, types.VT.EndScene, @intFromPtr(&hkEndScene), &orig_endscene)) return false;
+    if (!patchVtableEntry(vtable_ptr, types.VT.DrawIndexedPrimitive, @intFromPtr(&hkDIP), &orig_dip)) return false;
 
     hooks_installed = true;
     return true;
