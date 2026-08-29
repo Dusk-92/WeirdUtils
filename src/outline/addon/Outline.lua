@@ -8,11 +8,28 @@ BINDING_HEADER_OUTLINE = "Outline"
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("PLAYER_TARGET_CHANGED")
+
+local syncElapsed = 0
 
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
+        OutlineSyncTarget()
         local on = OutlineCommand()
         DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00Outline|r v" .. OUTLINE_VERSION .. " loaded (" .. (on and "enabled" or "disabled") .. ")")
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        OutlineSyncTarget()
+        syncElapsed = 0
+    end
+end)
+
+-- AutoFix safety net: republish the current target from the safe Lua/main
+-- thread at low frequency so a missed/early target event cannot disable Outline.
+frame:SetScript("OnUpdate", function()
+    syncElapsed = syncElapsed + arg1
+    if syncElapsed >= 0.10 then
+        syncElapsed = 0
+        OutlineSyncTarget()
     end
 end)
 
