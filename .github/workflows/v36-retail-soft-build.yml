@@ -1,0 +1,119 @@
+name: Temporary V36 Retail Soft build
+
+on:
+  push:
+    branches:
+      - test/v36-retail-jfa-soft
+
+permissions:
+  contents: read
+
+jobs:
+  build-v36-retail-soft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout V36 branch
+        uses: actions/checkout@v4
+
+      - name: Patch soft Retail decode for build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('src/outline/d3d9_hook.zig')
+          s = p.read_text()
+          start = s.index('/// V32 POLISH: hard 3px outline, no feather.')
+          end = s.index('/// Debug: composite silhouette RT directly.')
+          new = '''/// V36 RETAIL-SOFT: keep the proven V34 JFA, soften only final decode.
+/// c0 = (screen_width, screen_height, core_radius_px, halo_radius_px).
+/// Uses the same two texture reads as V34: no 17-tap full-screen morphology.
+const jfa_decode_src =
+    "ps_3_0\\n" ++
+    "def c1, 0.0, 0.22, 0.82, -0.002\\n" ++
+    "def c2, 1.0, 0.95, 0.58, 0.0\\n" ++
+    "dcl_2d s0\\n" ++
+    "dcl_2d s1\\n" ++
+    "dcl_texcoord0 v0\\n" ++
+    "texld r0, v0, s0\\n" ++
+    "sub r1.xy, v0.xy, r0.xy\\n" ++
+    "mul r1.xy, r1.xy, c0.xy\\n" ++
+    "dp2add r1.z, r1, r1, c1.x\\n" ++
+    "mul r3.x, c0.z, c0.z\\n" ++
+    "mul r3.y, c0.w, c0.w\\n" ++
+    "sub r4.x, r1.z, r3.y\\n" ++
+    "cmp r6.w, r4.x, c1.x, c1.y\\n" ++
+    "sub r4.x, r1.z, r3.x\\n" ++
+    "cmp r6.w, r4.x, r6.w, c1.z\\n" ++
+    "texld r5, v0, s1\\n" ++
+    "add r5.x, r5.a, c1.w\\n" ++
+    "cmp r6.w, r5.x, c1.x, r6.w\\n" ++
+    "mov r6.xyz, c2.xyz\\n" ++
+    "mov oC0, r6\\n";
+
+'''
+          s = s[:start] + new + s[end:]
+          old = '        // V34: hard 3px edge unchanged; JFA seed precision is now full-float.\n        c0 = [4]f32{ fw, fh, 3.0, 0.0 };'
+          new_cpu = '        // V36: thin 1.5px core plus a subtle 3px halo.\n        c0 = [4]f32{ fw, fh, 1.5, 3.0 };'
+          if old not in s:
+              raise SystemExit('V34 CPU decode constants not found')
+          s = s.replace(old, new_cpu)
+          p.write_text(s)
+          PY
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build standalone variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+
+      - name: Assemble package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL
+          mkdir -p package/Interface/AddOns/WeirdUtils_Outline
+          mkdir -p dist
+          cp zig-out/variants/customassets.dll package/DLL/customassets.dll
+          cp zig-out/variants/transmogfix.dll package/DLL/transmogfix.dll
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/Bindings.xml
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/Outline.lua
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/WeirdUtils_Outline.toc
+          cat > package/README_TEST.txt <<'EOF'
+          WeirdUtils V36 Retail Soft
+
+          Based directly on stable/outline-v34-autofix.
+          Keeps automatic target sync + automatic D3D9 rehook.
+
+          Visual experiment only:
+          - Proven V34 G32R32F JFA pipeline retained.
+          - Only final decode changed.
+          - ~1.5px pale core, ~3px subtle halo.
+          - Same two decode texture reads as V34.
+          - No 17-tap morphology shader.
+
+          WeirdPerformance is not built or modified.
+          EOF
+          (
+            cd package
+            sha256sum DLL/*.dll > SHA256SUMS.txt
+            zip -r ../dist/WeirdUtils_safe_core_V8_RETAIL36_SOFT_AUTOFIX_ORIGINAL_WeirdPerformance.zip DLL Interface README_TEST.txt SHA256SUMS.txt
+          )
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeirdUtils-safe-core-V8-RETAIL36-SOFT-AUTOFIX
+          path: dist/WeirdUtils_safe_core_V8_RETAIL36_SOFT_AUTOFIX_ORIGINAL_WeirdPerformance.zip
+          if-no-files-found: error
