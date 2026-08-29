@@ -152,20 +152,32 @@ pub fn outlineCommand(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
     return 1;
 }
 
-/// Return a compact sticky diagnostic line for in-game testing.
-/// Usage:
-///   /run DEFAULT_CHAT_FRAME:AddMessage(OutlineDebug())
-pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
-    // Capture player/target from the context where GetGUIDFromName is known to
-    // work on this client, then pin the resolved objects for the render thread.
-    const player_guid = wow.unitGUID("player");
-    const target_guid = wow.unitGUID("target");
+fn syncTargetFromLuaContext() void {
+    // AutoFix: perform the same safe target publication that OutlineDebug()
+    // used, but from an automatic Lua/main-thread callback.
+    const player_guid = wow.getPlayerGUID();
+    const target_guid = wow.getTargetGUID();
     const player_obj = if (player_guid != 0) wow.getObjectByGUID(player_guid) else 0;
     const target_obj = if (target_guid != 0) wow.getObjectByGUID(target_guid) else 0;
     tracker.setDebugPinnedObjects(player_obj, target_obj);
 
     if (player_guid != 0) tracker.debug_unit_player_guid_seen = true;
     if (target_guid != 0) tracker.debug_unit_target_guid_seen = true;
+}
+
+/// Automatic target publication used by the embedded addon.
+/// No user macro/command is required.
+pub fn outlineSyncTarget(_: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
+    syncTargetFromLuaContext();
+    return 0;
+}
+
+/// Return a compact sticky diagnostic line for in-game testing.
+/// Usage:
+///   /run DEFAULT_CHAT_FRAME:AddMessage(OutlineDebug())
+pub fn outlineDebug(L: lua.State) callconv(.{ .x86_thiscall = .{} }) u32 {
+    // Debug keeps the exact same automatic publication path.
+    syncTargetFromLuaContext();
 
     _ = d3d9_hook.lateRehookIfLost();
     const live = d3d9_hook.getLiveHookState();
