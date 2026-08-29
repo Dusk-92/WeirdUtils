@@ -628,17 +628,79 @@ const material_mask_src =
     "texkill r1\n" ++
     "mov oC0, c0\n";
 
-/// JFA init: sample silhouette, output own UV as seed or sentinel (-1,-1).
-/// Sentinel must be outside [0,1] UV space so it never wins distance comparisons.
+/// V33 POLISH: JFA init with conservative 3x3 pinhole/crack cleanup.
+/// c0.xy = one texel in UV space.
+/// A transparent centre pixel is promoted to a seed only when at least 5 of
+/// its 8 neighbours are occupied. This fills tiny interior holes/cracks while
+/// avoiding the 1px outward dilation caused by a simple max/any-neighbour filter.
 const jfa_init_src =
     "ps_3_0\n" ++
-    "def c0, -1.0, -1.0, -0.002, 0.0\n" ++
+    "def c1, 0.0, 1.0, -0.002, -4.5\n" ++
+    "def c2, -1.0, -1.0, 0.0, 0.0\n" ++
+    "def c3, -1.0, 0.0, 0.0, 0.0\n" ++
+    "def c4, -1.0, 1.0, 0.0, 0.0\n" ++
+    "def c5, 0.0, -1.0, 0.0, 0.0\n" ++
+    "def c6, 0.0, 1.0, 0.0, 0.0\n" ++
+    "def c7, 1.0, -1.0, 0.0, 0.0\n" ++
+    "def c8, 1.0, 0.0, 0.0, 0.0\n" ++
+    "def c9, 1.0, 1.0, 0.0, 0.0\n" ++
+    "def c10, -1.0, -1.0, 0.0, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_texcoord0 v0\n" ++
+    "mov r7.xy, c0.xy\n" ++
+    // Centre occupancy.
     "texld r0, v0, s0\n" ++
-    "add r0.x, r0.a, c0.z\n" ++ // alpha - 0.002
-    "cmp oC0.xy, r0.x, v0.xy, c0.xy\n" ++ // >= 0 → own UV (seed), < 0 → sentinel
-    "mov oC0.zw, c0.ww\n";
+    "add r0.x, r0.a, c1.z\n" ++
+    "cmp r0.x, r0.x, c1.y, c1.x\n" ++
+    "mov r6.x, c1.x\n" ++
+    // Count occupied neighbours.
+    "mad r4.xy, c2.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c3.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c4.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c5.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c6.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c7.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c8.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    "mad r4.xy, c9.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "add r5.x, r5.a, c1.z\n" ++
+    "cmp r5.x, r5.x, c1.y, c1.x\n" ++
+    "add r6.x, r6.x, r5.x\n" ++
+    // Fill only strongly surrounded empty pixels (5/8 or more).
+    "add r6.x, r6.x, c1.w\n" ++
+    "cmp r6.y, r6.x, c1.y, c1.x\n" ++
+    "max r6.y, r6.y, r0.x\n" ++
+    // Valid centre/filled pixel becomes its own seed; otherwise sentinel.
+    "cmp oC0.xy, r6.y, v0.xy, c10.xy\n" ++
+    "mov oC0.zw, c1.xx\n";
 
 /// JFA propagation: 9-tap (self + 8 neighbors), keeps nearest seed.
 /// c0.xy = step_size_uv (set per-pass by CPU).
@@ -1375,15 +1437,18 @@ fn runJfaPipeline(device: *anyopaque) void {
         const fw = @as(f32, @floatFromInt(@max(vp.Width, 1)));
         const fh = @as(f32, @floatFromInt(@max(vp.Height, 1)));
 
-        // Pass 1: JFA Init (silhouette → JFA_A)
+        var c0: [4]f32 = undefined;
+
+        // Pass 1: V33 conservative 3x3 cleanup + JFA Init (silhouette → JFA_A).
         deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
         deviceSetTexture(device, 0, rt_silhouette_tex);
+        c0 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
+        deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_init_ps.?);
         deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
 
         // JFA Propagation: steps [8, 4, 2, 1] ping-ponging between A and B.
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
-        var c0: [4]f32 = undefined;
 
         // step=8 (JFA_A → JFA_B)
         deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
