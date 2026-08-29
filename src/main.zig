@@ -1048,11 +1048,14 @@ comptime {
 pub export fn DllMain(
     _: ?*anyopaque,
     reason: u32,
-    _: ?*anyopaque,
+    reserved: ?*anyopaque,
 ) callconv(WINAPI) std.os.windows.BOOL {
     switch (reason) {
         1 => install(),
-        0 => uninstall(),
+        0 => {
+            // Process-exit safety only; runtime Outline behavior is unchanged.
+            if (reserved == null) uninstall();
+        },
         else => {},
     }
     return @enumFromInt(1);
