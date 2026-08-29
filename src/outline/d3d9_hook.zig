@@ -1627,11 +1627,10 @@ pub fn installHooks() bool {
     const vtable_ptr = getD3D9VTable() orelse return false;
     d3d9_vtable = vtable_ptr;
 
+    // Isolation test: hook EndScene only.
+    // DrawIndexedPrimitive and Reset remain untouched.
     if (!patchVtableEntry(vtable_ptr, types.VT.EndScene, @intFromPtr(&hkEndScene), &orig_endscene)) return false;
-    if (!patchVtableEntry(vtable_ptr, types.VT.DrawIndexedPrimitive, @intFromPtr(&hkDIP), &orig_dip)) return false;
 
-    // Isolation test: do not hook IDirect3DDevice9::Reset.
-    // EndScene + DIP remain active so the visible outline pipeline still runs.
     hooks_installed = true;
     return true;
 }
