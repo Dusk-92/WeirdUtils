@@ -94,6 +94,26 @@ jobs:
           gzip -9 -c package/DLL/outline.dll | base64 -w 76 \
             > dist/outline_V32.dll.gz.b64
 
+      - name: Publish temporary V32 download release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v32-polish32-test"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" \
+              dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip \
+              --clobber
+          else
+            git tag -f "$tag"
+            git push origin "refs/tags/$tag" --force
+            gh release create "$tag" \
+              dist/WeirdUtils_safe_core_V8_POLISH32_ORIGINAL_WeirdPerformance.zip \
+              --title "V32 POLISH32 temporary build" \
+              --notes "Temporary compiled test artifact."
+          fi
+
       - name: Commit compiled package to branch
         shell: bash
         run: |
