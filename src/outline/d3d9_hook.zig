@@ -732,34 +732,32 @@ const jfa_prop_src =
     "mov oC0.xy, r8.xy\n" ++
     "mov oC0.zw, c1.xx\n";
 
-/// V31 POLISH: 3px outline with a soft 1px feather.
-/// c0 = (screen_width, screen_height, outer_radius_sq=9, inv_feather_sq_range=0.2)
-/// Alpha is 1.0 through ~2px, then fades smoothly to 0 by 3px.
+/// V32 POLISH: hard 3px outline, no feather.
+/// c0 = (screen_width, screen_height, radius_px=3, 0).
+/// The shader squares radius_px and emits a binary 0/1 edge alpha.
 const jfa_decode_src =
     "ps_3_0\n" ++
     "def c1, 0.0, 1.0, -0.002, 0.0\n" ++
     "dcl_2d s0\n" ++
     "dcl_2d s1\n" ++
     "dcl_texcoord0 v0\n" ++
-    // Copy CPU constants to a temp once. This also avoids the old D3DX
-    // restriction on reading multiple constant registers in one instruction.
-    "mov r6, c0\n" ++
     // Nearest seed and pixel-space squared distance.
     "texld r0, v0, s0\n" ++
     "sub r1.xy, v0.xy, r0.xy\n" ++
-    "mul r1.xy, r1.xy, r6.xy\n" ++
-    "dp2add r1.z, r1, r1, c1.x\n" ++
+    "mul r1.xy, r1.xy, c0.xy\n" ++
+    "dp2add r1.z, r1, r1, c0.w\n" ++
     // Seed colour.
     "texld r2, r0, s1\n" ++
-    // Feathered alpha = saturate((9 - dist²) / (9 - 4)).
-    // This yields a solid inner ~2px edge and a softer third pixel.
-    "sub r4.w, r6.z, r1.z\n" ++
-    "mul_sat r4.w, r4.w, r6.w\n" ++
+    // Hard radius test: dist² < radius² => alpha 1, otherwise 0.
+    "mov r3.x, c0.z\n" ++
+    "mul r3.x, r3.x, r3.x\n" ++
+    "sub r3.y, r1.z, r3.x\n" ++
+    "mov r6.w, c1.y\n" ++
+    "cmp r4.w, r3.y, c0.w, r6.w\n" ++
     // Do not paint over the model interior.
     "texld r5, v0, s1\n" ++
     "add r5.x, r5.a, c1.z\n" ++
-    "cmp r4.w, r5.x, c1.x, r4.w\n" ++
-    // Output outline colour with feathered alpha.
+    "cmp r4.w, r5.x, c0.w, r4.w\n" ++
     "mov r4.xyz, r2.xyz\n" ++
     "mov oC0, r4\n";
 
@@ -1419,8 +1417,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V31 POLISH: 2px solid + 1px feathered edge.
-        c0 = [4]f32{ fw, fh, 9.0, 0.2 };
+        // V32 POLISH: hard 3px edge, no feather.
+        c0 = [4]f32{ fw, fh, 3.0, 0.0 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
