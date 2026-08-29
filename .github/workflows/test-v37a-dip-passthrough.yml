@@ -1,0 +1,55 @@
+name: V37A DIP Passthrough
+
+on:
+  push:
+    branches:
+      - test/v37a-dip-passthrough
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL package/Interface/AddOns/WeirdUtils_Outline dist
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/
+          printf '%s\n' \
+            'V37A DIP passthrough isolation test.' \
+            'EndScene and DrawIndexedPrimitive vtable hooks are installed.' \
+            'DIP detour performs no Outline capture/state/resource work and immediately calls original DIP.' \
+            'Reset remains untouched.' \
+            'Visible outline is intentionally absent in this diagnostic build.' \
+            'main branch untouched; WeirdPerformance not modified.' \
+            > package/README_TEST.txt
+          (cd package && sha256sum DLL/outline.dll > SHA256SUMS.txt && zip -r ../dist/WeirdUtils_V37A_DIP_PASSTHROUGH.zip DLL Interface README_TEST.txt SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeirdUtils-V37A-DIP-PASSTHROUGH
+          path: dist/WeirdUtils_V37A_DIP_PASSTHROUGH.zip
+          if-no-files-found: error
