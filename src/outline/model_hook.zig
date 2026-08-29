@@ -113,7 +113,7 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         const idx_u: u32 = @bitCast(indices[i]);
         const model_ptr = hook.readMem(u32, batch_data +% idx_u *% 0x40 +% 4);
         if (model_ptr != 0) {
-            if (tracker.findOutlineEntry(model_ptr) != null) {
+            if (tracker.findOutlineEntryIncludingAttachment(model_ptr) != null) {
                 outline_count += 1;
             } else if (tracker.isGameObjectModel(model_ptr)) {
                 game_obj_count += 1;
@@ -137,7 +137,7 @@ fn renderDrawDetour(this: u32, view_matrix: u32, batch_data: u32, batch_indices:
         const batch_idx = indices[i];
         const idx_u: u32 = @bitCast(batch_idx);
         const model_ptr = hook.readMem(u32, batch_data +% idx_u *% 0x40 +% 4);
-        if (model_ptr != 0 and tracker.findOutlineEntry(model_ptr) != null) {
+        if (model_ptr != 0 and tracker.findOutlineEntryIncludingAttachment(model_ptr) != null) {
             reordered_indices[outline_pos] = batch_idx;
             outline_pos += 1;
         } else if (model_ptr != 0 and tracker.isGameObjectModel(model_ptr)) {
@@ -193,7 +193,7 @@ fn drawBatchProjDetour(ctx: u32) callconv(hook.cc.thiscall) void {
     else
         0;
 
-    const entry = if (model_ptr != 0) tracker.findOutlineEntry(model_ptr) else null;
+    const entry = if (model_ptr != 0) tracker.findOutlineEntryIncludingAttachment(model_ptr) else null;
 
     if (entry != null) {
         // This batch is an outline target - signal the DIP hook
