@@ -159,7 +159,8 @@ var outline_ps: ?*anyopaque = null; // flat-color PS (solid silhouettes)
 var outline_alpha_ps: ?*anyopaque = null; // texture-alpha-aware silhouette PS
 var outline_rgb_ps: ?*anyopaque = null; // additive/modulated texture coverage PS
 var material_mask_ps: ?*anyopaque = null; // exact-material scratch -> binary mask
-var jfa_init_ps: ?*anyopaque = null; // JFA seed init PS
+var retail_outline_ps: ?*anyopaque = null; // V35 retail-like dilation/ring/halo composite
+var jfa_init_ps: ?*anyopaque = null; // legacy JFA seed init PS
 var jfa_prop_ps: ?*anyopaque = null; // JFA propagation PS
 var jfa_decode_ps: ?*anyopaque = null; // JFA decode + composite PS
 var debug_sil_ps: ?*anyopaque = null; // debug: composite silhouette directly
@@ -628,6 +629,97 @@ const material_mask_src =
     "texkill r1\n" ++
     "mov oC0, c0\n";
 
+/// V35 EXPERIMENTAL RETAIL-LIKE OUTLINE.
+/// Direct screen-space morphology from the clean silhouette RT; no JFA.
+/// c0.xy = one screen texel in UV space.
+/// c1 = pale target colour.
+/// c2 = (core_radius_px, halo_radius_px, core_alpha, halo_alpha).
+///
+/// The 8-neighbour max at core_radius forms a thin outer ring. A second,
+/// wider 8-neighbour max contributes only the low-opacity outer halo.
+/// Subtracting the centre silhouette keeps the model itself untouched.
+const retail_outline_src =
+    "ps_3_0\n" ++
+    "def c3, 0.0, 1.0, 0.0, 0.0\n" ++
+    "def c4, -1.0, -1.0, 0.0, 0.0\n" ++
+    "def c5, -1.0, 0.0, 0.0, 0.0\n" ++
+    "def c6, -1.0, 1.0, 0.0, 0.0\n" ++
+    "def c7, 0.0, -1.0, 0.0, 0.0\n" ++
+    "def c8, 0.0, 1.0, 0.0, 0.0\n" ++
+    "def c9, 1.0, -1.0, 0.0, 0.0\n" ++
+    "def c10, 1.0, 0.0, 0.0, 0.0\n" ++
+    "def c11, 1.0, 1.0, 0.0, 0.0\n" ++
+    "dcl_2d s0\n" ++
+    "dcl_texcoord0 v0\n" ++
+    // Centre silhouette coverage.
+    "texld r0, v0, s0\n" ++
+    "mov r1.x, r0.a\n" ++ // core dilation max
+    "mov r2.x, r0.a\n" ++ // halo dilation max
+    // Sub-pixel radii + linear sampling give a softer edge than hard integer taps.
+    "mul r7.xy, c0.xy, c2.xx\n" ++
+    "mul r8.xy, c0.xy, c2.yy\n" ++
+    // Core radius: 8 neighbours.
+    "mad r4.xy, c4.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c5.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c6.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c7.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c8.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c9.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c10.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    "mad r4.xy, c11.xy, r7.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r1.x, r1.x, r5.a\n" ++
+    // Halo radius: 8 neighbours.
+    "mad r4.xy, c4.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c5.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c6.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c7.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c8.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c9.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c10.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    "mad r4.xy, c11.xy, r8.xy, v0.xy\n" ++
+    "texld r5, r4, s0\n" ++
+    "max r2.x, r2.x, r5.a\n" ++
+    // Ring = dilated core minus original; halo = wide dilation minus core.
+    "sub r3.x, r1.x, r0.a\n" ++
+    "sub r3.y, r2.x, r1.x\n" ++
+    "max r3.x, r3.x, c3.x\n" ++
+    "max r3.y, r3.y, c3.x\n" ++
+    "mul r3.x, r3.x, c2.z\n" ++
+    "mad r3.x, r3.y, c2.w, r3.x\n" ++
+    "min r3.x, r3.x, c3.y\n" ++
+    "mov r6.xyz, c1.xyz\n" ++
+    "mov r6.w, r3.x\n" ++
+    "mov oC0, r6\n";
+
 /// JFA init: sample silhouette, output own UV as seed or sentinel (-1,-1).
 /// Sentinel must be outside [0,1] UV space so it never wins distance comparisons.
 const jfa_init_src =
@@ -808,26 +900,12 @@ fn ensureShaders(device: *anyopaque) void {
     };
     debug_shader_stage = 4; // silhouette/material-mask PS variants ready
 
-    // --- JFA Init PS ---
-    jfa_init_ps = assemblePS(device, assemble, jfa_init_src, jfa_init_src.len) orelse {
+    // --- V35 Retail-like morphology composite PS ---
+    retail_outline_ps = assemblePS(device, assemble, retail_outline_src, retail_outline_src.len) orelse {
         releaseShaders();
         return;
     };
-    debug_shader_stage = 5; // JFA init ready
-
-    // --- JFA Propagation PS ---
-    jfa_prop_ps = assemblePS(device, assemble, jfa_prop_src, jfa_prop_src.len) orelse {
-        releaseShaders();
-        return;
-    };
-    debug_shader_stage = 6; // JFA propagation ready
-
-    // --- JFA Decode + Composite PS ---
-    jfa_decode_ps = assemblePS(device, assemble, jfa_decode_src, jfa_decode_src.len) orelse {
-        releaseShaders();
-        return;
-    };
-    debug_shader_stage = 7; // JFA decode ready
+    debug_shader_stage = 7; // retail composite ready
 
     // --- Debug silhouette composite PS (only when diagnostic enabled) ---
     if (DEBUG_SHOW_SILHOUETTE) {
@@ -893,7 +971,7 @@ fn assemblePS(device: *anyopaque, assemble: D3DXAssembleShaderFn, src: [*]const 
 }
 
 fn releaseShaders() void {
-    inline for (.{ &outline_ps, &outline_alpha_ps, &outline_rgb_ps, &material_mask_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
+    inline for (.{ &outline_ps, &outline_alpha_ps, &outline_rgb_ps, &material_mask_ps, &retail_outline_ps, &jfa_init_ps, &jfa_prop_ps, &jfa_decode_ps, &debug_sil_ps }) |ps| {
         if (ps.*) |p| {
             comRelease(p);
             ps.* = null;
@@ -1131,10 +1209,9 @@ fn runJfaPipeline(device: *anyopaque) void {
     };
 
     // Verify all resources and shaders
-    if (rt_material_tex == null or rt_material_surf == null or rt_silhouette_tex == null or rt_jfa_a_surf == null or rt_jfa_b_surf == null) return;
+    if (rt_material_tex == null or rt_material_surf == null or rt_silhouette_tex == null or rt_silhouette_surf == null) return;
     if (!shaders_attempted) ensureShaders(device);
-    if (jfa_init_ps == null or jfa_prop_ps == null or jfa_decode_ps == null) return;
-    if (outline_ps == null or material_mask_ps == null or rt_silhouette_surf == null) return;
+    if (outline_ps == null or material_mask_ps == null or retail_outline_ps == null) return;
 
     debug_pipeline_ready_seen = true;
 
@@ -1346,86 +1423,46 @@ fn runJfaPipeline(device: *anyopaque) void {
     } else {
 
         // =====================================================================
-        // Phase 2: JFA pipeline (silhouette → outline composite)
+        // V35 Phase 2: Retail-like screen-space outline composite.
+        // No distance field / JFA: directly dilate the clean silhouette in
+        // screen space, subtract its interior, then add a low-opacity halo.
         // =====================================================================
 
+        if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetPtrOrNull(device, types.VT.SetDepthStencilSurface, null);
         deviceSetPtrOrNull(device, types.VT.SetVertexShader, null);
         deviceSetFVF(device, types.D3DFVF_XYZRHW | types.D3DFVF_TEX1);
         deviceSetRS(device, types.D3DRS.ZENABLE, types.D3DZB_FALSE);
         deviceSetRS(device, types.D3DRS.ZWRITEENABLE, 0);
-        deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 0);
         deviceSetRS(device, types.D3DRS.CULLMODE, types.D3DCULL_NONE);
         deviceSetRS(device, types.D3DRS.ALPHATESTENABLE, 0);
         deviceSetRS(device, types.D3DRS.COLORWRITEENABLE, 0x0F);
-
-        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
-        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
-        deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
-        deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
-        deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
-        deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
-        deviceSetSamplerState(device, 1, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
-        deviceSetSamplerState(device, 1, types.D3DSAMP.MAGFILTER, types.D3DTEXF_POINT);
-        deviceSetSamplerState(device, 1, types.D3DSAMP.MINFILTER, types.D3DTEXF_POINT);
-        deviceSetSamplerState(device, 1, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
-
-        const quad = buildFullscreenQuad(vp.Width, vp.Height);
-        const qstride: u32 = @sizeOf(QuadVertex);
-        const fw = @as(f32, @floatFromInt(@max(vp.Width, 1)));
-        const fh = @as(f32, @floatFromInt(@max(vp.Height, 1)));
-
-        // Pass 1: JFA Init (silhouette → JFA_A).
-        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-        deviceSetTexture(device, 0, rt_silhouette_tex);
-        deviceSetPtr(device, types.VT.SetPixelShader, jfa_init_ps.?);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
-        // JFA Propagation: steps [8, 4, 2, 1] ping-ponging between A and B.
-        deviceSetPtr(device, types.VT.SetPixelShader, jfa_prop_ps.?);
-        var c0: [4]f32 = undefined;
-
-        // step=8 (JFA_A → JFA_B)
-        deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
-        deviceSetTexture(device, 0, rt_jfa_a_tex);
-        c0 = .{ 8.0 / fw, 8.0 / fh, 0.0, 0.0 };
-        deviceSetPSConstF(device, 0, &c0);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
-        // step=4 (JFA_B → JFA_A)
-        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-        deviceSetTexture(device, 0, rt_jfa_b_tex);
-        c0 = .{ 4.0 / fw, 4.0 / fh, 0.0, 0.0 };
-        deviceSetPSConstF(device, 0, &c0);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
-        // step=2 (JFA_A → JFA_B)
-        deviceSetRenderTarget(device, 0, rt_jfa_b_surf.?);
-        deviceSetTexture(device, 0, rt_jfa_a_tex);
-        c0 = .{ 2.0 / fw, 2.0 / fh, 0.0, 0.0 };
-        deviceSetPSConstF(device, 0, &c0);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
-        // step=1 (JFA_B → JFA_A)
-        deviceSetRenderTarget(device, 0, rt_jfa_a_surf.?);
-        deviceSetTexture(device, 0, rt_jfa_b_tex);
-        c0 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
-        deviceSetPSConstF(device, 0, &c0);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-
-        // Pass 4: Decode + Composite (JFA_A + silhouette → backbuffer)
-        if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
-        deviceSetTexture(device, 0, rt_jfa_a_tex);
-        deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V34: hard 3px edge unchanged; JFA seed precision is now full-float.
-        c0 = [4]f32{ fw, fh, 3.0, 0.0 };
-        deviceSetPSConstF(device, 0, &c0);
-        deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
         deviceSetRS(device, types.D3DRS.SRCBLEND, types.D3DBLEND_SRCALPHA);
         deviceSetRS(device, types.D3DRS.DESTBLEND, types.D3DBLEND_INVSRCALPHA);
-        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), qstride);
-    } // end else (normal JFA path)
+
+        // Linear sampling at fractional texel radii provides the subtle
+        // anti-aliased falloff that the hard JFA decode did not have.
+        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSU, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.ADDRESSV, types.D3DTADDRESS_CLAMP);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MAGFILTER, types.D3DTEXF_LINEAR);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MINFILTER, types.D3DTEXF_LINEAR);
+        deviceSetSamplerState(device, 0, types.D3DSAMP.MIPFILTER, types.D3DTEXF_NONE);
+        deviceSetTexture(device, 0, rt_silhouette_tex);
+        deviceSetPtr(device, types.VT.SetPixelShader, retail_outline_ps.?);
+
+        const quad = buildFullscreenQuad(vp.Width, vp.Height);
+        const fw = @as(f32, @floatFromInt(@max(vp.Width, 1)));
+        const fh = @as(f32, @floatFromInt(@max(vp.Height, 1)));
+        const texel: [4]f32 = .{ 1.0 / fw, 1.0 / fh, 0.0, 0.0 };
+        const retail_color: [4]f32 = .{ 1.0, 0.95, 0.58, 1.0 };
+        // 1.25px pale core + 2.25px low-opacity outer halo.
+        const retail_shape: [4]f32 = .{ 1.25, 2.25, 0.82, 0.26 };
+        deviceSetPSConstF(device, 0, &texel);
+        deviceSetPSConstF(device, 1, &retail_color);
+        deviceSetPSConstF(device, 2, &retail_shape);
+        deviceDrawPrimitiveUP(device, types.D3DPT_TRIANGLESTRIP, 2, @ptrCast(&quad), @sizeOf(QuadVertex));
+    } // end else (V35 retail-like path)
 
     // =====================================================================
     // Restore ALL state
