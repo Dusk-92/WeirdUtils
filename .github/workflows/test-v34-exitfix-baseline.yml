@@ -1,0 +1,54 @@
+name: V34 ExitFix Baseline
+
+on:
+  push:
+    branches:
+      - test/v34-exitfix-baseline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build all-variants -Doptimize=ReleaseSmall \
+            -Dweirdperformance=false \
+            -Doutline=true \
+            -Dcustomassets=true \
+            -Dtransmogfix=true
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf package dist
+          mkdir -p package/DLL package/Interface/AddOns/WeirdUtils_Outline dist
+          cp zig-out/variants/outline.dll package/DLL/outline.dll
+          cp src/outline/addon/Bindings.xml package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/Outline.lua package/Interface/AddOns/WeirdUtils_Outline/
+          cp src/outline/addon/WeirdUtils_Outline.toc package/Interface/AddOns/WeirdUtils_Outline/
+          printf '%s\n' \
+            'V34 stable + process-exit safety only.' \
+            'Runtime Outline code is otherwise identical to stable/outline-v34-autofix.' \
+            'main is untouched.' \
+            'WeirdPerformance is disabled in this standalone build and not modified.' \
+            > package/README_TEST.txt
+          (cd package && sha256sum DLL/outline.dll > SHA256SUMS.txt && zip -r ../dist/WeirdUtils_V34_EXITFIX_BASELINE.zip DLL Interface README_TEST.txt SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeirdUtils-V34-EXITFIX-BASELINE
+          path: dist/WeirdUtils_V34_EXITFIX_BASELINE.zip
+          if-no-files-found: error
