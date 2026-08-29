@@ -1414,8 +1414,8 @@ fn runJfaPipeline(device: *anyopaque) void {
         if (saved_rt0) |rt| deviceSetRenderTarget(device, 0, rt);
         deviceSetTexture(device, 0, rt_jfa_a_tex);
         deviceSetTexture(device, 1, rt_silhouette_tex);
-        // V36: thin 1.5px core plus a subtle 3px halo.
-        c0 = [4]f32{ fw, fh, 1.5, 3.0 };
+        // V37A isolation test: V37 radii only, V36 decode shader unchanged.
+        c0 = [4]f32{ fw, fh, 1.35, 3.20 };
         deviceSetPSConstF(device, 0, &c0);
         deviceSetPtr(device, types.VT.SetPixelShader, jfa_decode_ps.?);
         deviceSetRS(device, types.D3DRS.ALPHABLENDENABLE, 1);
