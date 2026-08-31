@@ -1,6 +1,6 @@
 # WeirdUtils
 
-> **This project is no longer actively developed.** The full source is published here, in the public domain (see `LICENSE`), so it can be forked, salvaged, or learned from rather than bit-rotting on a private disk. See [Source Code](#source-code) for details and caveats.
+> **This project is no longer actively developed.** Project-authored source is published under the public-domain dedication in `LICENSE`, subject to the documented third-party code and asset exceptions. See [Source Code](#source-code) and [Licensing & provenance](#licensing--provenance) for details.
 
 This package provides many pre-built DLLs for enhancing the vanilla 1.12 client WoW gameplay experience, aimed in particular at ease of use and accessibility but also bug fixes.
 
@@ -261,12 +261,15 @@ Most noticeable in cities, raids, during zone transitions, and in addon-heavy se
 
 ## Source Code
 
-This project is no longer actively developed. The full source is now published here,
-in the public domain (see `LICENSE`), so it can be forked, salvaged, or learned from
-rather than bit-rotting on a private disk.
+This project is no longer actively developed. Project-authored source is published
+under the public-domain dedication in `LICENSE`, subject to the documented
+third-party code, dependency, font, and asset exceptions.
 
-Earlier releases shipped as pre-built DLLs only. That is no longer the case - the
-binaries on the releases page and the source in this repo are the same project.
+Earlier releases shipped as pre-built DLLs only. Standard public module DLLs are now
+compiled from source by the GitHub release workflow. The current workflow treats
+`weirdperformance.dll` specially: it imports the configured Dusk92 Codeberg v0.7.3
+prebuilt and includes it in the generated SHA-256 manifest. See
+`Docs/BINARY_PROVENANCE.md` for the exact release boundary.
 
 Fair warning to anyone building on this: these DLLs hook deeply into the client's
 internals - memory layout, function addresses, rendering pipeline, input handling.
@@ -301,9 +304,36 @@ running under Wine/DXVK. Per-module build flags are listed by `zig build --help`
 | `docs/`, `src/*/RESEARCH.md` | Reverse-engineering notes for the subsystems being hooked |
 
 `src/dpslog/WeirdDPSMate/` is a fork of DPSMate and stays under GPL-3.0 - see its
-own `LICENSE`. Everything else is unlicensed/public domain.
+own `LICENSE`. Other documented third-party code, dependencies, fonts, visual
+assets, and reference-derived material retain their own rights or unresolved status;
+the root public-domain dedication does not override them.
 
 ---
+
+## Licensing & provenance
+
+The root `LICENSE` public-domain dedication applies only to material for which the
+applicable WeirdUtils authors have the rights to make that dedication.
+
+Important separate boundaries include:
+
+- **WeirdDPSMate / DPSMate** — GPL-3.0.
+- **libdeflate 1.25** — vendored under the MIT License.
+- **VanillaFixes-derived timer work** — upstream MIT notice preserved.
+- **WSBT / Mik material** — bundled historical third-party code; no standalone
+  license was independently established in this audit.
+- **zhook** — external pinned build dependency from Codeberg, not vendored here.
+- **BLP/TGA/fonts and game-facing resources** — not placed in the public domain
+  merely by inclusion in this repository.
+
+For the full record, see:
+
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [PROJECT_IDENTITY.md](PROJECT_IDENTITY.md)
+- [Docs/SOURCE_PROVENANCE.md](Docs/SOURCE_PROVENANCE.md)
+- [Docs/BINARY_PROVENANCE.md](Docs/BINARY_PROVENANCE.md)
+- [Docs/ASSET_PROVENANCE.md](Docs/ASSET_PROVENANCE.md)
+- [LICENSES/](LICENSES/)
 
 ## Developer Notes
 ### Runtime Module Control API
