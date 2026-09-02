@@ -1,6 +1,7 @@
 .{
     .name = .weirdperformance_gc24b,
     .version = "2.4.0",
+    .fingerprint = 0x95e8be635406d50f,
     .dependencies = .{
         .zhook = .{
             .url = "https://codeberg.org/marcelinevq/zhook/archive/f1b252ed61ad839f00310c386761d068f293ad0f.tar.gz",
