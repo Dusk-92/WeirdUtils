@@ -1,0 +1,39 @@
+name: Build WeirdPerformance 2.4-B GC test
+
+on:
+  push:
+    branches:
+      - test/wp24b-gc-safe-sweep
+    paths:
+      - 'experiments/wp24b-gc/**'
+      - '.github/workflows/wp24b-gc.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - name: Build x86 ReleaseSmall DLL
+        working-directory: experiments/wp24b-gc
+        run: |
+          set -euo pipefail
+          zig fmt --check build.zig main.zig
+          zig build -Doptimize=ReleaseSmall
+          test -s zig-out/bin/weirdperformance_gc24b.dll
+          file zig-out/bin/weirdperformance_gc24b.dll
+          sha256sum zig-out/bin/weirdperformance_gc24b.dll | tee SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeirdPerformance-2.4-B-GC-Safe-Sweep
+          path: |
+            experiments/wp24b-gc/zig-out/bin/weirdperformance_gc24b.dll
+            experiments/wp24b-gc/SHA256SUMS.txt
+            experiments/wp24b-gc/README.md
+          if-no-files-found: error
