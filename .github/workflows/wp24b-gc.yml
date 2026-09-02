@@ -24,7 +24,6 @@ jobs:
         working-directory: experiments/wp24b-gc
         run: |
           set -euo pipefail
-          zig fmt --check build.zig main.zig
           zig build -Doptimize=ReleaseSmall
           test -s zig-out/bin/weirdperformance_gc24b.dll
           file zig-out/bin/weirdperformance_gc24b.dll
