@@ -24,7 +24,7 @@ jobs:
         working-directory: experiments/wp24b-gc
         run: |
           set -euo pipefail
-          zig build -Doptimize=ReleaseSmall
+          zig build -Doptimize=small
           test -s zig-out/bin/weirdperformance_gc24b.dll
           file zig-out/bin/weirdperformance_gc24b.dll
           sha256sum zig-out/bin/weirdperformance_gc24b.dll | tee SHA256SUMS.txt
