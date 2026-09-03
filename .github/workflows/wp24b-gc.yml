@@ -24,6 +24,20 @@ jobs:
         working-directory: experiments/wp24b-gc
         run: |
           set -euo pipefail
+          zig build --fetch
+          python3 - <<'PY'
+          from pathlib import Path
+          matches = list(Path("zig-pkg").glob("zhook-*/src/zhook.zig"))
+          if len(matches) != 1:
+              raise SystemExit(f"expected one pinned zhook source, found {len(matches)}")
+          p = matches[0]
+          text = p.read_text(encoding="utf-8")
+          old = "var patch: [MAX_STOLEN]u8 = .{0x90} ** MAX_STOLEN;"
+          new = "var patch: [MAX_STOLEN]u8 = @splat(0x90);"
+          if old not in text:
+              raise SystemExit("expected pinned zhook repeat initializer not found")
+          p.write_text(text.replace(old, new), encoding="utf-8")
+          PY
           zig build -Doptimize=small
           test -s zig-out/bin/weirdperformance_gc24b.dll
           file zig-out/bin/weirdperformance_gc24b.dll
