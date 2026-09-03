@@ -30,10 +30,10 @@ const BATCH_HEADROOM: u32 = 128 * 1024;
 const EXPECTED_IMAGE_BASE: usize = 0x00400000;
 const EXPECTED_IMAGE_SIZE: u32 = 0x0092B000;
 
-const CollectFn = fn (u32) callconv(hook.cc.fastcall) void;
-const LuaCloseFn = fn (u32) callconv(hook.cc.fastcall) void;
-const SweepAllFn = fn (u32, u32) callconv(hook.cc.fastcall) void;
-const RemoveObjectsFn = fn (u32, u32, u32) callconv(hook.cc.fastcall) u32;
+const CollectFn = fn (u32) callconv(X86_FASTCALL) void;
+const LuaCloseFn = fn (u32) callconv(X86_FASTCALL) void;
+const SweepAllFn = fn (u32, u32) callconv(X86_FASTCALL) void;
+const RemoveObjectsFn = fn (u32, u32, u32) callconv(X86_FASTCALL) u32;
 
 const lua_gc_full_collection: *const CollectFn = @ptrFromInt(0x6F73E0);
 const lua_gc_shrink_memory: *const CollectFn = @ptrFromInt(0x6F7370);
@@ -201,7 +201,7 @@ fn nativeFallback(L: u32) void {
     collect_hook.callOriginal(.{L});
 }
 
-fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
+fn collectGarbageDetour(L: u32) callconv(X86_FASTCALL) void {
     if (closing_lua) {
         collect_hook.callOriginal(.{L});
         return;
@@ -304,7 +304,7 @@ fn collectGarbageDetour(L: u32) callconv(hook.cc.fastcall) void {
     writeU32(g + GS_GCTHRESHOLD, totalbytes + BATCH_HEADROOM);
 }
 
-fn luaCloseDetour(L: u32) callconv(hook.cc.fastcall) void {
+fn luaCloseDetour(L: u32) callconv(X86_FASTCALL) void {
     // lua_close may run native sweep paths that bypass luaC_collectgarbage.
     // Reconnect every private fragment while the old Lua state is still valid.
     closing_lua = true;
@@ -332,7 +332,7 @@ fn install() void {
     installed = true;
 }
 
-const version: [*:0]const u8 = "2.4-B-gc-safe-sweep";
+const version: [*:0]const u8 = "2.4-B1-gc-safe-sweep-abi";
 
 pub export fn WeirdPerformanceGC24B_GetVersion() callconv(.c) [*:0]const u8 {
     return version;
