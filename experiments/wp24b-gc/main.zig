@@ -12,6 +12,7 @@
 const std = @import("std");
 const hook = @import("zhook");
 const WINAPI = std.builtin.CallingConvention.winapi;
+const X86_FASTCALL: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 
 const LUA_COLLECT_GARBAGE_ADDR: usize = 0x6F7340;
 const LUA_CLOSE_ADDR: usize = 0x6F6EF0;
