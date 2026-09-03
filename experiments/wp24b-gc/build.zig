@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
         .abi = .msvc,
         .cpu_features_add = std.Target.x86.featureSet(&.{ .sse, .sse2 }),
     });
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode") orelse .ReleaseSmall;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode") orelse .small;
 
     const zhook_dep = b.dependency("zhook", .{
         .target = target,
