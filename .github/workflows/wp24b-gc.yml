@@ -43,7 +43,7 @@ jobs:
           DLL=zig-out/bin/weirdperformance_gc24b1.dll
           test -s "$DLL"
           file "$DLL" | tee BINARY_INFO.txt
-          file "$DLL" | grep -q 'PE32.*Intel i386'
+          file "$DLL" | grep -Eq 'PE32.*Intel (80386|i386)'
 
           if command -v llvm-objdump >/dev/null 2>&1; then
             llvm-objdump -d --x86-asm-syntax=intel "$DLL" > ABI_DISASM.txt
