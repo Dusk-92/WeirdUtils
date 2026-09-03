@@ -1,4 +1,4 @@
-name: Build WeirdPerformance 2.4-B GC test
+name: Build WeirdPerformance 2.4-B1 GC test
 
 on:
   push:
@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: master
-      - name: Build x86 ReleaseSmall DLL
+          version: '0.17.0-dev.1970+67f39b551'
+      - name: Build and ABI-validate x86 DLL
         working-directory: experiments/wp24b-gc
         run: |
           set -euo pipefail
@@ -38,15 +38,84 @@ jobs:
               raise SystemExit("expected pinned zhook repeat initializer not found")
           p.write_text(text.replace(old, new), encoding="utf-8")
           PY
+
           zig build -Doptimize=small
-          test -s zig-out/bin/weirdperformance_gc24b.dll
-          file zig-out/bin/weirdperformance_gc24b.dll
-          sha256sum zig-out/bin/weirdperformance_gc24b.dll | tee SHA256SUMS.txt
+          DLL=zig-out/bin/weirdperformance_gc24b1.dll
+          test -s "$DLL"
+          file "$DLL" | tee BINARY_INFO.txt
+          file "$DLL" | grep -q 'PE32.*Intel i386'
+
+          if command -v llvm-objdump >/dev/null 2>&1; then
+            llvm-objdump -d --x86-asm-syntax=intel "$DLL" > ABI_DISASM.txt
+          else
+            objdump -d -M intel "$DLL" > ABI_DISASM.txt
+          fi
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          asm = Path("ABI_DISASM.txt").read_text(encoding="utf-8", errors="replace").lower()
+
+          def require(pattern, label):
+              if not re.search(pattern, asm, re.S):
+                  raise SystemExit(f"ABI validation failed: {label}")
+
+          # zhook must jump to callbacks compiled with L arriving in ECX.
+          m = re.search(r"mov\s+edx,\s*0x6f7340.{0,240}?push\s+0x([0-9a-f]+)", asm, re.S)
+          if not m:
+              raise SystemExit("ABI validation failed: collector callback address not found")
+          cb = m.group(1).lstrip("0") or "0"
+          pos = asm.find(cb + ":")
+          if pos < 0 or not re.search(r"mov\s+esi,\s*ecx", asm[pos:pos+500]):
+              raise SystemExit("ABI validation failed: collector callback does not consume L from ECX")
+
+          m = re.search(r"mov\s+edx,\s*0x6f6ef0.{0,240}?push\s+0x([0-9a-f]+)", asm, re.S)
+          if not m:
+              raise SystemExit("ABI validation failed: lua_close callback address not found")
+          cb = m.group(1).lstrip("0") or "0"
+          pos = asm.find(cb + ":")
+          if pos < 0 or not re.search(r"mov\s+esi,\s*ecx", asm[pos:pos+400]):
+              raise SystemExit("ABI validation failed: lua_close callback does not consume L from ECX")
+
+          # Native helper ABI observed in WoW 5875:
+          #   ECX=L, EDX=&list, stack arg=all for 0x6F7210.
+          require(
+              r"lea\s+edx,\s*\[edi\s*\+\s*0x14\].{0,160}?"
+              r"mov\s+eax,\s*0x6f7210.{0,120}?"
+              r"mov\s+ecx,\s*esi.{0,120}?"
+              r"push\s+0x0.{0,80}?call\s+eax",
+              "lua_gc_remove_objects register/stack ABI",
+          )
+
+          require(
+              r"mov\s+eax,\s*0x6f72f0.{0,120}?"
+              r"mov\s+ecx,\s*esi.{0,100}?"
+              r"xor\s+edx,\s*edx.{0,80}?call\s+eax",
+              "lua_gc_sweep_all_lists fastcall ABI",
+          )
+
+          for addr, label in (
+              ("6f73e0", "lua_gc_full_collection"),
+              ("6f7370", "lua_gc_shrink_memory"),
+              ("6f7080", "luaCallUserDataGC"),
+          ):
+              require(
+                  rf"mov\s+eax,\s*0x{addr}.{{0,120}}?mov\s+ecx,\s*esi.{{0,80}}?call\s+eax",
+                  f"{label} ECX ABI",
+              )
+
+          print("ABI validation: PASS")
+          PY
+
+          sha256sum "$DLL" | tee SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: WeirdPerformance-2.4-B-GC-Safe-Sweep
+          name: WeirdPerformance-2.4-B1-GC-Safe-Sweep
           path: |
-            experiments/wp24b-gc/zig-out/bin/weirdperformance_gc24b.dll
+            experiments/wp24b-gc/zig-out/bin/weirdperformance_gc24b1.dll
             experiments/wp24b-gc/SHA256SUMS.txt
+            experiments/wp24b-gc/BINARY_INFO.txt
+            experiments/wp24b-gc/ABI_DISASM.txt
             experiments/wp24b-gc/README.md
           if-no-files-found: error
