@@ -17,6 +17,7 @@ const X86_FASTCALL: std.builtin.CallingConvention = .{ .x86_fastcall = .{} };
 const LUA_COLLECT_GARBAGE_ADDR: usize = 0x6F7340;
 const LUA_CLOSE_ADDR: usize = 0x6F6EF0;
 const BIRTH_MARK_ADDR: usize = 0x6F7B37;
+const IS_IN_WORLD_ADDR: u32 = 0x00B4B424;
 
 const GS_ROOTGC: u32 = 0x10;
 const GS_ROOTUDATA: u32 = 0x14;
@@ -204,6 +205,13 @@ fn nativeFallback(L: u32) void {
 
 fn collectGarbageDetour(L: u32) callconv(X86_FASTCALL) void {
     if (closing_lua) {
+        collect_hook.callOriginal(.{L});
+        return;
+    }
+
+    // Keep GlueXML/login/character-select on WoW's native GC.
+    // The experiment is intentionally gameplay-only.
+    if (readU32(IS_IN_WORLD_ADDR) == 0) {
         collect_hook.callOriginal(.{L});
         return;
     }
