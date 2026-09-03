@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib = b.addLibrary(.{
-        .name = "weirdperformance_gc24b",
+        .name = "weirdperformance_gc24b1",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
             .root_source_file = b.path("main.zig"),
